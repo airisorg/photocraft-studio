@@ -1,4 +1,13 @@
-<h1 align="center">📷 PhotoCraft</h1>
+<p align="center">
+  <a href="https://getartcraft.com/">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="docs/brand/artcraft-logo-white.svg">
+      <img alt="ArtCraft" src="docs/brand/artcraft-logo.svg" width="200">
+    </picture>
+  </a>
+</p>
+
+<h1 align="center">PhotoCraft</h1>
 
 <p align="center">
   <b>The image editor you already know how to use.</b><br>
@@ -8,24 +17,44 @@
 
 <p align="center">
   <img alt="100% Rust" src="https://img.shields.io/badge/100%25-Rust-b7410e?style=flat-square&logo=rust">
-  <img alt="macOS · Windows · Linux · Web" src="https://img.shields.io/badge/macOS%20%C2%B7%20Windows%20%C2%B7%20Linux%20%C2%B7%20Web-native-2b6cb0?style=flat-square">
+  <img alt="macOS · Windows · Linux · Web" src="https://img.shields.io/badge/macOS%20%C2%B7%20Windows%20%C2%B7%20Linux%20%C2%B7%20Web-native-2f7bf5?style=flat-square">
   <img alt="License: MIT or Apache-2.0" src="https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-3a3a3a?style=flat-square">
   <img alt="Status: early alpha" src="https://img.shields.io/badge/status-early%20alpha-d69e2e?style=flat-square">
 </p>
+
+<p align="center">
+  <a href="https://discord.gg/artcraft"><img alt="Join the ArtCraft community on Discord" src="https://img.shields.io/badge/Join%20us%20on%20Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" height="40"></a>
+</p>
+
+<p align="center">
+  <a href="https://getartcraft.com/apps/photocraft"><b>PhotoCraft on getartcraft.com</b></a> ·
+  <a href="https://getartcraft.com/">ArtCraft</a> ·
+  <a href="https://getartcraft.com/apps">All Crafting Apps</a>
+</p>
+
+<br>
+
+<p align="center">
+  <img src="docs/images/photocraft-demo.jpg" alt="PhotoCraft editing Hokusai's The Great Wave: a caption card with a drop shadow, Title and Credit type layers, Vibrance and Curves adjustment layers, and the Curves editor drawn over the image's histogram" width="100%">
+  <br>
+  <sub>A caption card with a drop shadow, live type, and Vibrance and Curves adjustment layers, with the Curves editor open.<br>
+  <i>The Great Wave off Kanagawa</i>, Katsushika Hokusai, c. 1831</sub>
+</p>
+
+> [!NOTE]
+> **ArtCraft is a community of artists from all walks of life.** Painters, photographers,
+> filmmakers, illustrators, designers, animators, hobbyists, and people who picked up a pencil
+> last week. If you make things, you're one of us. **[Come say hi on Discord](https://discord.gg/artcraft).**
 
 <p align="center">
   <a href="#features">Features</a> ·
   <a href="#everything-in-the-box">Everything in the box</a> ·
   <a href="#psd-without-compromise">PSD</a> ·
   <a href="#built-for-agents">Agents</a> ·
+  <a href="#under-the-hood">Under the hood</a> ·
   <a href="#get-started">Get started</a> ·
-  <a href="#crafting-apps">Crafting Apps</a>
-</p>
-
-<p align="center">
-  <img src="docs/images/photocraft-demo.jpg" alt="PhotoCraft editing Hokusai's The Great Wave: a caption card with a drop shadow, type layers, Vibrance and Curves adjustment layers, and the Curves editor with its histogram" width="100%">
-  <br>
-  <sub><i>The Great Wave off Kanagawa</i>, Katsushika Hokusai, c. 1831</sub>
+  <a href="#the-crafting-apps">Crafting Apps</a> ·
+  <a href="https://discord.gg/artcraft">Discord</a>
 </p>
 
 <br>
@@ -55,96 +84,90 @@
 
 ## Features
 
+Every screenshot here is the real app at work on public-domain art, rendered offscreen through its control channel.
+
 <table>
   <tr>
-    <td width="58%"><img src="docs/images/photocraft-adjustments.jpg" alt="Vibrance and Levels adjustment layers with the Histogram panel" width="100%"></td>
-    <td width="42%" valign="middle">
-      <h3>Edit without regret.</h3>
+    <td width="50%" valign="top">
+      <img src="docs/images/photocraft-adjustments.jpg" alt="Monet's Impression, Sunrise with Levels and Vibrance adjustment layers; the Levels editor and the Histogram panel with mean, standard deviation and median are open on the right" width="100%">
+      <br>
+      <sub>Levels and Vibrance adjustment layers, with the live Histogram panel.<br><i>Impression, Sunrise</i>, Claude Monet, 1872</sub>
+      <h3>Edit without regret</h3>
       Adjustment layers keep every edit live. Stack Levels, Curves, Vibrance, Hue/Saturation and a dozen more, mask them to an area, reorder them, or turn them off, and your original pixels never change.
       <br><br>
       <b>16 adjustment layers</b> that also apply directly to pixels, including Curves with per-channel editing, Levels with a live histogram, Black &amp; White, Channel Mixer, Gradient Map, Photo Filter, Selective Color and Color Lookup (.cube, .3dl, .look). Plus Shadows/Highlights, Replace Color, Match Color, HDR Toning, Desaturate and Equalize.
-      <br><br>
-      <sub><i>Impression, Sunrise</i>, Claude Monet, 1872</sub>
     </td>
-  </tr>
-  <tr>
-    <td width="42%" valign="middle">
-      <h3>Styles that sell the shot.</h3>
+    <td width="50%" valign="top">
+      <img src="docs/images/photocraft-layer-styles.jpg" alt="The Layer Style dialog editing an Outer Glow on the EARTHRISE type layer, with Stroke also enabled, over the Apollo 8 Earthrise photograph" width="100%">
+      <br>
+      <sub>Outer Glow and Stroke on a live type layer, in the Layer Style dialog.<br><i>Earthrise</i>, William Anders / NASA, 1968</sub>
+      <h3>Styles that sell the shot</h3>
       Drop Shadow, Inner Shadow, Outer and Inner Glow, Bevel &amp; Emboss, Satin, Stroke, and Color, Gradient and Pattern Overlay, live on any layer, including type. Patterns come from a library (built-ins, Edit › Define Pattern, <code>.pat</code> import/export) and PSD <code>Patt</code> blocks.
       <br><br>
       Copy and paste styles between layers, hide all effects at once, and open styles straight from your PSDs, rendered to match Photoshop.
-      <br><br>
-      <sub><i>Earthrise</i>, William Anders / NASA, 1968</sub>
     </td>
-    <td width="58%"><img src="docs/images/photocraft-layer-styles.jpg" alt="Outer Glow and Stroke on live type, in the Layer Style dialog" width="100%"></td>
   </tr>
   <tr>
-    <td width="58%"><img src="docs/images/photocraft-masks.jpg" alt="A feathered elliptical selection used as the mask of a Hue/Saturation layer" width="100%"></td>
-    <td width="42%" valign="middle">
-      <h3>Selections that understand your image.</h3>
+    <td width="50%" valign="top">
+      <img src="docs/images/photocraft-masks.jpg" alt="Vermeer's Girl with a Pearl Earring: an elliptical selection around the face, and a Hue/Saturation layer with an elliptical mask that turns everything outside the face gray" width="100%">
+      <br>
+      <sub>An elliptical selection becomes the mask of a Hue/Saturation layer, so only the face keeps its color.<br><i>Girl with a Pearl Earring</i>, Johannes Vermeer, c. 1665</sub>
+      <h3>Selections that understand your image</h3>
       Marquees, lassos and the Magic Wand for precision; Quick Selection, Object Selection and Select Subject when you want the computer to do the tracing; Select and Mask to refine hair-fine edges.
       <br><br>
       Feather, expand, contract, smooth, grow, reselect. Turn any selection into a layer mask, a vector path or a shape. Smart selection runs on your machine, with no cloud and no account.
-      <br><br>
-      <sub><i>Girl with a Pearl Earring</i>, Johannes Vermeer, c. 1665</sub>
     </td>
-  </tr>
-  <tr>
-    <td width="42%" valign="middle">
-      <h3>Type that sets beautifully.</h3>
+    <td width="50%" valign="top">
+      <img src="docs/images/photocraft-type.jpg" alt="Bierstadt's Among the Sierra Nevada with the headline SIERRA NEVADA being edited on the canvas in Georgia, a byline, and a paragraph caption; the Character and Paragraph controls are open" width="100%">
+      <br>
+      <sub>A headline edited in place, with a byline and a paragraph of body text.<br><i>Among the Sierra Nevada, California</i>, Albert Bierstadt, 1868</sub>
+      <h3>Type that sets beautifully</h3>
       Point and paragraph text, edited right on the canvas, with full Character and Paragraph controls: font, weight, size, leading, tracking, alignment and colour.
       <br><br>
       Type layers stay editable, take layer styles, and round-trip through PSD.
-      <br><br>
-      <sub><i>Among the Sierra Nevada, California</i>, Albert Bierstadt, 1868</sub>
     </td>
-    <td width="58%"><img src="docs/images/photocraft-type.jpg" alt="Point and paragraph type edited inline" width="100%"></td>
   </tr>
   <tr>
-    <td width="58%"><img src="docs/images/photocraft-vector.jpg" alt="Shape layers with gradient fills and dashed strokes" width="100%"></td>
-    <td width="42%" valign="middle">
-      <h3>Pixel-perfect vectors.</h3>
+    <td width="50%" valign="top">
+      <img src="docs/images/photocraft-vector.jpg" alt="A lotus badge built from shape layers (Lotus, Water, Sun, Badge and Dotted Ring) over Monet's Water Lilies, with the lotus path's anchor points selected" width="100%">
+      <br>
+      <sub>A badge made of shape layers: a gradient-filled lotus, a star and a dotted ring.<br><i>Water Lilies</i>, Claude Monet, 1906</sub>
+      <h3>Pixel-perfect vectors</h3>
       Rectangle, Ellipse, Triangle, Polygon, Line and the Pen tool, with resolution-independent shape layers, gradient fills, and dashed, aligned strokes.
       <br><br>
       Combine shapes (unite, subtract, intersect, exclude), keep paths in the Paths panel, use them as vector masks, or stroke and fill them. 116 of 116 shape layers in our PSD corpus match Photoshop's pixels.
-      <br><br>
-      <sub><i>Water Lilies</i>, Claude Monet, 1906</sub>
     </td>
-  </tr>
-  <tr>
-    <td width="42%" valign="middle">
-      <h3>See it before you commit.</h3>
+    <td width="50%" valign="top">
+      <img src="docs/images/photocraft-filters.jpg" alt="The Twirl filter dialog at a 320 degree angle, previewing live inside an elliptical selection on Van Gogh's The Starry Night" width="100%">
+      <br>
+      <sub>Twirl previews live on the canvas, only inside the selection.<br><i>The Starry Night</i>, Vincent van Gogh, 1889</sub>
+      <h3>See it before you commit</h3>
       Every filter dialog previews live on the canvas, through your selection. Blurs (Gaussian, Box, Motion, Radial, Surface, Smart, Lens, Shape, and the Blur Gallery: Tilt-Shift, Iris, Field, Spin, Path), sharpening, Reduce Noise, distortions (Twirl, Wave, Ripple, Displace, Shear, Zig Zag…), Pixelate, Stylize (Oil Paint, Wind, Extrude…), Render (Clouds, Fibers, Lens Flare, Lighting Effects) and more.
       <br><br>
       Run filters on a smart object and they stay editable: change, hide, reorder or mask them at any time.
       <br><br>
       Large-radius blurs use running-sum box passes across all cores: a radius-180 Gaussian on 3.6 MP takes under a second.
-      <br><br>
-      <sub><i>The Starry Night</i>, Vincent van Gogh, 1889</sub>
     </td>
-    <td width="58%"><img src="docs/images/photocraft-filters.jpg" alt="The Twirl filter previewed live on the canvas" width="100%"></td>
   </tr>
   <tr>
-    <td width="58%"><img src="docs/images/photocraft-transform.jpg" alt="Free Transform handles and the History panel" width="100%"></td>
-    <td width="42%" valign="middle">
-      <h3>Shape it any way you like.</h3>
+    <td width="50%" valign="top">
+      <img src="docs/images/photocraft-transform.jpg" alt="Free Transform handles around a rotated copy of Ansel Adams' The Tetons and the Snake River, with the History panel listing Open, Duplicate Layer, Free Transform and other steps" width="100%">
+      <br>
+      <sub>Free Transform on a rotated print, with every step listed in History.<br><i>The Tetons and the Snake River</i>, Ansel Adams, 1942</sub>
+      <h3>Shape it any way you like</h3>
       Free Transform with scale, rotate, skew, distort and perspective; exact 90° and 180° rotations and flips; Transform Again. Layers, type, shapes, masks and selections all transform together.
       <br><br>
       Full history, Toggle Last State and the History Brush mean every step can be undone, even one brush stroke at a time.
-      <br><br>
-      <sub><i>The Tetons and the Snake River</i>, Ansel Adams, 1942</sub>
     </td>
-  </tr>
-  <tr>
-    <td width="42%" valign="middle">
-      <h3>Ship it anywhere.</h3>
+    <td width="50%" valign="top">
+      <img src="docs/images/photocraft-export-light.jpg" alt="The Export As dialog in the light theme over Klimt's The Kiss: JPG at quality 90, scaled to 50 percent, with a preview and an estimated size of about 684K" width="100%">
+      <br>
+      <sub>Export As in the light theme, with a preview and a file-size estimate.<br><i>The Kiss</i>, Gustav Klimt, 1907–1908</sub>
+      <h3>Ship it anywhere</h3>
       Export As with format, quality, transparency and scale, plus a preview and an instant file-size estimate. Quick Export to PNG in one click.
       <br><br>
       Choose a dark Pro theme, the airy Studio themes, or a Classic look.
-      <br><br>
-      <sub><i>The Kiss</i>, Gustav Klimt, 1907–1908</sub>
     </td>
-    <td width="58%"><img src="docs/images/photocraft-export-light.jpg" alt="Export As in the light theme" width="100%"></td>
   </tr>
 </table>
 
@@ -237,41 +260,62 @@ New contributors and AI agents: start with [`AGENTS.md`](AGENTS.md), then [`docs
 
 Installers for macOS, Windows, Linux and the web are attached to each [GitHub release](https://github.com/storytold/photocraft/releases). Maintainers: [`docs/releasing.md`](docs/releasing.md) explains how releases are built, signed and published.
 
-> **Status:** PhotoCraft is in early alpha. The core editing workflow is here, and we're working toward full Photoshop parity milestone by milestone (see [`docs/roadmap.md`](docs/roadmap.md)). Progress is measured, not guessed: `cargo xtask parity` checks every item in Photoshop's menu tree against the live command registry and writes [`docs/parity.md`](docs/parity.md). Expect rough edges, and please file issues.
+> [!IMPORTANT]
+> **Status:** PhotoCraft is in early alpha. The core editing workflow is here, and we're working toward full Photoshop parity milestone by milestone (see [`docs/roadmap.md`](docs/roadmap.md)). Progress is measured, not guessed: `cargo xtask parity` checks every item in Photoshop's menu tree against the live command registry and writes [`docs/parity.md`](docs/parity.md). Expect rough edges, and please file issues. You can also tell us what broke on [Discord](https://discord.gg/artcraft).
 
-## Crafting Apps
+## The Crafting Apps
 
-Open-source, clean-room, pure-Rust creative apps that share the same conventions: native on macOS, Windows and Linux, in the browser via WebAssembly, and fully drivable by agents.
+PhotoCraft is one of the **Crafting Apps**: free, open-source creative tools from the
+[ArtCraft](https://getartcraft.com/) team, each written from scratch in Rust and each able to
+stand on its own.
 
-<table>
-  <tr>
-    <td width="20%" valign="top">
-      <h3><a href="https://github.com/storytold/photocraft">📷 PhotoCraft</a></h3>
-      Layered image editing and compositing: the Photoshop workflow.
-    </td>
-    <td width="20%" valign="top">
-      <h3><a href="https://github.com/storytold/drawcraft">✏️ DrawCraft</a></h3>
-      Vector illustration: the Illustrator workflow.
-    </td>
-    <td width="20%" valign="top">
-      <h3><a href="https://github.com/storytold/filmcraft">🎬 FilmCraft</a></h3>
-      Non-linear video editing: the Premiere Pro workflow.
-    </td>
-    <td width="20%" valign="top">
-      <h3><a href="https://github.com/storytold/lightcraft">🌄 LightCraft</a></h3>
-      Photo library and non-destructive raw developer: the Lightroom workflow.
-    </td>
-    <td width="20%" valign="top">
-      <h3><a href="https://github.com/storytold/printcraft">📄 PrintCraft</a></h3>
-      PDF viewing and editing: the Acrobat Pro workflow.
-    </td>
-  </tr>
-</table>
+| App | What it's for | Code | Learn more |
+|---|---|---|---|
+| <img src="https://img.shields.io/badge/PhotoCraft-2f7bf5?style=for-the-badge" alt="PhotoCraft" height="24"> | **Image editing: layers, masks, type and real PSD files · you are here** | [GitHub](https://github.com/storytold/photocraft) | [getartcraft.com](https://getartcraft.com/apps/photocraft) |
+| <img src="https://img.shields.io/badge/VectorCraft-e8573f?style=for-the-badge" alt="VectorCraft" height="24"> | Vector illustration (formerly DrawCraft) | [GitHub](https://github.com/storytold/vectorcraft) | [getartcraft.com](https://getartcraft.com/apps/drawcraft) |
+| <img src="https://img.shields.io/badge/FilmCraft-8b5cf6?style=for-the-badge" alt="FilmCraft" height="24"> | Video editing, color and sound | [GitHub](https://github.com/storytold/filmcraft) | [getartcraft.com](https://getartcraft.com/apps/filmcraft) |
+| <img src="https://img.shields.io/badge/LightCraft-f2a516?style=for-the-badge" alt="LightCraft" height="24"> | Photo library and raw development | [GitHub](https://github.com/storytold/lightcraft) | [getartcraft.com](https://getartcraft.com/apps/lightcraft) |
+| <img src="https://img.shields.io/badge/PrintCraft-12a58a?style=for-the-badge" alt="PrintCraft" height="24"> | Reading, organizing and protecting PDFs | [GitHub](https://github.com/storytold/printcraft) | [getartcraft.com](https://getartcraft.com/apps/printcraft) |
+| <img src="https://img.shields.io/badge/EffectCraft-e0368f?style=for-the-badge" alt="EffectCraft" height="24"> | Motion graphics and visual effects | [GitHub](https://github.com/storytold/effectcraft) | [getartcraft.com](https://getartcraft.com/apps/effectcraft) |
+| <img src="https://img.shields.io/badge/DesignCraft-7bb51c?style=for-the-badge" alt="DesignCraft" height="24"> | Page layout and publishing | [GitHub](https://github.com/storytold/designcraft) | [getartcraft.com](https://getartcraft.com/apps/designcraft) |
+
+And [**ArtCraft**](https://getartcraft.com/) itself, our AI image and video studio for artists who want real control.
+
+The Crafting Apps share the same conventions: clean-room and pure Rust, native on macOS, Windows and Linux, in the browser via WebAssembly, and fully drivable by agents.
+
+<br>
+
+<p align="center">
+  <a href="https://discord.gg/artcraft"><img alt="Join the ArtCraft community on Discord" src="https://img.shields.io/badge/Join%20us%20on%20Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" height="40"></a>
+</p>
+
+<h3 align="center">Come make things with us</h3>
+
+<p align="center">
+  Our Discord is where artists of every kind hang out: people who paint, shoot, draw, cut film,
+  set type, and people still figuring out what they like to make. Share what you're working on,
+  ask for help, tell us what's broken, or tell us what you wish these tools could do.
+  Whatever your medium and however long you've been at it, you're welcome here.
+</p>
+
+<p align="center">
+  <a href="https://discord.gg/artcraft"><b>discord.gg/artcraft</b></a> ·
+  <a href="https://getartcraft.com/">getartcraft.com</a> ·
+  <a href="https://getartcraft.com/apps">The Crafting Apps</a> ·
+  <a href="https://getartcraft.com/apps/photocraft">PhotoCraft</a>
+</p>
 
 ---
 
-<p align="center"><sub>
-  Built by the artcraft team. Licensed under MIT or Apache-2.0.<br>
-  Every artwork shown is in the public domain (Wikimedia Commons, NASA, U.S. National Archives); sources are listed in <a href="docs/images/SOURCES.md"><code>docs/images/SOURCES.md</code></a>.<br>
-  Photoshop is a trademark of Adobe Inc. PhotoCraft is an independent project, not affiliated with or endorsed by Adobe.
-</sub></p>
+## License and credits
+
+PhotoCraft is licensed under MIT or Apache-2.0.
+
+Every artwork shown is in the public domain (Wikimedia Commons, NASA, U.S. National Archives); sources are listed in [`docs/images/SOURCES.md`](docs/images/SOURCES.md).
+
+Photoshop is a trademark of Adobe Inc. PhotoCraft is an independent project, not affiliated with or endorsed by Adobe.
+
+<p align="center">
+  <a href="https://getartcraft.com/"><img alt="ArtCraft" src="docs/brand/artcraft-mark.svg" width="28"></a><br>
+  <sub>Made by the <a href="https://getartcraft.com/">ArtCraft</a> team and community.</sub>
+</p>
