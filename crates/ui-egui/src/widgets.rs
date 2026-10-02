@@ -111,7 +111,7 @@ pub fn pill_tab(ui: &mut Ui, label: &str, selected: bool) -> Response {
     resp
 }
 
-/// Monospace numeric field with a dimmed unit suffix, Photon/Photoshop style. Drag to scrub.
+/// Monospace numeric field with a dimmed unit suffix, Photoshop style. Drag to scrub.
 pub fn value_field(ui: &mut Ui, value: &mut f32, range: std::ops::RangeInclusive<f32>, suffix: &str, width: f32) -> Response {
     let t = Tokens::get(ui.ctx());
     let (rect, _) = ui.allocate_exact_size(vec2(width, 24.0), Sense::hover());
@@ -228,7 +228,7 @@ pub fn slider_row(ui: &mut Ui, label: &str, value: &mut f32, range: std::ops::Ra
     r
 }
 
-/// iOS/Photon-style toggle switch.
+/// iOS-style toggle switch.
 pub fn toggle(ui: &mut Ui, on: &mut bool, label: &str) -> Response {
     let t = Tokens::get(ui.ctx());
     if t.pro {
@@ -257,7 +257,7 @@ pub fn toggle(ui: &mut Ui, on: &mut bool, label: &str) -> Response {
     resp
 }
 
-/// Big white primary button (Photon "OK" style).
+/// Big white primary button.
 pub fn primary_button(ui: &mut Ui, label: &str, min_width: f32) -> Response {
     let t = Tokens::get(ui.ctx());
     button_impl(ui, label, min_width, t.primary_bg, t.primary_text, true)
@@ -336,7 +336,7 @@ pub fn hue_stops() -> Vec<Color32> {
         .collect()
 }
 
-/// A compact labelled dropdown with Photon styling.
+/// A compact labelled dropdown in the studio style.
 pub fn dropdown<T: PartialEq + Clone>(ui: &mut Ui, id: &str, current: &mut T, options: &[(T, &str)], width: f32) -> bool {
     let label = options.iter().find(|(v, _)| v == current).map(|(_, l)| *l).unwrap_or("—");
     let mut changed = false;

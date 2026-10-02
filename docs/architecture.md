@@ -13,7 +13,7 @@ This plan sets out:
 ## 1. Goals and principles
 
 **Goals**
-- A native, portable (macOS / Windows / Linux), fully open-source layered image editor, roughly matching Photon Studio's and Photoshop's feature surface over time.
+- A native, portable (macOS / Windows / Linux), fully open-source layered image editor, roughly matching Photoshop's feature surface over time.
 - **The UI can be swapped** without touching the core: egui today, maybe Slint, Qt or something else later.
 - **The core compiles to `wasm32`,** which keeps a browser demo possible.
 - PSD read and write lives in its **own crate that can be published separately.**
@@ -21,13 +21,13 @@ This plan sets out:
 **Principles**
 
 1. **Engine-first, headless-first.** Every feature is reachable without a GUI: from tests, the CLI and MCP. The GUI is one client of the engine.
-2. **Everything is a command.** Each user-visible action has a stable `CommandId` (such as `filter.blur.gaussian`) with typed, serializable parameters. The menu, command palette, shortcuts, recorded actions/macros, CLI, MCP and plugins all dispatch the same commands. Photon does this, and it is the single best architectural idea in that app. Its 720-item menu tree ([`photon-studio/06-menu-snapshot.md`](photon-studio/06-menu-snapshot.md)) is effectively our feature backlog.
+2. **Everything is a command.** Each user-visible action has a stable `CommandId` (such as `filter.blur.gaussian`) with typed, serializable parameters. The menu, command palette, shortcuts, recorded actions/macros, CLI, MCP and plugins all dispatch the same commands.
 3. **Data describes the UI; toolkits draw it.** Tools produce *overlay primitives* (lines, handles, marching-ants paths) as data. Filter and adjustment dialogs are generated from *parameter schemas*. A new toolkit implements one renderer for each, not about 150 bespoke dialogs.
-4. **One algorithm, one parameter struct.** Every algorithm has a CPU reference implementation (Rust + rayon, deterministic). Some also get a GPU implementation (WGSL). Both read the same `#[repr(C)]` `bytemuck::Pod` parameter struct. Photon keeps TypeScript, WASM, WGSL and C++ copies in sync by hand, and we will not repeat that.
+4. **One algorithm, one parameter struct.** Every algorithm has a CPU reference implementation (Rust + rayon, deterministic). Some also get a GPU implementation (WGSL). Both read the same `#[repr(C)]` `bytemuck::Pod` parameter struct. We never keep hand-synced copies of an algorithm in several languages.
 5. **Immutable snapshots, copy-on-write tiles.** Pixel data is stored in `Arc`-shared 256² tiles. Taking a document snapshot is O(layers), which makes undo, background jobs, autosave and UI reads cheap and lock-free.
 6. **Determinism.** The same input gives the same output across CPU and GPU (within tolerance), across thread counts, and between preview and export. Noise is hashed from document coordinates.
 7. **Pure Rust by default.** C/C++ dependencies are allowed only behind Cargo features, in I/O-edge crates (for example HEIF, or an optional LibRaw).
-8. **Clean-room with respect to Photon Studio.** Photon is proprietary freeware. We studied its *behaviour and architecture*, and we must **not copy its source** (Rust, WGSL, C++ or JS), even though parts of it ship as readable source. Specs come from public format docs (Adobe PSD spec, ISO/ICC), academic papers (PatchMatch, Poisson blending, ARAP) and observed behaviour. Contributors should not paste from the extracted bundle.
+8. **Clean-room.** We study other editors' *behaviour* only, and we must **not copy proprietary source** (Rust, WGSL, C++ or JS), even where it ships as readable source. Specs come from public format docs (Adobe PSD spec, ISO/ICC), academic papers (PatchMatch, Poisson blending, ARAP) and observed behaviour. Never paste code from another product.
 
 ### 1.1 Avoiding GIMP's hole
 
@@ -426,10 +426,10 @@ psd/src/
 - **`automation`:** an MCP server built on `rmcp`. It exposes:
   - `session.list`, `doc.open`, `doc.save`, `doc.export`, `doc.inspect` (layer tree as JSON), `doc.render_preview` (PNG).
   - `command.list` and `command.run(id, params)`, both generated from the registry.
-  - Stdio for agent CLIs, and optionally loopback TCP with a token so it can attach to a running GUI. Photon does exactly this with Claude Code, Codex and Cursor, and it's worth copying the idea.
+  - Stdio for agent CLIs, and optionally loopback TCP with a token so it can attach to a running GUI.
 - **Actions:** recorded `Vec<CommandInvocation>`, replayable in batch (File → Automate → Batch).
 - **Scripting (later):** embed a scripting language over the same registry. Options are Rhai, or Lua via mlua (C). JS via QuickJS is possible if we want Photoshop-script familiarity.
-- **Plugins (later):** a WASM component-model plugin API (wasmtime) for filters and panels. It is sandboxed and portable, and fits the command/schema model. Photoshop CEP/UXP/8BF compatibility (which Photon attempts) is explicitly out of scope for v1.
+- **Plugins (later):** a WASM component-model plugin API (wasmtime) for filters and panels. It is sandboxed and portable, and fits the command/schema model. Photoshop CEP/UXP/8BF compatibility is explicitly out of scope for v1.
 
 ---
 

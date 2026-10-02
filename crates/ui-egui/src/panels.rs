@@ -1454,14 +1454,14 @@ pub fn adjustment_values(a: &photocraft_doc::Adjustment) -> Value {
 
 /// Floating Properties card anchored to the canvas' top-right corner.
 pub fn properties_window(app: &mut PhotocraftApp, ctx: &egui::Context) {
-    // Pro (Photoshop) docks Properties; Studio (Photon) floats it over the canvas.
+    // Pro (Photoshop) docks Properties; Studio floats it over the canvas.
     if !app.ui.panels.properties || Tokens::get(ctx).pro {
         return;
     }
     let Some(st) = app.session.active() else { return };
     let Some(id) = st.active_layer else { return };
     let Some(layer) = st.doc.layer(id).cloned() else { return };
-    // Like Photon: the floating card appears for adjustment and fill layers (their controls live here).
+    // The floating card appears for adjustment and fill layers (their controls live here).
     if !matches!(layer.content, LayerContent::Adjustment(_) | LayerContent::Fill(_)) {
         return;
     }

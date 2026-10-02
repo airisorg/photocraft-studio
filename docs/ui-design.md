@@ -5,7 +5,7 @@
 | Theme | Intent |
 |---|---|
 | **Pro** (default) | Photoshop-style Spectrum dark: flat charcoal panels (#323232), dark tab strips, Spectrum blue accent (#378ef0), pill buttons, checkboxes, compact 12 px type |
-| Studio | Photon-style: near-black, rounded cards, pill tabs, violet accent, toggles |
+| Studio | Dark studio style: near-black, rounded cards, pill tabs, violet accent, toggles |
 | Studio Light | Studio on light surfaces |
 | Classic | Windows-2000 bevels, square corners, navy selection |
 
