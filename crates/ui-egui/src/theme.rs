@@ -14,10 +14,10 @@ use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ThemeKind {
-    /// Photoshop-style Spectrum dark: flat charcoal panels, tab strips, blue accents (default).
-    #[default]
+    /// Photoshop-style Spectrum dark: flat charcoal panels, tab strips, blue accents (darkest brightness).
     Pro,
-    /// Photoshop's default (second) interface brightness: #535353 panels, #282828 canvas.
+    /// Photoshop's default (second) interface brightness: #535353 panels, #282828 canvas (default).
+    #[default]
     ProMedium,
     Studio,
     StudioLight,
