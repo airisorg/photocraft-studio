@@ -125,3 +125,33 @@ How each MCP tool maps onto control methods in bridge mode:
 `doc_select` and `doc_close` work only in headless mode. The `ui_*` tools and `control_call` work only in bridge mode; in headless mode they return a tool error that explains how to start bridge mode.
 
 **Security note:** the control port has no authentication. Any local process can drive the app. Only enable `--control` when you need it. A token handshake is planned (architecture §12).
+
+## Headless server
+
+`photocraft-cli serve` keeps one headless engine session (no window, no GPU) and answers the same
+JSON-lines envelope on stdio, or on `127.0.0.1:<port>` with `--port <port>` (loopback only; each
+connection shares the session). It is the fastest way for a script or agent to make many edits:
+no MCP framing, no app start-up per command. Implementation: `crates/automation/src/rpc.rs`.
+
+| Method | Params |
+|---|---|
+| `engine.execute` | `{command, params?}`: any engine command |
+| `engine.commands` | `{filter?}`: registry with params docs and enablement |
+| `session.list` | open documents and the active index |
+| `doc.open` / `doc.new` | `{path}` / `file.new` params |
+| `doc.save` | `{path?, format?, quality?, index?}` (`.pcraft` native, else export by extension) |
+| `doc.inspect` | `{index?}`: same JSON as `document.inspect` |
+| `doc.render` | `{index?, maxSide? (1024; 0 = full), path?}`: PNG to `path`, else `{mime, base64}` |
+| `doc.select` / `doc.close` | `{index}` / `{index?}` |
+| `batch` | `{steps: [{command, params?} \| {method, params?}], stopOnError? (true)}` → `{completed, failed, results}` |
+| `methods` | the list above |
+
+```sh
+printf '%s\n' \
+  '{"id":1,"method":"doc.open","params":{"path":"/abs/in.jpg"}}' \
+  '{"id":2,"method":"batch","params":{"steps":[{"command":"image.adjustments.invert"},{"command":"filter.blur.gaussianBlur","params":{"radius":3}}]}}' \
+  '{"id":3,"method":"doc.save","params":{"path":"/abs/out.png"}}' | photocraft-cli serve
+```
+
+The MCP server has the same batching as the `command_batch` tool (`{steps:[{id, params}], stop_on_error}`),
+in headless and bridge mode.

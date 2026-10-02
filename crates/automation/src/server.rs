@@ -116,6 +116,15 @@ pub struct RunParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct BatchParams {
+    /// Commands to run in order: `[{"id": "layer.new.layer", "params": {"name": "Ink"}}, …]`.
+    pub steps: Vec<RunParams>,
+    /// Stop at the first failing step (default true).
+    #[serde(default)]
+    pub stop_on_error: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct PointerParams {
     /// Events in document coordinates: `[{"kind":"down|move|up","x":..,"y":..,"pressure":..}]`.
     pub events: Vec<Value>,
@@ -489,6 +498,44 @@ impl PhotocraftMcp {
             .await
     }
 
+    #[tool(
+        description = "Run several engine commands in one call (fewer round trips). Returns {completed, failed, \
+        results:[{ok, result|error}]}; stops at the first error unless stop_on_error is false."
+    )]
+    async fn command_batch(
+        &self,
+        Parameters(p): Parameters<BatchParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let stop = p.stop_on_error.unwrap_or(true);
+        let steps: Vec<Value> = p
+            .steps
+            .into_iter()
+            .map(|s| json!({"command": s.id, "params": s.params.unwrap_or_else(|| json!({}))}))
+            .collect();
+        let args = json!({"steps": steps, "stopOnError": stop});
+        if let Some(r) = self.headless_op(move |h| h.batch(&args)).await {
+            return to_result(r);
+        }
+        let b = self.bridge_client().expect("bridge");
+        let mut results = Vec::new();
+        let mut failed = 0;
+        for s in &steps {
+            match b.call("engine.execute", s.clone()).await {
+                Ok(v) => results.push(json!({"ok": true, "result": v})),
+                Err(e) => {
+                    failed += 1;
+                    results.push(json!({"ok": false, "error": e.to_string()}));
+                    if stop {
+                        break;
+                    }
+                }
+            }
+        }
+        Ok(ok_json(
+            &json!({"completed": results.len() - failed, "failed": failed, "results": results}),
+        ))
+    }
+
     // ----- live-GUI tools (bridge mode) -----
 
     #[tool(
@@ -615,7 +662,7 @@ impl PhotocraftMcp {
     }
 }
 
-#[tool_handler(router = self.tool_router, name = "photocraft", instructions = "Photocraft image editor. Every edit is an engine command: call `command_list` to discover ids and parameter docs, then `command_run`. Use `doc_open`/`doc_new` first, `doc_inspect` for the layer tree, `doc_render_preview` to see the result, and `doc_save` (.pcraft is lossless native; .psd/.png/.jpg/.tif… export). In bridge mode the `ui_*` tools drive the live app (inspect, screenshot, pointer, menus).")]
+#[tool_handler(router = self.tool_router, name = "photocraft", instructions = "Photocraft image editor. Every edit is an engine command: call `command_list` to discover ids and parameter docs, then `command_run` (or `command_batch` for several at once). Use `doc_open`/`doc_new` first, `doc_inspect` for the layer tree, `doc_render_preview` to see the result, and `doc_save` (.pcraft is lossless native; .psd/.png/.jpg/.tif… export). In bridge mode the `ui_*` tools drive the live app (inspect, screenshot, pointer, menus).")]
 impl ServerHandler for PhotocraftMcp {}
 
 /// Used by the render helper in tests and the CLI.

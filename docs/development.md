@@ -92,7 +92,7 @@ Tools:
 
 - `session_list`
 - `doc_open`, `doc_new`, `doc_save`, `doc_export`, `doc_inspect`, `doc_render_preview` (returns a PNG image), `doc_select`, `doc_close`
-- `command_list`, `command_run`
+- `command_list`, `command_run`, `command_batch` (several commands per call)
 - bridge only: `ui_inspect`, `ui_screenshot`, `ui_pointer`, `ui_menu_invoke`, `ui_set`, `control_call`
 
 Claude Code (`.mcp.json` in the repo root, or `claude mcp add`):
@@ -123,6 +123,9 @@ text, adjustment settings, channels and history, so agents can verify what they 
 screenshot. `crates/automation/tests/agent_tasks.rs` is the reference: ten realistic edit tasks
 (title card, colour grade, undo/redo, editable smart blur, masks, saved selections, align, layer
 export, resize/crop, CMYK + native save) driven purely over MCP.
+
+Without MCP, `photocraft-cli serve [--port N]` keeps a headless session open and answers JSON lines
+(see `docs/control-protocol.md#headless-server`).
 
 A typical agent loop:
 

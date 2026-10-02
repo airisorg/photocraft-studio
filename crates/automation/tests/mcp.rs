@@ -78,6 +78,7 @@ async fn lists_expected_tools() {
         "doc_close",
         "command_list",
         "command_run",
+        "command_batch",
         "ui_inspect",
         "ui_screenshot",
         "ui_pointer",
@@ -407,5 +408,29 @@ async fn bridge_reports_unreachable_app() {
     let r = call(&client, "ui_inspect", json!({})).await;
     assert_eq!(r.is_error, Some(true));
     assert!(text(&r).contains("--control"), "{}", text(&r));
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn command_batch_runs_steps_in_order() {
+    let client = connect(PhotocraftMcp::headless()).await;
+    json_of(&call(&client, "doc_new", json!({"width": 32, "height": 32})).await);
+    let r = json_of(
+        &call(
+            &client,
+            "command_batch",
+            json!({"steps": [
+                {"id": "layer.new.layer", "params": {"name": "One"}},
+                {"id": "layer.new.layer", "params": {"name": "Two"}},
+                {"id": "no.such.command"},
+                {"id": "layer.new.layer", "params": {"name": "Three"}}
+            ]}),
+        )
+        .await,
+    );
+    assert_eq!(r["completed"], 2);
+    assert_eq!(r["failed"], 1);
+    let doc = json_of(&call(&client, "doc_inspect", json!({})).await).to_string();
+    assert!(doc.contains("\"Two\"") && !doc.contains("\"Three\""));
     client.cancel().await.unwrap();
 }
