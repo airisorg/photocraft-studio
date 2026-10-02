@@ -45,6 +45,7 @@ pub const UI_COMMANDS: &[(&str, &str, &[&str], Option<&str>)] = &[
     ("window.toggle.options", "Options", &["Window"], None),
     ("window.theme.toggle", "Next Theme", &["Window"], None),
     ("window.theme.pro", "Pro Theme", &["Window", "Theme"], None),
+    ("window.theme.proMedium", "Pro Medium Gray Theme", &["Window", "Theme"], None),
     ("window.theme.studio", "Studio Theme", &["Window", "Theme"], None),
     ("window.theme.studioLight", "Studio Light Theme", &["Window", "Theme"], None),
     ("window.theme.classic", "Classic Theme", &["Window", "Theme"], None),
@@ -218,7 +219,7 @@ pub fn invoke(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, params: Va
             app.set_theme(ctx, next);
             Ok(Value::Null)
         }
-        "window.theme.pro" | "window.theme.studio" | "window.theme.studioLight" | "window.theme.classic" => {
+        "window.theme.pro" | "window.theme.proMedium" | "window.theme.studio" | "window.theme.studioLight" | "window.theme.classic" => {
             let k = crate::theme::ThemeKind::from_name(&id["window.theme.".len()..]).unwrap_or_default();
             app.set_theme(ctx, k);
             Ok(Value::Null)

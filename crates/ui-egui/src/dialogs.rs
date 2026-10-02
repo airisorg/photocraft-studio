@@ -76,10 +76,8 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
                         "Create"
                     } else if d.fields.contains_key("__export") {
                         "Export"
-                    } else if let Some(l) = crate::file_ui::ok_label(&d.fields) {
-                        l
                     } else {
-                        "OK"
+                        crate::file_ui::ok_label(&d.fields).unwrap_or("OK")
                     };
                     if crate::widgets::primary_button(ui, ok_label, 84.0).clicked() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                         outcome = Some(true);

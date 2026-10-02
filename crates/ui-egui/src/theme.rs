@@ -17,16 +17,19 @@ pub enum ThemeKind {
     /// Photoshop-style Spectrum dark: flat charcoal panels, tab strips, blue accents (default).
     #[default]
     Pro,
+    /// Photoshop's default (second) interface brightness: #535353 panels, #282828 canvas.
+    ProMedium,
     Studio,
     StudioLight,
     Classic,
 }
 
 impl ThemeKind {
-    pub const ALL: [ThemeKind; 4] = [ThemeKind::Pro, ThemeKind::Studio, ThemeKind::StudioLight, ThemeKind::Classic];
+    pub const ALL: [ThemeKind; 5] = [ThemeKind::Pro, ThemeKind::ProMedium, ThemeKind::Studio, ThemeKind::StudioLight, ThemeKind::Classic];
     pub fn label(self) -> &'static str {
         match self {
             ThemeKind::Pro => "Pro (Dark)",
+            ThemeKind::ProMedium => "Pro (Medium Gray)",
             ThemeKind::Studio => "Studio (Dark)",
             ThemeKind::StudioLight => "Studio (Light)",
             ThemeKind::Classic => "Classic",
@@ -39,6 +42,7 @@ impl ThemeKind {
     pub fn from_name(s: &str) -> Option<Self> {
         match s.to_ascii_lowercase().replace([' ', '_', '-', '(', ')'], "").as_str() {
             "pro" | "prodark" | "photoshop" | "dark" => Some(ThemeKind::Pro),
+            "promedium" | "promediumgray" | "medium" | "mediumgray" => Some(ThemeKind::ProMedium),
             "studio" | "studiodark" => Some(ThemeKind::Studio),
             "studiolight" | "light" => Some(ThemeKind::StudioLight),
             "classic" | "win2000" | "retro" => Some(ThemeKind::Classic),
@@ -97,6 +101,27 @@ pub struct Tokens {
 impl Tokens {
     pub fn for_kind(kind: ThemeKind) -> Self {
         match kind {
+            // Sampled from Photoshop 2026's default brightness (raw display values).
+            ThemeKind::ProMedium => Tokens {
+                kind,
+                chrome: Color32::from_rgb(83, 83, 83),
+                dock: Color32::from_rgb(66, 66, 66),
+                card: Color32::from_rgb(83, 83, 83),
+                card_border: Color32::from_rgb(66, 66, 66),
+                field: Color32::from_rgb(69, 69, 69),
+                field_border: Color32::from_rgb(104, 104, 104),
+                hover: Color32::from_rgb(98, 98, 98),
+                pressed: Color32::from_rgb(112, 112, 112),
+                text: Color32::from_rgb(238, 238, 238),
+                text_dim: Color32::from_rgb(212, 212, 212),
+                text_faint: Color32::from_rgb(160, 160, 160),
+                icon: Color32::from_rgb(226, 226, 226),
+                accent_soft: Color32::from_rgb(110, 110, 110),
+                separator: Color32::from_rgb(62, 62, 62),
+                tab_strip: Color32::from_rgb(74, 74, 74),
+                row_selected: Color32::from_rgb(107, 107, 107),
+                ..Tokens::for_kind(ThemeKind::Pro)
+            },
             ThemeKind::Pro => Tokens {
                 kind,
                 chrome: Color32::from_rgb(50, 50, 50),
@@ -242,7 +267,7 @@ impl Tokens {
     }
 
     pub fn dark(&self) -> bool {
-        matches!(self.kind, ThemeKind::Studio | ThemeKind::Pro)
+        matches!(self.kind, ThemeKind::Studio | ThemeKind::Pro | ThemeKind::ProMedium)
     }
 }
 
@@ -357,6 +382,9 @@ mod tests {
         assert_eq!(ThemeKind::from_name("studio (light)"), Some(ThemeKind::StudioLight));
         assert_eq!(ThemeKind::from_name("dark"), Some(ThemeKind::Pro));
         assert_eq!(ThemeKind::from_name("studio"), Some(ThemeKind::Studio));
+        assert_eq!(ThemeKind::from_name("Pro (Medium Gray)"), Some(ThemeKind::ProMedium));
+        let m = Tokens::for_kind(ThemeKind::ProMedium);
+        assert!(m.pro && m.dark() && m.kind == ThemeKind::ProMedium && m.card == Color32::from_rgb(83, 83, 83));
         assert_eq!(ThemeKind::from_name("neon"), None);
     }
 

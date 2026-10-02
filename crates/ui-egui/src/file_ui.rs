@@ -212,6 +212,8 @@ fn variants(p: &Value) -> Vec<Value> {
     out
 }
 
+/// The flattened preview image: pixels, width, height, full-size / proxy pixel ratio.
+type WebProxy = (Arc<Vec<[f32; 4]>>, u32, u32, f64);
 type WebCache = (String, Arc<egui::TextureHandle>, Option<(usize, Option<usize>, &'static str)>);
 
 /// Renders one preview pane: the original (`None`) or an optimised variant.
@@ -224,7 +226,7 @@ fn web_pane(app: &PhotocraftApp, ui: &mut egui::Ui, size: egui::Vec2, p: Option<
     let base = p.cloned().unwrap_or_else(|| json!({}));
     let size_sig = format!("{}|{}|{}", base["percent"], base["width"], base["height"]);
     let wkey = egui::Id::new(("web-proxy", doc.id.0, rev, size_sig.clone()));
-    let proxy: Option<(Arc<Vec<[f32; 4]>>, u32, u32, f64)> = ui.data(|d| d.get_temp(wkey));
+    let proxy: Option<WebProxy> = ui.data(|d| d.get_temp(wkey));
     let (px, w, h, ratio) = match proxy {
         Some(v) => v,
         None => {
@@ -464,7 +466,8 @@ fn print_body(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<String, Va
     let p = params(f);
     ui.horizontal_top(|ui| {
         // Page preview.
-        let (area, _) = ui.allocate_exact_size(egui::vec2(330.0, 420.0), egui::Sense::hover());
+        ui.vertical(|ui| {
+        let (area, _) = ui.allocate_exact_size(egui::vec2(330.0, 400.0), egui::Sense::hover());
         ui.painter().rect_filled(area, 0.0, t.canvas);
         match photocraft_engine::print_cmds::layout(&doc, &p, "file.print") {
             Ok(l) => {
@@ -498,12 +501,15 @@ fn print_body(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<String, Va
                         clip.circle_stroke(c, 3.5, mark);
                     }
                 }
-                ui.painter().text(area.left_bottom() + egui::vec2(6.0, -6.0), egui::Align2::LEFT_BOTTOM, format!("Scale {:.1}%", l.scale * 100.0), egui::FontId::proportional(11.0), t.text_dim);
+                let fits = x >= 0.0 && y >= 0.0 && x + w <= pw && y + h <= ph;
+                let note = if fits { String::new() } else { "  ·  larger than the paper".to_string() };
+                ui.label(egui::RichText::new(format!("Scale {:.1}%  ·  {:.2} × {:.2} in{note}", l.scale * 100.0, w / 72.0, h / 72.0)).color(if fits { t.text_dim } else { t.warning }).size(11.0));
             }
             Err(e) => {
                 ui.painter().text(area.center(), egui::Align2::CENTER_CENTER, e.to_string(), egui::FontId::proportional(12.0), t.text_dim);
             }
         }
+        });
         ui.add_space(12.0);
         ui.vertical(|ui| {
             ui.set_width(340.0);

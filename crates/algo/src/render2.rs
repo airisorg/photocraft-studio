@@ -36,16 +36,27 @@ pub struct Prim {
     pub c1: [f32; 4],
     /// Edge softness in pixels (≥ 1 for anti-aliasing; larger for glows).
     pub soft: f32,
-    /// Additive (glow) instead of normal blending.
-    pub add: bool,
+    pub blend: Blend,
+}
+
+/// How a primitive combines with what is under it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Blend {
+    /// Source over.
+    #[default]
+    Normal,
+    /// Additive light (glows).
+    Add,
+    /// Per-channel maximum of the premultiplied values (overlapping strands don't build up).
+    Lighten,
 }
 
 impl Prim {
     pub fn capsule(a: (f32, f32), b: (f32, f32), ra: f32, rb: f32, c0: [f32; 4], c1: [f32; 4]) -> Prim {
-        Prim { shape: Shape::Capsule { a, b, ra, rb }, c0, c1, soft: 1.0, add: false }
+        Prim { shape: Shape::Capsule { a, b, ra, rb }, c0, c1, soft: 1.0, blend: Blend::Normal }
     }
     pub fn ellipse(c: (f32, f32), rx: f32, ry: f32, angle: f32, c0: [f32; 4], c1: [f32; 4]) -> Prim {
-        Prim { shape: Shape::Ellipse { c, rx, ry, angle }, c0, c1, soft: 1.0, add: false }
+        Prim { shape: Shape::Ellipse { c, rx, ry, angle }, c0, c1, soft: 1.0, blend: Blend::Normal }
     }
     pub fn disc(c: (f32, f32), r: f32, col: [f32; 4]) -> Prim {
         Prim::ellipse(c, r, r, 0.0, col, col)
@@ -55,7 +66,11 @@ impl Prim {
         self
     }
     fn additive(mut self) -> Prim {
-        self.add = true;
+        self.blend = Blend::Add;
+        self
+    }
+    fn lighten(mut self) -> Prim {
+        self.blend = Blend::Lighten;
         self
     }
 
@@ -139,17 +154,26 @@ fn raster_tile(prims: &[Prim], idx: &[u32], t: Rect) -> Vec<[f32; 4]> {
                     continue;
                 }
                 let d = &mut buf[row + (x - t.x0) as usize];
-                if p.add {
-                    d[0] += c[0] * a;
-                    d[1] += c[1] * a;
-                    d[2] += c[2] * a;
-                    d[3] += a * (1.0 - d[3]);
-                } else {
-                    let k = 1.0 - a;
-                    d[0] = c[0] * a + d[0] * k;
-                    d[1] = c[1] * a + d[1] * k;
-                    d[2] = c[2] * a + d[2] * k;
-                    d[3] = a + d[3] * k;
+                match p.blend {
+                    Blend::Add => {
+                        d[0] += c[0] * a;
+                        d[1] += c[1] * a;
+                        d[2] += c[2] * a;
+                        d[3] += a * (1.0 - d[3]);
+                    }
+                    Blend::Lighten => {
+                        d[0] = d[0].max(c[0] * a);
+                        d[1] = d[1].max(c[1] * a);
+                        d[2] = d[2].max(c[2] * a);
+                        d[3] = d[3].max(a);
+                    }
+                    Blend::Normal => {
+                        let k = 1.0 - a;
+                        d[0] = c[0] * a + d[0] * k;
+                        d[1] = c[1] * a + d[1] * k;
+                        d[2] = c[2] * a + d[2] * k;
+                        d[3] = a + d[3] * k;
+                    }
                 }
             }
         }
@@ -506,42 +530,51 @@ fn draw_flame(out: &mut Vec<Prim>, spine: &Spine, width: f32, spec: &FlameSpec, 
     let opacity = spec.opacity.clamp(0.0, 100.0) / 100.0;
     let half = width.max(1.0) / 2.0;
     let seed = rng.next_u64();
-    // A soft additive glow behind the lines.
-    let ((mx, my), (tx, ty)) = spine.at(len * 0.4);
-    let glow_c = { let c = flame_colour(0.35, spec.color); [c[0], c[1], c[2], 0.35 * opacity] };
-    out.push(Prim::ellipse((mx, my), len * 0.55, half * 1.4 + 2.0, ty.atan2(tx), glow_c, [glow_c[0], glow_c[1] * 0.5, glow_c[2] * 0.3, 0.0]).with_soft((half * 0.8).max(2.0)).additive());
-    let line_r = (half / lines as f32 * 1.6).clamp(0.6, 6.0);
+    // The whole flame sways; each line adds its own flicker on top.
+    let sway = |u: f32| turb * half * 1.6 * fbm1(u * 1.7, seed ^ 0x5A5A) * u.powf(1.4);
+    // A soft additive body glow along the spine.
+    for k in 0..6 {
+        let u = k as f32 / 6.0 * 0.75 + 0.05;
+        let ((px, py), (dx, dy)) = spine.at(u * len);
+        let o = sway(u);
+        let c = flame_colour(u, spec.color);
+        let r = half * (1.25 - u) + 2.0;
+        out.push(Prim::ellipse((px - dy * o, py + dx * o), r, r * 1.2, dy.atan2(dx), [c[0], c[1], c[2], 0.16 * opacity], [c[0], c[1] * 0.6, c[2] * 0.3, 0.0]).with_soft(r.max(2.0)).additive());
+    }
+    let line_r = (half / lines as f32 * 2.2).clamp(0.8, 10.0);
     for li in 0..lines {
         let lane = if lines == 1 { 0.0 } else { li as f32 / (lines - 1) as f32 * 2.0 - 1.0 };
         let lseed = seed ^ (li as u64).wrapping_mul(0x51_7CC1_B727_220A);
         let start = (spec.flame_bottom_alignment.clamp(0.0, 100.0) / 100.0) * rng.f() * 0.4;
         // Outer lines are shorter, giving the flame its tongue shape.
-        let reach = (1.0 - 0.45 * lane.abs().powi(2)) * rng.range(0.75, 1.0);
+        let reach = (1.0 - 0.55 * lane.abs().powf(1.5)) * rng.range(0.7, 1.0);
         let end = (start + reach * (1.0 - start)).clamp(start + 0.05, 1.0);
-        let mut prev: Option<((f32, f32), f32)> = None;
+        let lr = line_r * rng.range(0.6, 1.3);
+        let mut prev: Option<((f32, f32), f32, f32)> = None;
         for k in 0..=segs {
             let u = start + (end - start) * k as f32 / segs as f32;
             let s = u * len;
             let ((px, py), (dx, dy)) = spine.at(s);
             let (nx, ny) = (-dy, dx);
             let spread = match shape {
-                FlameShape::Parallel => 1.0,
+                FlameShape::Parallel => 1.0 - 0.6 * u,
                 FlameShape::ToCenter => 1.0 - u,
                 FlameShape::Spread => 1.0 + u,
                 FlameShape::Oval => (std::f32::consts::PI * (0.15 + 0.85 * u)).sin() * 1.3,
                 FlameShape::Pointed => (1.0 - u).powi(2),
             };
-            let wob = turb * half * 1.2 * fbm1(s / (len * 0.25 + 8.0) + li as f32 * 0.37, lseed) * u.sqrt() + jag * half * 0.35 * noise1(s / 6.0, lseed ^ 0x77) * u;
-            let off = lane * half * spread + wob;
+            let flick = turb * half * 0.5 * fbm1(s / (len * 0.2 + 6.0) + li as f32 * 0.37, lseed) * u + jag * half * 0.25 * noise1(s / 5.0, lseed ^ 0x77) * u;
+            let off = lane * half * spread + sway(u) + flick;
             let p = (px + nx * off, py + ny * off);
-            let r = line_r * (1.0 - u * 0.8);
-            if let Some((q, rq)) = prev {
-                let c0 = flame_colour((u - (end - start) / segs as f32).max(0.0), spec.color);
-                let c1 = flame_colour(u, spec.color);
-                let fade = |c: [f32; 4]| [c[0], c[1], c[2], c[3] * opacity * 0.9];
-                out.push(Prim::capsule(q, p, rq, r, fade(c0), fade(c1)).with_soft(1.0 + line_r * 0.6).additive());
+            let r = lr * (1.0 - u * 0.75);
+            // Lines fade out towards their own tip.
+            let fade_t = ((u - start) / (end - start).max(1e-3)).clamp(0.0, 1.0);
+            if let Some((q, rq, uq)) = prev {
+                // Fade in over the first tenth (a soft base) and out towards the line's tip.
+                let f = |c: [f32; 4], uu: f32, t: f32| [c[0], c[1], c[2], c[3] * opacity * (1.0 - t.powi(3)) * ((uu - start) / 0.08).clamp(0.0, 1.0).sqrt()];
+                out.push(Prim::capsule(q, p, rq, r, f(flame_colour(uq, spec.color), uq, fade_t), f(flame_colour(u, spec.color), u, fade_t)).with_soft(1.0 + lr * 0.6).lighten());
             }
-            prev = Some((p, r));
+            prev = Some((p, r, u));
         }
     }
 }
@@ -813,9 +846,16 @@ impl TreeCtx<'_> {
             Leaf::Long => Prim::ellipse(p, s * 1.6, s * 0.28, ang, shade(col, k * 1.1), shade(col, k * 0.8)),
             Leaf::Heart => Prim::ellipse(p, s * 0.9, s * 1.1, ang, shade(col, k * 1.1), shade(col, k * 0.75)),
             Leaf::Needle => {
-                let (sa, ca) = ang.sin_cos();
-                let q = (p.0 + ca * s * 1.4, p.1 + sa * s * 1.4);
-                Prim::capsule(p, q, (s * 0.12).max(0.5), (s * 0.06).max(0.3), shade(col, k * 0.9), shade(col, k * 1.1))
+                // A tuft of needles fanning out from the twig.
+                let n = 7;
+                for j in 0..n {
+                    let a = ang + (j as f32 / (n - 1) as f32 - 0.5) * 2.4 + self.rng.sym() * 0.15;
+                    let l = s * self.rng.range(1.1, 1.7);
+                    let q = (p.0 + a.cos() * l, p.1 + a.sin() * l);
+                    let kk = k + 0.1 * self.rng.sym();
+                    self.leaves.push((kk, Prim::capsule(p, q, (s * 0.1).max(0.45), (s * 0.05).max(0.3), shade(col, kk * 0.85), shade(col, kk * 1.1))));
+                }
+                return;
             }
             Leaf::Blossom => Prim::ellipse(p, s * 0.75, s * 0.75, 0.0, shade(col, k * 1.08), shade(col, k * 0.85)),
             Leaf::Frond => Prim::ellipse(p, s * 1.6, s * 0.3, ang, shade(col, k), shade(col, k * 0.8)),
@@ -1158,7 +1198,7 @@ pub fn picture_frame(spec: &FrameSpec, canvas: Rect) -> Vec<Prim> {
     let short = (canvas.width().min(canvas.height()) as f32).max(8.0);
     let margin = short * spec.margin.clamp(0.0, 30.0) / 100.0;
     let unit = short * (0.008 + spec.size.clamp(1.0, 100.0) / 100.0 * 0.05);
-    let thick = (unit * 0.08 + short * 0.0006 * spec.thickness.clamp(1.0, 100.0)).max(0.6);
+    let thick = (unit * 0.04 + short * 0.00012 * spec.thickness.clamp(1.0, 100.0)).max(0.6);
     let spacing = unit * (4.0 - 3.2 * spec.arrangement.clamp(1.0, 100.0) / 100.0);
     let inset = margin + unit;
     let b = Border { x0: canvas.x0 as f32 + inset, y0: canvas.y0 as f32 + inset, w: (canvas.width() as f32 - 2.0 * inset).max(1.0), h: (canvas.height() as f32 - 2.0 * inset).max(1.0) };

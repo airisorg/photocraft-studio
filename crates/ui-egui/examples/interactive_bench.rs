@@ -3,7 +3,7 @@
 //! save .pcraft / .psd, export PNG / JPEG, plus the canvas refresh each edit triggers.
 //!
 //! ```sh
-//! cargo run --release -p photocraft-ui-egui --example interactive_bench -- [--size 7360x4912] [--reps 5] [--json out.json]
+//! cargo run --release -p photocraft-ui-egui --example interactive_bench -- [--size 7360x4912] [--reps 5] [--json out.json] [--only text] [--cpu]
 //! ```
 //!
 //! Every edit goes through `Session::execute` (the command path the UI, CLI and MCP share:
@@ -76,6 +76,9 @@ fn photo(w: u32, h: u32) -> photocraft_codecs::Image {
 struct Bench {
     gpu: Option<Gpu>,
     reps: usize,
+    /// `--only text`: time only rows whose name contains it (others run once, untimed, for the
+    /// state later rows need).
+    only: Option<String>,
     rows: Vec<(String, f64, f64, f64, f64)>,
 }
 
@@ -85,7 +88,7 @@ impl Bench {
     fn refresh(&mut self, s: &Session, full: bool) -> f64 {
         let st = s.active().expect("document");
         let doc = st.doc.clone();
-        let region = if full { doc.bounds() } else { st.last_damage.map_or(doc.bounds(), |r| r.inflate(photocraft_compose::effects::margin_all(&doc.layers)).intersect(&doc.bounds())) };
+        let region = if full { doc.bounds() } else { st.last_damage.map_or(doc.bounds(), |r| r.inflate(reach(&doc.layers)).intersect(&doc.bounds())) };
         if region.is_empty() {
             return 0.0;
         }
@@ -106,6 +109,10 @@ impl Bench {
 
     /// Times `f` (`reps` runs after a cold one); `f` returns its own breakdown-free total in ms.
     fn time(&mut self, name: &str, mut f: impl FnMut(&mut Self) -> f64) {
+        if self.only.as_ref().is_some_and(|o| !name.contains(o.as_str())) {
+            f(self);
+            return;
+        }
         let cold = f(self);
         let mut v: Vec<f64> = (0..self.reps).map(|_| f(self)).collect();
         v.sort_by(f64::total_cmp);
@@ -113,6 +120,27 @@ impl Bench {
         println!("{name:<44} {med:>9.1} ms   (min {:>8.1}, max {:>8.1}, cold {:>8.1})", v[0], v[v.len() - 1], cold);
         self.rows.push((name.to_string(), med, v[0], v[v.len() - 1], cold));
     }
+}
+
+/// How far an edit's composite change reaches beyond its damage (layer effects).
+fn reach(layers: &[photocraft_doc::Layer]) -> i32 {
+    layers
+        .iter()
+        .map(|l| {
+            let own = if photocraft_compose::effects::has_effects(l) { photocraft_compose::effects::margin(l) } else { 0 };
+            let kids = match &l.content {
+                photocraft_doc::LayerContent::Group(g) => reach(&g.children),
+                _ => 0,
+            };
+            own + kids
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+fn select(s: &mut Session, index: usize) {
+    let id = s.active().expect("doc").doc.layers[index].id;
+    exec(s, "layer.select", json!({"layer": id.0}));
 }
 
 fn ms(t: Instant) -> f64 {
@@ -129,7 +157,7 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let (w, h) = arg(&args, "--size").and_then(|s| s.split_once('x').map(|(a, b)| (a.parse().unwrap_or(7360), b.parse().unwrap_or(4912)))).unwrap_or((7360, 4912));
     let reps: usize = arg(&args, "--reps").and_then(|v| v.parse().ok()).unwrap_or(5).max(1);
-    let mut b = Bench { gpu: if args.iter().any(|a| a == "--cpu") { None } else { gpu() }, reps, rows: Vec::new() };
+    let mut b = Bench { gpu: if args.iter().any(|a| a == "--cpu") { None } else { gpu() }, reps, only: arg(&args, "--only"), rows: Vec::new() };
     println!("document {w}×{h} ({:.1} MP), 8-bit RGB, {} reps, {}", (w * h) as f64 / 1e6, reps, if b.gpu.is_some() { "GPU canvas" } else { "CPU canvas" });
 
     // ---- open / save / export ----------------------------------------------------------------
@@ -185,7 +213,7 @@ fn main() {
     });
 
     // ---- filters / adjustments / layers ------------------------------------------------------
-    exec(&mut s, "layer.select", json!({"index": 0})).to_owned();
+    select(&mut s, 0);
     for radius in [4.0, 40.0] {
         b.time(&format!("Gaussian Blur r {radius} (photo layer) + refresh"), |b| {
             let t = Instant::now();
@@ -204,7 +232,7 @@ fn main() {
         exec(&mut s, "layer.setAdjustment", json!({"gamma": g}));
         ms(t) + b.refresh(&s, false)
     });
-    exec(&mut s, "layer.select", json!({"index": 1}));
+    select(&mut s, 1);
     let mut d = 1;
     b.time("move paint layer 10 px + refresh", |b| {
         d = -d;

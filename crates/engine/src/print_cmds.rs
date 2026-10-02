@@ -137,7 +137,8 @@ pub fn print_pdf(page: &PrintPage) -> Vec<u8> {
     obj(&mut out, b"<< /Type /Catalog /Pages 2 0 R >>");
     obj(&mut out, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
     obj(&mut out, format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {pw:.2} {ph:.2}] /Resources << /XObject << /Im0 5 0 R >> /Font << /F1 6 0 R >> >> /Contents 4 0 R >>").as_bytes());
-    let mut content = format!("q {w:.3} 0 0 {h:.3} {x:.3} {y:.3} cm /Im0 Do Q\n");
+    // An explicit white page, so every viewer (and rasteriser) shows paper, not transparency.
+    let mut content = format!("q 1 g 0 0 {pw:.2} {ph:.2} re f Q\nq {w:.3} 0 0 {h:.3} {x:.3} {y:.3} cm /Im0 Do Q\n");
     content.push_str(&marks_ops(page.marks, page.rect));
     let any_marks = page.marks.corner_crop || page.marks.center_crop || page.marks.registration;
     let pad = if any_marks { 30.0 } else { 6.0 };
@@ -302,7 +303,7 @@ fn do_print(s: &mut Session, p: &Value, cmd: &str) -> Result<Value> {
         }
     };
     write_file(&pdf_path, &pdf)?;
-    let copies = p.get("copies").and_then(Value::as_u64).unwrap_or(1).clamp(1, 999);
+    let copies = crate::commands::int(p, "copies").unwrap_or(1).clamp(1, 999);
     let mut argv: Vec<String> = vec!["lp".into()];
     if let Some(pr) = p.get("printer").and_then(Value::as_str).filter(|v| !v.is_empty()) {
         argv.extend(["-d".into(), pr.to_string()]);

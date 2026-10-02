@@ -152,7 +152,7 @@ fn apply_options(sl: &mut Slice, p: &Value, cmd: &str) -> Result<()> {
         sl.cell_text_is_html = b;
     }
     for (k, slot) in [("horizontalAlign", &mut sl.horizontal_align), ("verticalAlign", &mut sl.vertical_align)] {
-        if let Some(v) = p.get(k).and_then(Value::as_u64) {
+        if let Some(v) = crate::commands::int(p, k).filter(|v| *v >= 0).map(|v| v as u64) {
             *slot = v.min(4) as u32;
         }
     }
@@ -180,11 +180,11 @@ fn apply_options(sl: &mut Slice, p: &Value, cmd: &str) -> Result<()> {
 /// The stored slice addressed by `"slice"` (id) or `"number"`; an auto slice's number promotes
 /// it to a user slice first when `promote` is set.
 fn target(s: &mut Session, p: &Value, cmd: &str, promote: bool) -> Result<u32> {
-    if let Some(id) = p.get("slice").and_then(Value::as_u64) {
+    if let Some(id) = crate::commands::int(p, "slice").filter(|v| *v >= 0).map(|v| v as u64) {
         let d = s.active().ok_or(EngineError::NoDocument)?;
         return d.doc.slices.get(id as u32).map(|sl| sl.id).ok_or_else(|| bad(cmd, format!("no slice with id {id}")));
     }
-    let n = p.get("number").and_then(Value::as_u64).ok_or_else(|| bad(cmd, "give \"slice\" (id) or \"number\""))? as usize;
+    let n = crate::commands::int(p, "number").filter(|v| *v > 0).ok_or_else(|| bad(cmd, "give \"slice\" (id) or \"number\""))? as usize;
     let d = s.active().ok_or(EngineError::NoDocument)?;
     let r = slices::resolve(&d.doc).into_iter().find(|r| r.number == n).ok_or_else(|| bad(cmd, format!("no slice number {n}")))?;
     match r.id {
@@ -344,8 +344,8 @@ fn delete(s: &mut Session, p: &Value) -> Result<Value> {
 fn divide(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "slice.divide";
     let id = target(s, p, cmd, true)?;
-    let down = p.get("horizontal").and_then(Value::as_u64).unwrap_or(1).clamp(1, 1000) as i32;
-    let across = p.get("vertical").and_then(Value::as_u64).unwrap_or(1).clamp(1, 1000) as i32;
+    let down = crate::commands::int(p, "horizontal").unwrap_or(1).clamp(1, 1000) as i32;
+    let across = crate::commands::int(p, "vertical").unwrap_or(1).clamp(1, 1000) as i32;
     if down == 1 && across == 1 {
         return Err(bad(cmd, "give \"horizontal\" (slices down) and/or \"vertical\" (slices across) > 1"));
     }

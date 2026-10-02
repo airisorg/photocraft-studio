@@ -453,13 +453,26 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                     widgets::checkbox(ui, &mut dither, "Dither");
                 }
                 Tool::Crop if t.pro => {
-                    let mut ratio = 0u8;
-                    widgets::dropdown(ui, "crop-ratio", &mut ratio, &[(0u8, "Ratio"), (1, "1 : 1 (Square)"), (2, "4 : 5 (8 : 10)"), (3, "16 : 9"), (4, "Original Ratio")], 120.0);
+                    let o = &mut app.ui.tool_options;
+                    let ratios: Vec<(String, &str)> = crate::chrome_ui::CROP_RATIOS.iter().map(|(k, l)| (k.to_string(), *l)).collect();
+                    widgets::dropdown(ui, "crop-ratio", &mut o.crop_ratio, &ratios, 120.0);
+                    // Custom ratio fields (Photoshop shows the preset's numbers here).
+                    let (mut rw, mut rh) = crate::chrome_ui::crop_ratio(&o.crop_ratio, 0.0, 0.0).map_or((0.0, 0.0), |(w, h)| (w as f32, h as f32));
+                    let cw = widgets::value_field(ui, &mut rw, 0.0..=99_999.0, "", 54.0).changed();
+                    let swap = icons::button(ui, "arrow-left-right", 22.0, false, "Swaps height and width").clicked();
+                    let ch = widgets::value_field(ui, &mut rh, 0.0..=99_999.0, "", 54.0).changed();
+                    if swap {
+                        std::mem::swap(&mut rw, &mut rh);
+                    }
+                    if (cw || ch || swap) && rw > 0.0 && rh > 0.0 {
+                        o.crop_ratio = format!("{}:{}", widgets::fmt_num(rw as f64), widgets::fmt_num(rh as f64));
+                    }
                     widgets::vline(ui, 22.0);
-                    let _ = widgets::secondary_button(ui, "Clear", 0.0);
+                    if widgets::secondary_button(ui, "Clear", 0.0).clicked() {
+                        o.crop_ratio.clear();
+                    }
                     let _ = icons::button(ui, "grid-3x3", 24.0, true, "Overlay: Rule of Thirds");
-                    let mut del = true;
-                    widgets::checkbox(ui, &mut del, "Delete Cropped Pixels");
+                    widgets::checkbox(ui, &mut o.crop_delete, "Delete Cropped Pixels");
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if icons::button(ui, "check", 26.0, false, "Commit current crop operation  (↵)").clicked() {
                             crate::canvas::commit_crop(app);

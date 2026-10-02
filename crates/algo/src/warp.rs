@@ -92,9 +92,10 @@ pub fn warp_triangles(src: &Surface, src_rect: Rect, verts: &[([f64; 2], [f64; 2
     // Triangles: (vertex indices), binned per destination tile.
     let tiles: Vec<Rect> = dst.tiles().map(|tc| tc.rect().intersect(&dst)).filter(|r| !r.is_empty()).collect();
     let mut bins: Vec<Vec<[usize; 3]>> = vec![Vec::new(); tiles.len()];
-    let tx0 = tiles.iter().map(|t| t.x0).min().unwrap_or(0);
-    let ty0 = tiles.iter().map(|t| t.y0).min().unwrap_or(0);
     let ts = photocraft_geom::TILE_SIZE;
+    // Bin origin on the tile grid (the first tile is clipped to `dst`, so its x0/y0 may not be).
+    let tx0 = tiles.iter().map(|t| t.x0).min().unwrap_or(0).div_euclid(ts) * ts;
+    let ty0 = tiles.iter().map(|t| t.y0).min().unwrap_or(0).div_euclid(ts) * ts;
     let cols = tiles.iter().map(|t| (t.x0 - tx0) / ts).max().unwrap_or(0) as usize + 1;
     let grid_of = |t: &Rect| ((t.y0 - ty0) / ts) as usize * cols + ((t.x0 - tx0) / ts) as usize;
     let mut lookup = vec![usize::MAX; cols * (tiles.iter().map(|t| (t.y0 - ty0) / ts).max().unwrap_or(0) as usize + 1)];

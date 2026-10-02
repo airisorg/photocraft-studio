@@ -64,6 +64,7 @@ pub fn pasteboard_color(app: &PhotocraftApp) -> Option<Color32> {
 fn theme_kind(t: Theme) -> ThemeKind {
     match t {
         Theme::Pro => ThemeKind::Pro,
+        Theme::ProMedium => ThemeKind::ProMedium,
         Theme::Studio => ThemeKind::Studio,
         Theme::StudioLight => ThemeKind::StudioLight,
         Theme::Classic => ThemeKind::Classic,
@@ -73,6 +74,7 @@ fn theme_kind(t: Theme) -> ThemeKind {
 fn theme_pref(k: ThemeKind) -> Theme {
     match k {
         ThemeKind::Pro => Theme::Pro,
+        ThemeKind::ProMedium => Theme::ProMedium,
         ThemeKind::Studio => Theme::Studio,
         ThemeKind::StudioLight => Theme::StudioLight,
         ThemeKind::Classic => Theme::Classic,

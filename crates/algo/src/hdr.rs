@@ -276,8 +276,7 @@ pub fn merge(w: usize, h: usize, imgs: &[&[[f32; 4]]], opts: &MergeOptions) -> M
     let mut ghost_fraction = 0.0;
     if opts.remove_ghosts && p > 1 {
         // Weighted variance of per-exposure log radiance (luminance).
-        let score: Vec<f32> = (0..w * h)
-            .map(|i| {
+        let score: Vec<f32> = crate::photo_util::par_map(w * h, |i| {
                 let (mut s, mut s2, mut sw) = (0.0f64, 0.0f64, 0.0f64);
                 for j in 0..p {
                     let q = imgs[j][i];
@@ -296,8 +295,7 @@ pub fn merge(w: usize, h: usize, imgs: &[&[[f32; 4]]], opts: &MergeOptions) -> M
                 }
                 let m = s / sw;
                 ((s2 / sw - m * m).max(0.0)).sqrt() as f32
-            })
-            .collect();
+        });
         for i in 0..w * h {
             ghost[i] = if score[i] > 0.35 { 1.0 } else { 0.0 };
         }
@@ -323,7 +321,7 @@ pub fn merge(w: usize, h: usize, imgs: &[&[[f32; 4]]], opts: &MergeOptions) -> M
     // Scale per channel so the base exposure's well-exposed pixels map to their linear values.
     for c in 0..3 {
         let mut r: Vec<f64> = (0..w * h)
-            .step_by(5)
+            .step_by(37)
             .filter_map(|i| {
                 let v = imgs[base][i][c];
                 ((0.15..0.85).contains(&v) && px[i][c] > 0.0).then(|| srgb_to_linear(v) as f64 / (px[i][c] as f64 * opts.exposures[base]))
@@ -335,7 +333,7 @@ pub fn merge(w: usize, h: usize, imgs: &[&[[f32; 4]]], opts: &MergeOptions) -> M
             q[c] = (q[c] as f64 * k) as f32;
         }
     }
-    let mut l: Vec<f32> = px.iter().filter(|q| q[3] > 0.0).map(|q| luma(*q).max(1e-9)).collect();
+    let mut l: Vec<f32> = px.iter().step_by(13).filter(|q| q[3] > 0.0).map(|q| luma(*q).max(1e-9)).collect();
     l.sort_by(f32::total_cmp);
     let stops = if l.is_empty() { 0.0 } else { (l[(l.len() as f64 * 0.999) as usize % l.len()] as f64 / l[l.len() / 100] as f64).log2() };
     Merged { px, response, ghost_base: base, ghost_fraction, stops }

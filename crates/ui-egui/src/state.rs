@@ -324,6 +324,16 @@ pub struct ToolOptions {
     pub move_target: String,
     #[serde(default)]
     pub move_show_transform: bool,
+    /// Crop options bar: aspect ratio ("" = Ratio/unconstrained, "w:h", or "original") and
+    /// Delete Cropped Pixels.
+    #[serde(default)]
+    pub crop_ratio: String,
+    #[serde(default = "yes")]
+    pub crop_delete: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 fn default_move_target() -> String {
@@ -378,6 +388,8 @@ impl Default for ToolOptions {
             move_auto_select: false,
             move_target: default_move_target(),
             move_show_transform: false,
+            crop_ratio: String::new(),
+            crop_delete: true,
         }
     }
 }

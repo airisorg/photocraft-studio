@@ -145,7 +145,7 @@ impl WebSettings {
                 k => PaletteKind::from_id(k).ok_or_else(|| bad(cmd, format!("unknown palette `{k}` (perceptual|selective|adaptive|restrictive|exact|systemMac|systemWindows|uniform)")))?,
             };
         }
-        if let Some(n) = p.get("colors").and_then(Value::as_u64) {
+        if let Some(n) = crate::commands::int(p, "colors").filter(|v| *v > 0).map(|v| v as u64) {
             st.colors = (n as usize).clamp(2, 256);
         }
         if let Some(d) = s("dither") {

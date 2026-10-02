@@ -172,6 +172,18 @@ pub fn marquee_end(style: &str, w: f64, h: f64, shift: bool, start: [f64; 2], en
     }
 }
 
+/// Crop options bar ratio presets: (key, label).
+pub const CROP_RATIOS: &[(&str, &str)] = &[("", "Ratio"), ("original", "Original Ratio"), ("1:1", "1 : 1 (Square)"), ("4:5", "4 : 5 (8 : 10)"), ("5:7", "5 : 7"), ("2:3", "2 : 3 (4 : 6)"), ("16:9", "16 : 9")];
+
+/// Width/height of a crop ratio key (`original` uses the document size).
+pub fn crop_ratio(key: &str, doc_w: f64, doc_h: f64) -> Option<(f64, f64)> {
+    if key == "original" {
+        return Some((doc_w, doc_h));
+    }
+    let (a, b) = key.split_once(':')?;
+    Some((a.trim().parse().ok()?, b.trim().parse().ok()?))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -217,6 +229,15 @@ mod tests {
         assert_eq!(marquee_end("normal", 1.0, 1.0, true, [10.0, 10.0], [40.0, 20.0]), [40.0, 40.0]);
         assert_eq!(marquee_end("fixedSize", 64.0, 32.0, false, [10.0, 10.0], [5.0, 50.0]), [-54.0, 42.0]);
         assert_eq!(marquee_end("fixedRatio", 2.0, 1.0, false, [0.0, 0.0], [10.0, 30.0]), [60.0, 30.0]);
+    }
+
+    #[test]
+    fn crop_ratios_parse() {
+        assert_eq!(crop_ratio("16:9", 1.0, 1.0), Some((16.0, 9.0)));
+        assert_eq!(crop_ratio("original", 2400.0, 1500.0), Some((2400.0, 1500.0)));
+        assert_eq!(crop_ratio("", 1.0, 1.0), None);
+        let (w, h) = crop_ratio("1:1", 0.0, 0.0).unwrap();
+        assert_eq!(marquee_end("fixedRatio", w, h, false, [0.0, 0.0], [50.0, 20.0]), [50.0, 50.0]);
     }
 
     #[test]

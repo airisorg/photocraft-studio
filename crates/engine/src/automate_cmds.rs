@@ -169,7 +169,7 @@ fn script_events(s: &mut Session, p: &Value) -> Result<Value> {
     if p.get("removeAll").and_then(Value::as_bool) == Some(true) {
         ev.bindings.clear();
     }
-    if let Some(i) = p.get("remove").and_then(Value::as_u64) {
+    if let Some(i) = crate::commands::int(p, "remove").filter(|v| *v >= 0) {
         if (i as usize) >= ev.bindings.len() {
             return Err(bad(cmd, format!("no binding {i}")));
         }
@@ -412,7 +412,7 @@ fn contact_sheet(s: &mut Session, p: &Value) -> Result<Value> {
     let font_pt = f("fontSize", 12.0);
     let flatten = p.get("flatten").and_then(Value::as_bool).unwrap_or(false);
     let mode = p.get("mode").and_then(Value::as_str).unwrap_or("rgb").to_string();
-    let depth = p.get("depth").and_then(Value::as_u64).unwrap_or(8);
+    let depth = crate::commands::int(p, "depth").unwrap_or(8);
     let caption_px = if caption { font_pt * res / 72.0 * 1.5 } else { 0.0 };
     let cell_w = ((f64::from(pw) - f64::from(cols + 1) * hs) / f64::from(cols)).max(1.0);
     let cell_h = ((f64::from(ph) - f64::from(rows + 1) * vs) / f64::from(rows)).max(1.0);

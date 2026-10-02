@@ -1118,6 +1118,9 @@ fn draw_drag_preview(app: &PhotocraftApp, painter: &egui::Painter, xf: &ViewXfor
         let o = &app.ui.tool_options;
         last = crate::chrome_ui::marquee_end(&o.marquee_style, o.marquee_width as f64, o.marquee_height as f64, false, d.start, last);
     }
+    if d.tool == Tool::Crop {
+        last = crop_end(app, d.start, last);
+    }
     match d.tool {
         Tool::Brush | Tool::Eraser => {
             let c = if d.tool == Tool::Eraser { [1.0, 1.0, 1.0, 0.6] } else { app.session.tools.foreground };
@@ -1376,6 +1379,7 @@ fn finish_gesture(app: &mut PhotocraftApp, d: Drag) {
             }
         }
         Tool::Crop => {
+            let end = crop_end(app, d.start, [end[0], end[1]]);
             let r = [d.start[0].min(end[0]), d.start[1].min(end[1]), d.start[0].max(end[0]), d.start[1].max(end[1])];
             if r[2] - r[0] >= 2.0 && r[3] - r[1] >= 2.0 {
                 app.ui.crop_rect = Some(r);
@@ -1443,11 +1447,21 @@ pub fn commit_polygon(app: &mut PhotocraftApp, mods: egui::Modifiers) {
 }
 
 /// Apply the crop tool's rectangle.
+/// Crop drag end under the options-bar aspect ratio.
+fn crop_end(app: &PhotocraftApp, start: [f64; 2], end: [f64; 2]) -> [f64; 2] {
+    let size = app.session.active().map_or((1.0, 1.0), |s| (s.doc.size.width as f64, s.doc.size.height as f64));
+    match crate::chrome_ui::crop_ratio(&app.ui.tool_options.crop_ratio, size.0, size.1) {
+        Some((w, h)) => crate::chrome_ui::marquee_end("fixedRatio", w, h, false, start, end),
+        None => end,
+    }
+}
+
 pub fn commit_crop(app: &mut PhotocraftApp) {
     let Some(r) = app.ui.crop_rect.take() else { return };
     let (x, y) = (r[0].round(), r[1].round());
     let (w, h) = ((r[2] - r[0]).round().max(1.0), (r[3] - r[1]).round().max(1.0));
-    if app.run("image.crop", json!({"x": x, "y": y, "width": w, "height": h})).is_ok()
+    let delete = app.ui.tool_options.crop_delete;
+    if app.run("image.crop", json!({"x": x, "y": y, "width": w, "height": h, "deleteCroppedPixels": delete})).is_ok()
         && let Some(i) = app.session.active_index()
     {
         app.ui.views[i].fit_pending = true;

@@ -184,46 +184,55 @@ fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
-/// Box mean of a single-channel buffer (radius `r`, edge clamped) — parallel over rows/columns.
+/// Box mean of a single-channel buffer (radius `r`, edge clamped): rows in parallel, then
+/// columns in parallel bands with running column sums (cache-friendly, no transposes).
 fn box_mean(v: &[f32], w: usize, h: usize, r: usize) -> Vec<f32> {
-    if r == 0 {
+    if r == 0 || w == 0 || h == 0 {
         return v.to_vec();
     }
+    let n = (2 * r + 1) as f64;
     let mut tmp = vec![0.0f32; w * h];
     par_rows(&mut tmp, w, 1, |y, row| {
         let src = &v[y * w..(y + 1) * w];
         let at = |k: i64| src[k.clamp(0, w as i64 - 1) as usize] as f64;
         let mut acc: f64 = (-(r as i64)..=r as i64).map(at).sum();
-        let n = (2 * r + 1) as f64;
         for (x, o) in row.iter_mut().enumerate() {
             *o = (acc / n) as f32;
             acc += at(x as i64 + r as i64 + 1) - at(x as i64 - r as i64);
         }
     });
-    // Columns via a transpose so rows stay contiguous.
-    let mut t = vec![0.0f32; w * h];
-    for y in 0..h {
-        for x in 0..w {
-            t[x * h + y] = tmp[y * w + x];
+    const BAND: usize = 256;
+    let bands = crate::photo_util::par_map(w.div_ceil(BAND), |b| {
+        let (x0, x1) = (b * BAND, ((b + 1) * BAND).min(w));
+        let bw = x1 - x0;
+        let row = |y: i64| &tmp[y.clamp(0, h as i64 - 1) as usize * w + x0..y.clamp(0, h as i64 - 1) as usize * w + x1];
+        let mut acc = vec![0.0f64; bw];
+        for y in -(r as i64)..=r as i64 {
+            for (a, v) in acc.iter_mut().zip(row(y)) {
+                *a += *v as f64;
+            }
         }
-    }
-    let mut t2 = vec![0.0f32; w * h];
-    par_rows(&mut t2, h, 1, |x, row| {
-        let src = &t[x * h..(x + 1) * h];
-        let at = |k: i64| src[k.clamp(0, h as i64 - 1) as usize] as f64;
-        let mut acc: f64 = (-(r as i64)..=r as i64).map(at).sum();
-        let n = (2 * r + 1) as f64;
-        for (y, o) in row.iter_mut().enumerate() {
-            *o = (acc / n) as f32;
-            acc += at(y as i64 + r as i64 + 1) - at(y as i64 - r as i64);
+        let mut out = vec![0.0f32; bw * h];
+        for y in 0..h {
+            for (o, a) in out[y * bw..(y + 1) * bw].iter_mut().zip(&acc) {
+                *o = (*a / n) as f32;
+            }
+            let (add, sub) = (row(y as i64 + r as i64 + 1), row(y as i64 - r as i64));
+            for ((a, p), m) in acc.iter_mut().zip(add).zip(sub) {
+                *a += (*p - *m) as f64;
+            }
         }
+        out
     });
-    for y in 0..h {
-        for x in 0..w {
-            tmp[y * w + x] = t2[x * h + y];
+    let mut out = vec![0.0f32; w * h];
+    for (b, band) in bands.iter().enumerate() {
+        let (x0, x1) = (b * BAND, ((b + 1) * BAND).min(w));
+        let bw = x1 - x0;
+        for y in 0..h {
+            out[y * w + x0..y * w + x1].copy_from_slice(&band[y * bw..(y + 1) * bw]);
         }
     }
-    tmp
+    out
 }
 
 /// Approximate Gaussian (three box passes).
@@ -235,6 +244,52 @@ fn gauss(v: &[f32], w: usize, h: usize, sigma: f32) -> Vec<f32> {
     for r in crate::fxutil::gauss_box_radii(sigma) {
         out = box_mean(&out, w, h, r);
     }
+    out
+}
+
+/// Fast guided filter (K. He, J. Sun, *Fast Guided Filter*, arXiv 2015): the linear
+/// coefficients are computed on a `s×` subsampled copy and upsampled bilinearly, which is
+/// visually equivalent for the large radii used by tone controls at a fraction of the cost.
+fn guided_fast(i: &[f32], p: &[f32], w: usize, h: usize, r: usize, eps: f32) -> Vec<f32> {
+    let s = (r / 8).clamp(1, 8);
+    if s == 1 {
+        return guided(i, p, w, h, r, eps);
+    }
+    let (sw, sh) = (w.div_ceil(s), h.div_ceil(s));
+    let down = |v: &[f32]| -> Vec<f32> {
+        let mut o = vec![0.0f32; sw * sh];
+        let mut c = vec![0.0f32; sw * sh];
+        for y in 0..h {
+            for x in 0..w {
+                let k = (y / s) * sw + x / s;
+                o[k] += v[y * w + x];
+                c[k] += 1.0;
+            }
+        }
+        o.iter().zip(&c).map(|(a, b)| a / b.max(1.0)).collect()
+    };
+    let (si, sp) = (down(i), down(p));
+    let rs = (r / s).max(1);
+    let mi = box_mean(&si, sw, sh, rs);
+    let mp = box_mean(&sp, sw, sh, rs);
+    let ip: Vec<f32> = si.iter().zip(&sp).map(|(a, b)| a * b).collect();
+    let ii: Vec<f32> = si.iter().map(|a| a * a).collect();
+    let mip = box_mean(&ip, sw, sh, rs);
+    let mii = box_mean(&ii, sw, sh, rs);
+    let a: Vec<f32> = (0..sw * sh).map(|k| (mip[k] - mi[k] * mp[k]) / (mii[k] - mi[k] * mi[k] + eps)).collect();
+    let b: Vec<f32> = (0..sw * sh).map(|k| mp[k] - a[k] * mi[k]).collect();
+    let (ma, mb) = (box_mean(&a, sw, sh, rs), box_mean(&b, sw, sh, rs));
+    let mut out = vec![0.0f32; w * h];
+    let sf = s as f32;
+    par_rows(&mut out, w, 1, |y, row| {
+        let fy = (y as f32 + 0.5) / sf - 0.5;
+        for (x, o) in row.iter_mut().enumerate() {
+            let fx = (x as f32 + 0.5) / sf - 0.5;
+            let av = crate::photo_util::bilinear(&ma, sw, sh, 1, 0, fx, fy);
+            let bv = crate::photo_util::bilinear(&mb, sw, sh, 1, 0, fx, fy);
+            *o = av * i[y * w + x] + bv;
+        }
+    });
     out
 }
 
@@ -453,11 +508,11 @@ pub fn develop(px: &mut [[f32; 4]], w: usize, h: usize, p: &CameraRaw, float: bo
         let lc: Vec<f32> = l.iter().map(|v| v.min(1.0)).collect();
         let base = if p.highlights != 0.0 || p.shadows != 0.0 {
             let r = ((long * 0.015) as usize).max(2);
-            Some(guided(&lc, &lc, w, h, r, 0.02))
+            Some(guided_fast(&lc, &lc, w, h, r, 0.02))
         } else {
             None
         };
-        let clar = (p.clarity != 0.0).then(|| guided(&lc, &lc, w, h, ((long * 0.02) as usize).max(3), 0.005));
+        let clar = (p.clarity != 0.0).then(|| guided_fast(&lc, &lc, w, h, ((long * 0.02) as usize).max(3), 0.005));
         let tex = (p.texture != 0.0).then(|| gauss(&lc, w, h, (long * 0.002).max(1.5 * ps)));
         let k_con = p.contrast / 100.0 * 0.6;
         let tau = std::f32::consts::TAU;
@@ -723,14 +778,12 @@ fn detail(px: &mut [[f32; 4]], w: usize, h: usize, p: &CameraRaw, ps: f32) {
         let mask: Option<Vec<f32>> = (p.sharpen_masking > 0.0).then(|| {
             let s = gauss(&y, w, h, 1.0 * ps.max(0.5));
             let t = p.sharpen_masking / 100.0 * 0.08;
-            (0..w * h)
-                .map(|i| {
+            crate::photo_util::par_map(w * h, |i| {
                     let (x, yy) = (i % w, i / w);
                     let gx = s[yy * w + (x + 1).min(w - 1)] - s[yy * w + x.saturating_sub(1)];
                     let gy = s[(yy + 1).min(h - 1) * w + x] - s[yy.saturating_sub(1) * w + x];
                     smoothstep(t * 0.5, t + 1e-4, gx.hypot(gy))
                 })
-                .collect()
         });
         let amt = p.sharpen_amount / 100.0 * 1.2;
         let det = p.sharpen_detail / 100.0;

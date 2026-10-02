@@ -31,3 +31,6 @@ rayon = { workspace = true }
 egui_kittest = { workspace = true, features = ["wgpu", "snapshot", "eframe"] }
 # Only for examples/snapshot.rs (offscreen UI renders of real files).
 photocraft-io = { workspace = true }
+# Only for examples/interactive_bench.rs (JPEG encode, .pcraft saves).
+photocraft-codecs = { workspace = true }
+photocraft-format = { workspace = true }
