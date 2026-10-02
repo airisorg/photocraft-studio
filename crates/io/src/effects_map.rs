@@ -6,7 +6,7 @@
 use photocraft_color::{BlendMode, Color};
 use photocraft_doc::adjust::CurvePoint;
 use photocraft_doc::{
-    Bevel, BevelStyle, BevelTechnique, Contour, Effect, FxCommon, FxPaint, Glow, GlowSource, GlowTechnique, Gradient, Satin, Shadow,
+    Bevel, BevelContour, BevelStyle, BevelTechnique, BevelTexture, Contour, Effect, FxCommon, FxPaint, Glow, GlowSource, GlowTechnique, Gradient, Satin, Shadow,
     StrokeFx, StrokePosition,
 };
 use photocraft_psd::descriptor::{Descriptor, Id, UnicodeString, Value, VersionedDescriptor};
@@ -210,6 +210,12 @@ fn parse_bevel(d: &Descriptor) -> Bevel {
         highlight_color: get_desc(d, "hglC").and_then(color_from_desc).unwrap_or(Color::WHITE),
         shadow: FxCommon { enabled: true, blend: blend_of(d, "sdwM", BlendMode::Multiply), opacity: pct(d, "sdwO", 0.75) },
         shadow_color: color(d, "sdwC"),
+        contour: bool_of(d, "useShape").then(|| BevelContour { contour: contour(d, "MpgS"), range: pct(d, "Inpr", 0.5), anti_alias: bool_of(d, "AntA") }),
+        texture: bool_of(d, "useTexture").then(|| {
+            let (name, id) = pattern_ref(d);
+            let (_, link, phase) = pattern_placement(d);
+            BevelTexture { name, id, scale: pct(d, "Scl ", 1.0), depth: pct(d, "textureDepth", 1.0), invert: bool_of(d, "InvT"), link, phase }
+        }),
     }
 }
 
@@ -446,6 +452,23 @@ fn write_one(e: &Effect) -> (&'static str, Descriptor) {
                 .with("bvlD", Value::Enumerated { type_id: Id::new("BESs"), value: Id::new(if b.up { "In  " } else { "Out " }) })
                 .with("TrnS", contour_value(&b.gloss_contour))
                 .with("Sftn", unit(b"#Pxl", b.soften));
+            let d = match &b.contour {
+                Some(c) => d.with("useShape", Value::Boolean(true)).with("MpgS", contour_value(&c.contour)).with("AntA", Value::Boolean(c.anti_alias)).with("Inpr", unit(b"#Prc", c.range * 100.0)),
+                None => d.with("useShape", Value::Boolean(false)),
+            };
+            let d = match &b.texture {
+                Some(t) => with_pattern_placement(
+                    d.with("useTexture", Value::Boolean(true))
+                        .with("InvT", Value::Boolean(t.invert))
+                        .with("Scl ", unit(b"#Prc", t.scale * 100.0))
+                        .with("textureDepth", unit(b"#Prc", t.depth * 100.0))
+                        .with("Ptrn", Value::Descriptor(pattern_ref_desc(&t.name, &t.id))),
+                    0.0,
+                    t.link,
+                    t.phase,
+                ),
+                None => d.with("useTexture", Value::Boolean(false)),
+            };
             ("ebbl", d)
         }
     }
@@ -622,6 +645,8 @@ mod tests {
                 highlight_color: Color::WHITE,
                 shadow: FxCommon::new(BlendMode::Multiply, 0.6),
                 shadow_color: Color::BLACK,
+                contour: Some(BevelContour { contour: Contour::Linear, range: 0.7, anti_alias: true }),
+                texture: Some(BevelTexture { name: "Bubbles".into(), id: "abc".into(), scale: 0.5, depth: -2.0, invert: true, link: false, phase: (3.0, 1.0) }),
             }),
         ]
     }

@@ -217,3 +217,43 @@ fn web_settings_from_params() {
         assert_eq!(WebSettings::from_params(&st.to_params(), "x").unwrap(), st, "{p} round-trips through params");
     }
 }
+
+#[test]
+fn previews_show_the_optimised_pixels() {
+    let s = session(8);
+    let doc = s.active().unwrap().doc.clone();
+    let (wd, _, _) = web_document(&doc, &json!({}), &WebSettings::default()).unwrap();
+    let buf = photocraft_compose::flatten(&wd);
+    for f in ["jpeg", "gif", "png8", "png24", "wbmp"] {
+        let st = WebSettings::from_params(&json!({"format": f, "quality": 90, "transparency": false}), "x").unwrap();
+        let o = optimize(&buf.px, 64, wd.bounds(), &st, None, None, 72.0, true).unwrap();
+        assert_eq!(o.preview.len(), 64 * 48 * 4, "{f}");
+        // Red square centre stays red (WBMP: dark).
+        let i = (16 * 64 + 16) * 4;
+        let px = &o.preview[i..i + 4];
+        if f == "wbmp" {
+            assert_eq!(px[0], 0);
+        } else {
+            assert!(px[0] > 200 && px[1] < 60 && px[2] < 60, "{f}: {px:?}");
+        }
+        let none = optimize(&buf.px, 64, wd.bounds(), &st, None, None, 72.0, false).unwrap();
+        assert!(none.preview.is_empty());
+        assert_eq!(none.bytes, o.bytes);
+    }
+}
+
+#[test]
+fn jpeg_preview_at_odd_sizes() {
+    for (w, h, q) in [(640usize, 431usize, 90), (640, 430, 60), (333, 222, 30)] {
+        let px: Vec<[f32; 4]> = (0..w * h).map(|i| [((i % w) as f32 / w as f32), 0.3, ((i / w) as f32 / h as f32), 1.0]).collect();
+        let st = WebSettings::from_params(&json!({"format": "jpeg", "quality": q}), "x").unwrap();
+        let o = optimize(&px, w, Rect::new(0, 0, w as i32, h as i32), &st, None, None, 72.0, true).unwrap();
+        for &(x, y) in &[(10usize, 10usize), (w - 10, h / 2), (w / 2, h - 5)] {
+            let i = (y * w + x) * 4;
+            let want = [(x as f32 / w as f32 * 255.0) as i32, 76, (y as f32 / h as f32 * 255.0) as i32];
+            for c in 0..3 {
+                assert!((i32::from(o.preview[i + c]) - want[c]).abs() < 12, "{w}x{h} at {x},{y}: {:?} vs {want:?}", &o.preview[i..i + 4]);
+            }
+        }
+    }
+}

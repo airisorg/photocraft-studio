@@ -359,8 +359,13 @@ fn lut_at(l: &[f32], v: f32) -> f32 {
 /// coverage `v` through `contour(min(v / range, 1))`, so the default 50 % doubles a blurred
 /// edge's 0.5 to full strength). `None` = identity.
 pub fn glow_lut(g: &Glow) -> Option<Vec<f32>> {
-    let base = contour_lut(&g.contour);
-    let range = if g.range.is_finite() { g.range.clamp(0.01, 1.0) } else { 1.0 };
+    ranged_lut(&g.contour, g.range)
+}
+
+/// A contour applied over a Range (`contour(min(v / range, 1))`); `None` = identity.
+pub fn ranged_lut(contour: &Contour, range: f32) -> Option<Vec<f32>> {
+    let base = contour_lut(contour);
+    let range = if range.is_finite() { range.clamp(0.01, 1.0) } else { 1.0 };
     if range >= 0.999 {
         return base;
     }
@@ -686,7 +691,7 @@ pub fn bevel_geom(b: &Bevel) -> BevelGeom {
 /// Bevel height map in `0..=1`. Smooth: the shape blurred by two box passes of the bevel
 /// width. Chisel: linear ramps of the exact distance to the edge (size wide; emboss styles
 /// straddle the edge), slightly blurred for Chisel Soft. Soften blurs the result.
-fn bevel_height(shape: &Map, b: &Bevel, g: &BevelGeom) -> Map {
+fn bevel_height(shape: &Map, b: &Bevel, g: &BevelGeom, tex: &TextureCtx) -> Map {
     let size = b.size.max(1.0);
     let mut h = if b.technique == BevelTechnique::Smooth {
         let mut h = shape.clone();
@@ -703,10 +708,40 @@ fn bevel_height(shape: &Map, b: &Bevel, g: &BevelGeom) -> Map {
         }
         h
     };
+    // Contour element: the height profile through the contour over its range.
+    if let Some(c) = &b.contour {
+        h = apply_lut(h, Some(ranged_lut(&c.contour, c.range).unwrap_or_else(|| (0..4096).map(|k| k as f32 / 4095.0).collect())));
+    }
+    // Texture element: the pattern's luminance as extra height, scaled so a full-contrast step
+    // at 100 % depth slopes like the bevel at its depth.
+    if let Some(t) = &b.texture
+        && let Some(tile) = photocraft_doc::pattern::find(tex.patterns, &t.id, &t.name).and_then(Tile::new)
+    {
+        let unit = if b.depth.abs() > 1e-6 { (g.depth / b.depth).abs().max(1e-3) } else { g.width.max(1.0) };
+        let place = Placement::anchored(tex.anchor, t.link, t.phase, t.scale, 0.0);
+        let k = t.depth / unit;
+        let (x0, y0) = (tex.rect.x0, tex.rect.y0);
+        for y in 0..h.h {
+            for x in 0..h.w {
+                let (u, v) = place.map(f64::from(x0 + x as i32) + 0.5, f64::from(y0 + y as i32) + 0.5);
+                let p = tile.sample(u, v);
+                let l = (0.299 * p[0] + 0.587 * p[1] + 0.114 * p[2]) * p[3];
+                h.v[y * h.w + x] += k * if t.invert { 1.0 - l } else { l };
+            }
+        }
+    }
     if b.soften >= 1.0 {
         tent(&mut h, b.soften);
     }
     h
+}
+
+/// Where a bevel texture tiles: the maps' rectangle, the document's patterns and the linked
+/// origin (the effects reference point, else the layer's top-left).
+pub struct TextureCtx<'a> {
+    pub rect: Rect,
+    pub patterns: &'a [Pattern],
+    pub anchor: (f64, f64),
 }
 
 /// Chiselled height from the inside / outside distances (keep in sync with `fs_mbevelh`).
@@ -726,9 +761,9 @@ pub fn bevel_chisel_h(paint: BevelPaint, size: f32, din: f32, dout: f32) -> f32 
 
 /// Bevel highlight and shadow maps: `[hi, sh]` (inner or outer) or `[hi, sh, hi_out, sh_out]`
 /// (emboss styles).
-fn bevel_maps(shape: &Map, b: &Bevel, light: &GlobalLight) -> (Vec<Map>, BevelPaint) {
+fn bevel_maps(shape: &Map, b: &Bevel, light: &GlobalLight, tex: &TextureCtx) -> (Vec<Map>, BevelPaint) {
     let g = bevel_geom(b);
-    let hmap = bevel_height(shape, b, &g);
+    let hmap = bevel_height(shape, b, &g, tex);
     let (angle, altitude) = if b.use_global_light { (light.angle, light.altitude) } else { (b.angle, b.altitude) };
     let (sa, ca) = angle.to_radians().sin_cos();
     let (se, ce) = altitude.to_radians().sin_cos();
@@ -833,7 +868,7 @@ fn satin_map(shape: &Map, s: &photocraft_doc::effects::Satin) -> Map {
 }
 
 /// Build every effect map for `layer` from its alpha `shape` over `rect`.
-pub fn build_maps(layer: &Layer, shape: Vec<f32>, rect: Rect, light: &GlobalLight) -> FxMaps {
+pub fn build_maps(layer: &Layer, shape: Vec<f32>, rect: Rect, light: &GlobalLight, tex: &TextureCtx) -> FxMaps {
     let (w, h) = (rect.width() as usize, rect.height() as usize);
     let shape = Map { w, h, v: shape };
     let items: Vec<&Effect> = layer.effects.items.iter().filter(|e| e.enabled()).collect();
@@ -848,7 +883,7 @@ pub fn build_maps(layer: &Layer, shape: Vec<f32>, rect: Rect, light: &GlobalLigh
             Effect::InnerGlow(g) => vec![glow_map(&shape, g, true)],
             Effect::Satin(s) => vec![satin_map(&shape, s)],
             Effect::BevelEmboss(b) => {
-                let (maps, paint) = bevel_maps(&shape, b, light);
+                let (maps, paint) = bevel_maps(&shape, b, light, tex);
                 bevel_paint[i] = paint;
                 maps
             }
@@ -1211,6 +1246,10 @@ mod tests {
         assert_eq!(tent_kernel(1.0), (0, vec![1.0]));
     }
 
+    fn no_tex() -> TextureCtx<'static> {
+        TextureCtx { rect: Rect::new(0, 0, 1, 1), patterns: &[], anchor: (0.0, 0.0) }
+    }
+
     fn square(n: usize, x0: usize, x1: usize) -> Map {
         let mut m = Map::new(n, n, 0.0);
         for y in x0..x1 {
@@ -1238,13 +1277,15 @@ mod tests {
             highlight_color: photocraft_color::Color::WHITE,
             shadow: photocraft_doc::FxCommon::new(BlendMode::Multiply, 0.75),
             shadow_color: photocraft_color::Color::BLACK,
+            contour: None,
+            texture: None,
         }
     }
 
     #[test]
     fn smooth_inner_bevel_lights_the_top_edge_inside_only() {
         let shape = square(40, 10, 30);
-        let (maps, paint) = bevel_maps(&shape, &bevel_of(BevelStyle::InnerBevel, BevelTechnique::Smooth), &GlobalLight::default());
+        let (maps, paint) = bevel_maps(&shape, &bevel_of(BevelStyle::InnerBevel, BevelTechnique::Smooth), &GlobalLight::default(), &no_tex());
         assert_eq!(paint, BevelPaint::Inner);
         let at = |m: &Map, x: usize, y: usize| m.v[y * 40 + x];
         // Light from the top: highlight along the top edge, shadow along the bottom, flat middle.
@@ -1260,22 +1301,49 @@ mod tests {
     fn emboss_paints_both_sides_and_pillow_flips_the_outside() {
         let shape = square(40, 10, 30);
         let l = GlobalLight::default();
-        let (e, paint) = bevel_maps(&shape, &bevel_of(BevelStyle::Emboss, BevelTechnique::Smooth), &l);
+        let (e, paint) = bevel_maps(&shape, &bevel_of(BevelStyle::Emboss, BevelTechnique::Smooth), &l, &no_tex());
         assert_eq!((paint, e.len()), (BevelPaint::Both, 4));
         let at = |m: &Map, x: usize, y: usize| m.v[y * 40 + x];
         // Emboss: the slope across the top edge faces the light on both sides.
         assert!(at(&e[0], 20, 10) > 0.3 && at(&e[2], 20, 9) > 0.3);
-        let (p, _) = bevel_maps(&shape, &bevel_of(BevelStyle::PillowEmboss, BevelTechnique::Smooth), &l);
+        let (p, _) = bevel_maps(&shape, &bevel_of(BevelStyle::PillowEmboss, BevelTechnique::Smooth), &l, &no_tex());
         assert!(at(&p[0], 20, 10) > 0.3 && at(&p[3], 20, 9) > 0.3, "pillow: outside top edge in shadow");
     }
 
     #[test]
     fn chisel_hard_has_flat_facets() {
         let shape = square(48, 10, 38);
-        let (m, _) = bevel_maps(&shape, &bevel_of(BevelStyle::InnerBevel, BevelTechnique::ChiselHard), &GlobalLight::default());
+        let (m, _) = bevel_maps(&shape, &bevel_of(BevelStyle::InnerBevel, BevelTechnique::ChiselHard), &GlobalLight::default(), &no_tex());
         let at = |x: usize, y: usize| m[0].v[y * 48 + x];
         // A constant slope: equal highlight along the top facet.
         assert!(at(24, 12) > 0.1 && (at(24, 12) - at(24, 13)).abs() < 1e-3);
+    }
+
+    #[test]
+    fn bevel_contour_and_texture_shape_the_height() {
+        let shape = square(40, 6, 34);
+        let l = GlobalLight::default();
+        let plain = bevel_of(BevelStyle::InnerBevel, BevelTechnique::Smooth);
+        let (a, _) = bevel_maps(&shape, &plain, &l, &no_tex());
+        // A contour reshapes the profile (here a ramp folded at its middle).
+        let mut c = plain.clone();
+        let fold = vec![photocraft_doc::adjust::CurvePoint { input: 0.0, output: 0.0 }, photocraft_doc::adjust::CurvePoint { input: 0.5, output: 1.0 }, photocraft_doc::adjust::CurvePoint { input: 1.0, output: 0.0 }];
+        c.contour = Some(photocraft_doc::BevelContour { contour: Contour::Custom { name: "fold".into(), points: fold }, range: 1.0, anti_alias: false });
+        let (b, _) = bevel_maps(&shape, &c, &l, &no_tex());
+        let diff: f32 = a[1].v.iter().zip(&b[1].v).map(|(x, y)| (x - y).abs()).sum();
+        assert!(diff > 5.0, "{diff}");
+        // A striped texture lights the flat middle.
+        let mut sf = photocraft_raster::Surface::new(photocraft_color::PixelFormat::RGBA8);
+        sf.fill_rect(Rect::new(0, 0, 4, 2), &[0.0, 0.0, 0.0, 1.0]);
+        sf.fill_rect(Rect::new(0, 2, 4, 4), &[1.0, 1.0, 1.0, 1.0]);
+        let pats = [Pattern::new("stripes", sf, 4, 4)];
+        let mut t = plain.clone();
+        t.texture = Some(photocraft_doc::BevelTexture { name: "stripes".into(), id: String::new(), scale: 1.0, depth: 1.0, invert: false, link: true, phase: (0.0, 0.0) });
+        let tex = TextureCtx { rect: Rect::new(0, 0, 40, 40), patterns: &pats, anchor: (0.0, 0.0) };
+        let (m, _) = bevel_maps(&shape, &t, &l, &tex);
+        let mid: f32 = (16..24).map(|y| m[0].v[y * 40 + 20] + m[1].v[y * 40 + 20]).sum();
+        let flat: f32 = (16..24).map(|y| a[0].v[y * 40 + 20] + a[1].v[y * 40 + 20]).sum();
+        assert!(mid > flat + 0.5, "{mid} vs {flat}");
     }
 
     #[test]

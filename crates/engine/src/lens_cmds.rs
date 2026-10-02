@@ -18,6 +18,7 @@ use photocraft_raster::{Surface, from_rgba_into};
 use serde_json::{Value, json};
 
 use crate::commands::CommandSpec;
+use crate::photo_cmds::Stopwatch;
 use crate::{EngineError, Result, Session};
 
 pub const LENS: &str = "filter.lensCorrection";
@@ -294,9 +295,9 @@ fn lens_correction(s: &mut Session, p: &Value) -> Result<Value> {
     let info = camera_info(&st.doc);
     let lc = lens_params(LENS, p, frame, info.as_ref())?;
     let stored = resolved_lens_params(p, &lc);
-    let t0 = std::time::Instant::now();
+    let t0 = Stopwatch::start();
     let id = run_filter(s, LENS, "Lens Correction", stored.clone(), matches!(lc.edge, EdgeMode::Transparency), &|surf, canvas| lens::correct(surf, canvas, &lc))?;
-    Ok(json!({"layer": id.0, "profile": lc.profile.as_ref().map(|p| p.name.clone()), "angle": lc.angle, "scale": lc.scale, "params": stored, "ms": t0.elapsed().as_secs_f64() * 1000.0}))
+    Ok(json!({"layer": id.0, "profile": lc.profile.as_ref().map(|p| p.name.clone()), "angle": lc.angle, "scale": lc.scale, "params": stored, "ms": t0.ms()}))
 }
 
 fn adaptive_wide_angle(s: &mut Session, p: &Value) -> Result<Value> {
@@ -304,7 +305,7 @@ fn adaptive_wide_angle(s: &mut Session, p: &Value) -> Result<Value> {
     let frame = st.doc.bounds();
     let info = camera_info(&st.doc);
     let wa = wide_params(WIDE, p, info.as_ref())?;
-    let t0 = std::time::Instant::now();
+    let t0 = Stopwatch::start();
     let mesh = wideangle::solve(&wa, frame);
     let cam = wideangle::Camera::new(&wa, frame);
     let mut stored = serde_json::to_value(&wa).unwrap_or(Value::Null);
@@ -333,15 +334,15 @@ fn adaptive_wide_angle(s: &mut Session, p: &Value) -> Result<Value> {
         "curves": mesh.curves,
         "residual": mesh.residual,
         "params": stored,
-        "ms": t0.elapsed().as_secs_f64() * 1000.0,
+        "ms": t0.ms(),
     }))
 }
 
 fn camera_raw_cmd(s: &mut Session, p: &Value) -> Result<Value> {
     let cr = raw_params(RAW, p)?;
-    let t0 = std::time::Instant::now();
+    let t0 = Stopwatch::start();
     let id = run_filter(s, RAW, "Camera Raw Filter", p.clone(), false, &|surf, canvas| camera_raw_surface(surf, canvas.union(&surf.content_bounds()), &cr))?;
-    Ok(json!({"layer": id.0, "identity": cr.is_identity(), "ms": t0.elapsed().as_secs_f64() * 1000.0}))
+    Ok(json!({"layer": id.0, "identity": cr.is_identity(), "ms": t0.ms()}))
 }
 
 fn lens_batch(_s: &mut Session, p: &Value) -> Result<Value> {

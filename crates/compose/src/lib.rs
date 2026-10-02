@@ -695,7 +695,7 @@ fn effect_maps(layer: &Layer, cx: &Ctx) -> std::sync::Arc<effects::FxMaps> {
     let region = layer_bounds(layer, cx.canvas).inflate(m).intersect(&cx.canvas.inflate(m));
     if std::env::var_os("PHOTOCRAFT_FX_NOCACHE").is_some() {
         let shape = render_content(layer, region, cx).map(|b| b.px.iter().map(|p| p[3]).collect()).unwrap_or_default();
-        return std::sync::Arc::new(effects::build_maps(layer, shape, region, &cx.light));
+        return std::sync::Arc::new(effects::build_maps(layer, shape, region, &cx.light, &texture_ctx(layer, region, cx)));
     }
     let mut h = std::collections::hash_map::DefaultHasher::new();
     layer_identity(layer, &mut h);
@@ -719,7 +719,7 @@ fn effect_maps(layer: &Layer, cx: &Ctx) -> std::sync::Arc<effects::FxMaps> {
         } else {
             render_content(layer, region, cx).map(|b| b.px.iter().map(|p| p[3]).collect()).unwrap_or_else(|| vec![0.0; region.width() as usize * region.height() as usize])
         };
-        let maps = effects::build_maps(layer, shape, region, &cx.light);
+        let maps = effects::build_maps(layer, shape, region, &cx.light, &texture_ctx(layer, region, cx));
         let bytes = maps.bytes();
         // Counted exactly once, when the entry is built.
         fx_cache().lock().unwrap_or_else(|e| e.into_inner()).bytes += bytes;
@@ -740,6 +740,11 @@ fn effect_maps(layer: &Layer, cx: &Ctx) -> std::sync::Arc<effects::FxMaps> {
         }
     }
     maps
+}
+
+fn texture_ctx<'a>(layer: &Layer, region: Rect, cx: &Ctx<'a>) -> effects::TextureCtx<'a> {
+    let sb = layer_bounds(layer, cx.canvas);
+    effects::TextureCtx { rect: region, patterns: cx.patterns, anchor: layer.effects.reference.unwrap_or((f64::from(sb.x0), f64::from(sb.y0))) }
 }
 
 /// Composite `layer` onto `base` restricted to the base's alpha (clipping mask semantics),

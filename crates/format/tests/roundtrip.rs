@@ -285,3 +285,35 @@ fn vector_fields_roundtrip_and_default_when_absent() {
     assert!(old.paths.is_empty() && old.work_path.is_none());
     assert!(old.layers.iter().all(|l| l.vector_mask.is_none()));
 }
+
+#[test]
+fn channel_restrictions_and_bevel_elements_roundtrip() {
+    use photocraft_doc::{Bevel, BevelContour, BevelTexture, Contour, Effect};
+    let mut doc = rich_doc(ColorMode::Rgb, SampleType::U8);
+    doc.layers[0].excluded_channels = 0b101;
+    let mut b = Bevel {
+        enabled: true,
+        style: photocraft_doc::BevelStyle::Emboss,
+        technique: photocraft_doc::BevelTechnique::ChiselHard,
+        depth: 1.2,
+        up: false,
+        size: 9.0,
+        soften: 1.0,
+        angle: 30.0,
+        altitude: 40.0,
+        use_global_light: false,
+        gloss_contour: Contour::Linear,
+        highlight: photocraft_doc::FxCommon::new(photocraft_color::BlendMode::Screen, 0.7),
+        highlight_color: photocraft_color::Color::WHITE,
+        shadow: photocraft_doc::FxCommon::new(photocraft_color::BlendMode::Multiply, 0.6),
+        shadow_color: photocraft_color::Color::BLACK,
+        contour: None,
+        texture: None,
+    };
+    b.contour = Some(BevelContour { contour: Contour::Linear, range: 0.3, anti_alias: true });
+    b.texture = Some(BevelTexture { name: "p".into(), id: "i".into(), scale: 0.5, depth: -1.5, invert: true, link: false, phase: (1.0, 2.0) });
+    doc.layers[0].effects.items.push(Effect::BevelEmboss(Bevel { ..b }));
+    let back = load_from_bytes(&save_to_bytes(&doc, &SaveOptions::default()).unwrap()).unwrap();
+    assert_eq!(back, doc);
+    assert_eq!(back.layers[0].excluded_channels, 0b101);
+}

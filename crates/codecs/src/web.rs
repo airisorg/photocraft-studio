@@ -226,9 +226,12 @@ pub fn encode_jpeg_rgb8(width: u32, height: u32, rgb: &[u8], quality: u8, progre
     }
     let mut out = Vec::new();
     let mut enc = jpeg_encoder::Encoder::new(&mut out, quality.clamp(1, 100));
+    let subsampled = quality < 90;
     enc.set_progressive(progressive);
-    enc.set_optimized_huffman_tables(optimized || progressive);
-    enc.set_sampling_factor(if quality >= 90 { jpeg_encoder::SamplingFactor::R_4_4_4 } else { jpeg_encoder::SamplingFactor::R_4_2_0 });
+    // jpeg-encoder 0.6 writes corrupt baseline scans when optimised Huffman tables meet 4:2:0
+    // (both zune-jpeg and image-rs decode them green); progressive output is fine.
+    enc.set_optimized_huffman_tables(progressive || (optimized && !subsampled));
+    enc.set_sampling_factor(if subsampled { jpeg_encoder::SamplingFactor::R_4_2_0 } else { jpeg_encoder::SamplingFactor::R_4_4_4 });
     if let Some(d) = dpi.filter(|d| *d >= 1.0) {
         let v = d.round().min(65535.0) as u16;
         enc.set_density(jpeg_encoder::Density::Inch { x: v, y: v });
@@ -329,5 +332,26 @@ mod tests {
         // SOF2 marks a progressive frame.
         assert!(prog.windows(2).any(|w| w == [0xFF, 0xC2]));
         assert_eq!(crate::decode(&prog).unwrap().dimensions(), (64, 48));
+    }
+}
+
+#[cfg(test)]
+mod subsampling_tests {
+    use super::*;
+
+    /// jpeg-encoder 0.6 writes broken scans for baseline 4:2:0 with optimised Huffman tables;
+    /// `encode_jpeg_rgb8` must avoid that combination.
+    #[test]
+    fn every_option_combination_decodes_to_the_source() {
+        let (w, h) = (64u32, 48u32);
+        let rgb: Vec<u8> = (0..w * h).flat_map(|i| [((i % w) * 4) as u8, 76, ((i / w) * 5) as u8]).collect();
+        for q in [30, 60, 95] {
+            for (prog, opt) in [(false, false), (false, true), (true, false), (true, true)] {
+                let bytes = encode_jpeg_rgb8(w, h, &rgb, q, prog, opt, None, None, None).unwrap();
+                let ours = crate::decode(&bytes).unwrap().convert(crate::ChannelLayout::Rgb, crate::SampleType::U8);
+                let err = ours.data().iter().zip(&rgb).map(|(a, b)| i32::from(*a).abs_diff(i32::from(*b))).max().unwrap();
+                assert!(err < 24, "q{q} progressive={prog} optimized={opt}: max error {err}");
+            }
+        }
     }
 }

@@ -56,6 +56,8 @@ fn effects() -> Vec<Effect> {
             highlight_color: Color::WHITE,
             shadow: FxCommon::new(BlendMode::Multiply, 0.75),
             shadow_color: Color::BLACK,
+            contour: None,
+            texture: None,
         }),
     ]
 }

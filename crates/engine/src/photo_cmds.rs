@@ -24,6 +24,25 @@ use crate::commands::CommandSpec;
 use crate::file_cmds::{file_name, flattened, import, list_images, read_file};
 use crate::{EngineError, Result, Session};
 
+/// Wall-clock timer for the `ms` fields of results (always 0 on the web, where
+/// `std::time::Instant` is unavailable).
+pub(crate) struct Stopwatch(#[cfg(not(target_arch = "wasm32"))] std::time::Instant);
+
+impl Stopwatch {
+    pub(crate) fn start() -> Self {
+        Stopwatch(
+            #[cfg(not(target_arch = "wasm32"))]
+            std::time::Instant::now(),
+        )
+    }
+    pub(crate) fn ms(&self) -> f64 {
+        #[cfg(not(target_arch = "wasm32"))]
+        return self.0.elapsed().as_secs_f64() * 1000.0;
+        #[cfg(target_arch = "wasm32")]
+        0.0
+    }
+}
+
 /// Longest side used for feature registration.
 pub(crate) const REGISTER_SIDE: usize = 1200;
 
@@ -373,7 +392,7 @@ pub(crate) fn seam_order(warped: &[Surface], reference: usize) -> Vec<usize> {
 
 fn photomerge(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "file.automate.photomerge";
-    let t0 = std::time::Instant::now();
+    let t0 = Stopwatch::start();
     let layout_s = p.get("layout").and_then(Value::as_str).unwrap_or("auto");
     let layout = Layout::parse(layout_s).ok_or_else(|| bad(cmd, format!("unknown layout `{layout_s}` (auto|perspective|cylindrical|spherical|collage|reposition)")))?;
     let blend = p.get("blend").and_then(Value::as_bool).unwrap_or(true);
@@ -387,7 +406,7 @@ fn photomerge(s: &mut Session, p: &Value) -> Result<Value> {
     let focal35 = p.get("focalLength").and_then(Value::as_f64).filter(|f| *f > 0.0).or_else(|| exif_focal(&srcs));
     let images: Vec<(&Surface, Rect)> = srcs.iter().map(|s| (&s.surf, Rect::new(0, 0, s.w as i32, s.h as i32))).collect();
     let al = register(&images, layout, None, geometric, focal35).ok_or_else(|| EngineError::Other("Photomerge couldn't find enough matching detail between the images".into()))?;
-    let t_reg = t0.elapsed().as_secs_f64();
+    let t_reg = t0.ms() / 1000.0;
     let placed: Vec<usize> = (0..srcs.len()).filter(|&i| al.placements[i].is_some()).collect();
     let failed: Vec<String> = (0..srcs.len()).filter(|&i| al.placements[i].is_none()).map(|i| srcs[i].name.clone()).collect();
     // Canvas: union of the placed images.
@@ -409,7 +428,7 @@ fn photomerge(s: &mut Session, p: &Value) -> Result<Value> {
         let jobs: Vec<usize> = placed.clone();
         jobs.iter().map(|&i| warp_placed(&srcs[i].surf, Rect::new(0, 0, srcs[i].w as i32, srcs[i].h as i32), (0.0, 0.0), al.placements[i].as_ref().expect("placed"), offset, Interp::Bicubic)).collect()
     };
-    let t_warp = t0.elapsed().as_secs_f64();
+    let t_warp = t0.ms() / 1000.0;
     let mut doc = Document::new(format!("Untitled_Panorama{}", s.documents().len() + 1), Size::new(cw as u32, ch as u32), fmt.mode, fmt.sample);
     doc.icc_profile = icc;
     let mut info = json!({});
@@ -453,7 +472,7 @@ fn photomerge(s: &mut Session, p: &Value) -> Result<Value> {
         "height": ch as u32,
         "layers": n,
         "photometric": info,
-        "ms": {"register": t_reg * 1000.0, "warp": (t_warp - t_reg) * 1000.0, "total": t0.elapsed().as_secs_f64() * 1000.0},
+        "ms": {"register": t_reg * 1000.0, "warp": (t_warp - t_reg) * 1000.0, "total": t0.ms()},
     }))
 }
 
@@ -533,7 +552,7 @@ fn shift_rgba(px: &[[f32; 4]], w: usize, h: usize, dx: i32, dy: i32) -> Vec<[f32
 
 fn merge_to_hdr(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "file.automate.mergeToHdrPro";
-    let t0 = std::time::Instant::now();
+    let t0 = Stopwatch::start();
     let (srcs, _fmt, icc) = load_sources(s, p, cmd)?;
     if srcs.len() < 2 {
         return Err(bad(cmd, "Merge to HDR Pro needs two or more exposures"));
@@ -658,7 +677,7 @@ fn merge_to_hdr(s: &mut Session, p: &Value) -> Result<Value> {
         "ghostBase": merged.ghost_base,
         "ghostFraction": merged.ghost_fraction,
         "stops": merged.stops,
-        "ms": t0.elapsed().as_secs_f64() * 1000.0,
+        "ms": t0.ms(),
     }))
 }
 

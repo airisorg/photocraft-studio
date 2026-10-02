@@ -400,3 +400,26 @@ fn link_groups_and_effects_reference_round_trip() {
     let fnone = PsdFile::from_bytes(&export(&none, "x.psd", &ExportOptions::default()).unwrap().bytes).unwrap();
     assert!(res(&fnone).is_none());
 }
+
+#[test]
+fn channel_restrictions_round_trip_as_brst() {
+    use photocraft_doc::{Document, Layer, Size};
+    let mut d = Document::new("c", Size::new(8, 8), ColorMode::Rgb, SampleType::U8);
+    let mut a = Layer::raster("a", d.pixel_format());
+    a.surface_mut().unwrap().fill_rect(photocraft_geom::Rect::new(0, 0, 4, 4), &[1.0, 0.0, 0.0, 1.0]);
+    a.excluded_channels = 0b110;
+    let b = Layer::raster("b", d.pixel_format());
+    d.layers = vec![a, b];
+    let f = document_to_psd(&d);
+    let rec = f.layers().iter().find(|r| r.name() == "a").unwrap();
+    assert_eq!(rec.block(b"brst").unwrap().data, vec![0, 0, 0, 1, 0, 0, 0, 2]);
+    assert!(f.layers().iter().find(|r| r.name() == "b").unwrap().block(b"brst").is_none());
+    let back = roundtrip(&d);
+    assert_eq!(back.layers[0].excluded_channels, 0b110);
+    assert_eq!(back.layers[1].excluded_channels, 0);
+    // Cleared restrictions drop the preserved block.
+    let mut cleared = back.clone();
+    cleared.layers[0].excluded_channels = 0;
+    let f = document_to_psd(&cleared);
+    assert!(f.layers().iter().find(|r| r.name() == "a").unwrap().block(b"brst").is_none());
+}

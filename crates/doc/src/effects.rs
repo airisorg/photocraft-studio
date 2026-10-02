@@ -196,6 +196,42 @@ pub struct Bevel {
     pub highlight_color: Color,
     pub shadow: FxCommon,
     pub shadow_color: Color,
+    /// Bevel & Emboss › Contour: shapes the bevel's height profile. `None` = off.
+    #[serde(default)]
+    pub contour: Option<BevelContour>,
+    /// Bevel & Emboss › Texture: a pattern's luminance added to the height. `None` = off.
+    #[serde(default)]
+    pub texture: Option<BevelTexture>,
+}
+
+/// The Contour element of Bevel & Emboss.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct BevelContour {
+    pub contour: Contour,
+    /// Range `0..=1` (Photoshop's default 50 %): the part of the bevel the contour spans.
+    pub range: f32,
+    pub anti_alias: bool,
+}
+
+impl Default for BevelContour {
+    fn default() -> Self {
+        BevelContour { contour: Contour::Linear, range: 0.5, anti_alias: false }
+    }
+}
+
+/// The Texture element of Bevel & Emboss.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct BevelTexture {
+    pub name: String,
+    pub id: String,
+    /// Scale as a fraction (1 = 100 %).
+    pub scale: f32,
+    /// Depth `-10..=10` (1 = +100 %); negative carves the pattern in.
+    pub depth: f32,
+    pub invert: bool,
+    /// "Link with Layer": tile from the layer (else the canvas origin).
+    pub link: bool,
+    pub phase: (f32, f32),
 }
 
 /// One layer effect. Several instances of the same kind are allowed

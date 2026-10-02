@@ -756,6 +756,9 @@ impl<'a> Planner<'a> {
     /// (atop = true: effects over the base treated as opaque, keeping the base's alpha).
     /// Consumes `backdrop`.
     fn effects(&mut self, layer: &'a Layer, clipped: &[&'a Layer], backdrop: Slot, atop: bool) -> Result<Slot, Unsupported> {
+        if layer.effects.items.iter().any(|e| matches!(e, Effect::BevelEmboss(b) if b.enabled && b.texture.is_some())) {
+            return Err(Unsupported(format!("bevel texture on `{}` (rendered on the CPU)", layer.name)));
+        }
         let canvas = self.cx.canvas;
         let region = bounds::effect_region(layer, canvas);
         let sb = bounds::layer_bounds(layer, canvas);

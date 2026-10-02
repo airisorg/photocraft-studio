@@ -129,9 +129,14 @@ pub fn effect_from_params(kind: &str, p: &Value) -> Option<Effect> {
                 Some("outer") => BevelStyle::OuterBevel,
                 Some("emboss") => BevelStyle::Emboss,
                 Some("pillow") => BevelStyle::PillowEmboss,
+                Some("stroke") => BevelStyle::StrokeEmboss,
                 _ => BevelStyle::InnerBevel,
             },
-            technique: BevelTechnique::Smooth,
+            technique: match p.get("technique").and_then(Value::as_str) {
+                Some("chiselHard") => BevelTechnique::ChiselHard,
+                Some("chiselSoft") => BevelTechnique::ChiselSoft,
+                _ => BevelTechnique::Smooth,
+            },
             depth: f(p, "depth", 100.0) / 100.0,
             up: p.get("direction").and_then(Value::as_str) != Some("down"),
             size: f(p, "size", 5.0),
@@ -144,6 +149,8 @@ pub fn effect_from_params(kind: &str, p: &Value) -> Option<Effect> {
             highlight_color: Color::WHITE,
             shadow: FxCommon::new(BlendMode::Multiply, 0.75),
             shadow_color: Color::BLACK,
+            contour: None,
+            texture: None,
         }),
         _ => return None,
     })
@@ -208,7 +215,7 @@ pub fn specs() -> Vec<CommandSpec> {
         style_cmd!("colorOverlay", "Color Overlay…", r##"{"color":"#rrggbb","opacity":0..100=100,"blend":str,"add":bool}"##),
         style_cmd!("gradientOverlay", "Gradient Overlay…", r##"{"from":"#rrggbb","to":"#rrggbb","style":"linear|radial|angle|reflected|diamond","angle":deg=90,"scale":10..150=100,"reverse":bool,"opacity":0..100,"blend":str,"add":bool}"##),
         style_cmd!("patternOverlay", "Pattern Overlay…", r##"{"pattern":id|name?=first library pattern,"opacity":0..100=100,"blend":str,"scale":1..1000=100,"angle":deg=0,"link":bool=true,"phaseX":px,"phaseY":px,"add":bool}"##),
-        style_cmd!("bevelEmboss", "Bevel & Emboss…", r##"{"style":"inner|outer|emboss|pillow","depth":1..1000=100,"direction":"up|down","size":px=5,"soften":px,"angle":deg,"altitude":deg,"add":bool}"##),
+        style_cmd!("bevelEmboss", "Bevel & Emboss…", r##"{"style":"inner|outer|emboss|pillow|stroke","technique":"smooth|chiselHard|chiselSoft","depth":1..1000=100,"direction":"up|down","size":px=5,"soften":px,"angle":deg,"altitude":deg,"add":bool}"##),
         style_cmd!("satin", "Satin…", r##"{"color":"#rrggbb","opacity":0..100=50,"blend":str,"angle":deg,"distance":px,"size":px,"invert":bool,"add":bool}"##),
         CommandSpec {
             id: "layer.layerStyle.clear",

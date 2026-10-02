@@ -25,7 +25,7 @@ pub use adjust::Adjustment;
 pub use analysis::{CountGroup, Measurement, MeasurementScale, Note, Ruler};
 pub use comps::{Artboard, ArtboardBackground, CompAppearance, CompLayerState, LayerComp};
 pub use effects::{
-    Bevel, BevelStyle, BevelTechnique, Contour, Effect, FxCommon, FxPaint, GlobalLight, Glow, GlowSource, GlowTechnique, Gradient,
+    Bevel, BevelContour, BevelStyle, BevelTechnique, BevelTexture, Contour, Effect, FxCommon, FxPaint, GlobalLight, Glow, GlowSource, GlowTechnique, Gradient,
     GradientStyle, Satin, Shadow, StrokeFx, StrokePosition,
 };
 pub use photocraft_color::{BlendMode, Color, ColorMode, PixelFormat, SampleType};

@@ -532,6 +532,8 @@ fn satin_and_bevel_stay_inside_shape() {
         highlight_color: Color::WHITE,
         shadow: FxCommon::new(photocraft_color::BlendMode::Multiply, 0.75),
         shadow_color: Color::BLACK,
+        contour: None,
+        texture: None,
     })]);
     for (x, y) in [(5, 5), (35, 20), (20, 35)] {
         assert!(close4(px(&d, x, y), [1.0; 4]), "({x},{y}) {:?}", px(&d, x, y));

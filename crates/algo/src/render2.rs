@@ -67,9 +67,11 @@ impl Prim {
                 let r = ra.max(rb) + s;
                 (a.0.min(b.0) - r, a.1.min(b.1) - r, a.0.max(b.0) + r, a.1.max(b.1) + r)
             }
-            Shape::Ellipse { c, rx, ry, .. } => {
-                let r = rx.max(ry) + s;
-                (c.0 - r, c.1 - r, c.0 + r, c.1 + r)
+            Shape::Ellipse { c, rx, ry, angle } => {
+                let (sn, cs) = angle.sin_cos();
+                let ex = ((rx * cs).powi(2) + (ry * sn).powi(2)).sqrt() + s;
+                let ey = ((rx * sn).powi(2) + (ry * cs).powi(2)).sqrt() + s;
+                (c.0 - ex, c.1 - ey, c.0 + ex, c.1 + ey)
             }
         };
         if !(x0.is_finite() && y0.is_finite() && x1.is_finite() && y1.is_finite()) {

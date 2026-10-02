@@ -407,6 +407,8 @@ fn bevel(style: BevelStyle, up: bool, size: f32, soften: f32) -> Bevel {
         highlight_color: Color::rgb(1.0, 1.0, 0.9),
         shadow: FxCommon::new(BlendMode::Multiply, 0.7),
         shadow_color: Color::rgb(0.1, 0.0, 0.2),
+        contour: None,
+        texture: None,
     }
 }
 
@@ -462,6 +464,7 @@ fn effect_cases() -> Vec<(&'static str, Vec<Effect>)> {
         ("bevel pillow chisel hard", vec![Effect::BevelEmboss(Bevel { technique: BevelTechnique::ChiselHard, ..bevel(BevelStyle::PillowEmboss, false, 7.0, 0.0) })]),
         ("bevel emboss smooth wide", vec![Effect::BevelEmboss(bevel(BevelStyle::Emboss, true, 21.0, 0.0))]),
         ("bevel stroke emboss", vec![Effect::BevelEmboss(bevel(BevelStyle::StrokeEmboss, true, 6.0, 0.0))]),
+        ("bevel contour", vec![Effect::BevelEmboss(Bevel { contour: Some(photocraft_doc::BevelContour { contour: contour(), range: 0.6, anti_alias: false }), ..bevel(BevelStyle::Emboss, true, 9.0, 1.0) })]),
         ("bevel contour own light", vec![Effect::BevelEmboss(bevel_contour)]),
         ("satin", vec![Effect::Satin(satin)]),
         ("satin inverted contour", vec![Effect::Satin(satin_inv)]),

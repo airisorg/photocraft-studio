@@ -329,6 +329,13 @@ pub(crate) fn program(e: &Effect, light: &GlobalLight, vector_shape: bool) -> Ma
                 let h = b.push(stage(Kernel::MBevelH, Some(din), Some(dout), [paint(g.paint), size, 0.0, 0.0], 0));
                 if g.chisel_soft > 0.0 { b.conv(h, photocraft_compose::effects::tent_kernel(g.chisel_soft)) } else { h }
             };
+            if let Some(c) = &bv.contour {
+                // Contour element: the height through the contour over its range.
+                let lut = photocraft_compose::effects::ranged_lut(&c.contour, c.range).unwrap_or_else(|| (0..4096).map(|k| k as f32 / 4095.0).collect());
+                let mut st = stage(Kernel::MFinish, Some(h), None, [0.0, 0.0, 1.0, 0.0], 0);
+                st.lut = Some(Arc::new(lut));
+                h = b.push(st);
+            }
             if bv.soften >= 1.0 {
                 h = b.conv(h, photocraft_compose::effects::tent_kernel(bv.soften));
             }

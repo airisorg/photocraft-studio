@@ -20,8 +20,8 @@
 //! Vector masks (rasterised once per mask state into a combined mask texture), layers clipped to
 //! pass-through groups, stroked shapes with clipped layers (fill and stroke split once per shape
 //! state), pattern fills and artboards are planned like everything else. What remains
-//! (Multichannel documents, documents or effect regions larger than the device's texture limit)
-//! returns [`Unsupported`]; callers fall back to the CPU compositor.
+//! (Multichannel documents, bevels with a texture, documents or effect regions larger than the
+//! device's texture limit) returns [`Unsupported`]; callers fall back to the CPU compositor.
 #![forbid(unsafe_code)]
 
 pub mod bounds;
