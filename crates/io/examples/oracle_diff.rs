@@ -287,7 +287,8 @@ fn corpus_summary(root: &std::path::Path) {
     collect(root, &mut files);
     files.sort();
     const TOL: f32 = 2.0 / 255.0;
-    let row = |p: &std::path::PathBuf| -> (String, Option<(f32, f32)>) {
+    type Row = (String, Option<(f32, f32)>);
+    let row = |p: &std::path::PathBuf| -> Row {
             let name = p.strip_prefix(root).unwrap_or(p).display().to_string();
             let Ok(bytes) = std::fs::read(p) else { return (name, None) };
             let Ok(file) = photocraft_psd::PsdFile::from_bytes(&bytes) else { return (name, None) };
@@ -310,7 +311,7 @@ fn corpus_summary(root: &std::path::Path) {
     };
     // Files in parallel (a few threads; flatten itself is tile-parallel).
     let next = std::sync::atomic::AtomicUsize::new(0);
-    let mut rows: Vec<(usize, (String, Option<(f32, f32)>))> = std::thread::scope(|sc| {
+    let mut rows: Vec<(usize, Row)> = std::thread::scope(|sc| {
         let hs: Vec<_> = (0..4)
             .map(|_| {
                 sc.spawn(|| {
@@ -327,7 +328,7 @@ fn corpus_summary(root: &std::path::Path) {
         hs.into_iter().flat_map(|h| h.join().unwrap()).collect()
     });
     rows.sort_by_key(|r| r.0);
-    let rows: Vec<(String, Option<(f32, f32)>)> = rows.into_iter().map(|r| r.1).collect();
+    let rows: Vec<Row> = rows.into_iter().map(|r| r.1).collect();
     let (mut pass, mut diff, mut skip) = (0, 0, 0);
     for (name, r) in &rows {
         match r {

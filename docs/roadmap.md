@@ -13,7 +13,7 @@ composite oracle and the test count.
 | M2 PSD v1 | ✅ | photocraft-psd: 134/135 real files byte-exact round trip |
 | M3 Viewer app | ✅ | egui shell (Pro / Studio / Classic themes), 13+ codecs, native and web (trunk) builds |
 | M4 Native format + engine | ✅ | 500+ commands, `.pcraft` (incremental, autosave, crash recovery), CLI, persistent preferences |
-| M5 GPU compositor | 🟡 | wgpu compositor drives the canvas, layer effects included (≤1/255 vs CPU); vector masks, uncached pattern fills, artboards and a few clip cases fall back to the CPU |
+| M5 GPU compositor | 🟡 | wgpu compositor drives the canvas, layer effects, vector masks, artboards, pattern fills and every clip case included (≤1/255 vs CPU); Multichannel documents fall back to the CPU |
 | M6 Paint + select | 🟡 | brush engine, all selection tools, multi-layer selection, snapping + smart guides, free transform + warp; native tablet backends pending |
 | M7 Adjust + filters | 🟡 | 16 adjustment layers + destructive-only adjustments, 70+ filters incl. Blur Gallery, Actions record/replay, Fade |
 | M8 PSD v2 | 🟡 | adjustments (incl. Selective Color, Color Lookup), fills, effects, patterns, text, shapes, smart objects, alpha channels; oracle 111/170 |
@@ -36,11 +36,10 @@ Landed on 2026-10-01:
 Next:
 1. **First signed release**: push to `release`, verify notarization and the installers, and fix CI
    (`docs/releasing.md`). Windows code-signing material still needs to be obtained.
-2. **Fidelity**: the PSD oracle (111/170). Bevel/emboss, satin, inner glow; modern
-   Brightness/Contrast and grayscale Levels curves; channel restrictions (`brst`); Lab-space
-   blending; Photoshop smart filters in `SoLd`. Also the GPU/CPU Color Burn edge case (51/255 at
-   backdrop 1, source 0).
-3. **Remaining GPU fallbacks**: vector masks, layers clipped to pass-through groups, artboards.
+2. **Fidelity**: the PSD oracle (113/170). Modern Brightness/Contrast and grayscale Levels
+   curves; chisel-soft / stroke-emboss bevel shapes; Photoshop's 8-bit blend rounding; non-Normal
+   modes in Lab documents; Photoshop smart filters in `SoLd`.
+3. **GPU**: only Multichannel documents and regions over the texture limit fall back to the CPU.
 4. **Vanishing Point, Camera Raw / Lens Correction, Face-Aware Liquify** (needs a landmark model).
 5. **Panels**: Patterns, Styles, Glyphs, Character/Paragraph Styles, Timeline; Custom Shape tool.
 6. Print, Photomerge, Merge to HDR, video layers.

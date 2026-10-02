@@ -385,7 +385,23 @@ impl Image {
         if layout == self.layout && sample == self.sample {
             return self.clone();
         }
-        let data = if layout == self.layout {
+        let data = if sample == self.sample && !self.layout.has_alpha() && layout == self.layout.with_alpha() {
+            // Fast path (opening any opaque file): copy the samples, append an opaque alpha.
+            let bps = sample.bytes();
+            let src = self.layout.channels() * bps;
+            let one: Vec<u8> = match sample {
+                SampleType::U8 => vec![u8::MAX],
+                SampleType::U16 => u16::MAX.to_ne_bytes().to_vec(),
+                SampleType::F16 => f16::ONE.to_bits().to_ne_bytes().to_vec(),
+                SampleType::F32 => 1.0f32.to_ne_bytes().to_vec(),
+            };
+            let mut out = Vec::with_capacity(self.data.len() / src * (src + bps));
+            for px in self.data.chunks_exact(src) {
+                out.extend_from_slice(px);
+                out.extend_from_slice(&one);
+            }
+            out
+        } else if layout == self.layout {
             quantize(&self.to_normalized(), sample)
         } else {
             let src = self.to_normalized();
@@ -550,6 +566,20 @@ pub(crate) fn convert_layout(src: &[f32], from: ChannelLayout, to: ChannelLayout
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn adding_alpha_fast_path_matches_the_general_conversion() {
+        for sample in SampleType::ALL {
+            for layout in [ChannelLayout::Gray, ChannelLayout::Rgb, ChannelLayout::Cmyk] {
+                let n = 7 * 3 * layout.channels();
+                let vals: Vec<f32> = (0..n).map(|i| (i as f32 * 0.137) % 1.0).collect();
+                let img = super::Image::from_normalized(7, 3, layout, sample, &vals).unwrap();
+                let fast = img.convert(layout.with_alpha(), sample);
+                let slow = super::quantize(&super::convert_layout(&img.to_normalized(), layout, layout.with_alpha()), sample);
+                assert_eq!(fast.data(), &slow[..], "{layout:?} {sample:?}");
+            }
+        }
+    }
+
     use super::*;
 
     #[test]

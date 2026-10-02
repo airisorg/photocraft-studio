@@ -268,6 +268,12 @@ fn main() {
         s2.open_document(d, None);
         ms(t) + b.refresh(&s2, true)
     });
+    b.time("flatten (CPU compositor, 3 layers)", |_| {
+        let d = doc(&s);
+        let t = Instant::now();
+        std::hint::black_box(photocraft_compose::flatten(&d));
+        ms(t)
+    });
     b.time("export PNG (flatten + encode)", |_| {
         let d = doc(&s);
         let t = Instant::now();

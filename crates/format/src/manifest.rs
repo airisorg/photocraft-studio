@@ -301,6 +301,10 @@ pub struct ChannelM {
     pub indicates: photocraft_doc::ColorIndicates,
 }
 
+fn is_zero_u32(v: &u32) -> bool {
+    *v == 0
+}
+
 fn default_channel_color() -> Color {
     photocraft_doc::AlphaChannel::DEFAULT_COLOR
 }
@@ -336,8 +340,4 @@ mod channel_tests {
         assert_eq!(c.opacity, 0.5);
         assert_eq!(c.indicates, photocraft_doc::ColorIndicates::MaskedAreas);
     }
-}
-
-fn is_zero_u32(v: &u32) -> bool {
-    *v == 0
 }

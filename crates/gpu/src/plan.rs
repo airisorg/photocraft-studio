@@ -60,6 +60,7 @@ pub enum Kernel {
     MBevelH,
     MBevelShade,
     MStroke,
+    MBevelTex,
 }
 
 impl Kernel {
@@ -87,6 +88,7 @@ impl Kernel {
             Kernel::MBevelH => "fs_mbevelh",
             Kernel::MBevelShade => "fs_mbevelshade",
             Kernel::MStroke => "fs_mstroke",
+            Kernel::MBevelTex => "fs_mbeveltex",
         })
     }
 
@@ -102,11 +104,12 @@ impl Kernel {
                 | Kernel::MBevelH
                 | Kernel::MBevelShade
                 | Kernel::MStroke
+                | Kernel::MBevelTex
         )
     }
 
     /// Every kernel with a pipeline.
-    pub const DRAWN: [Kernel; 20] = [
+    pub const DRAWN: [Kernel; 21] = [
         Kernel::Content,
         Kernel::Mask,
         Kernel::Blend,
@@ -127,6 +130,7 @@ impl Kernel {
         Kernel::MBevelH,
         Kernel::MBevelShade,
         Kernel::MStroke,
+        Kernel::MBevelTex,
     ];
 }
 
@@ -283,11 +287,13 @@ pub struct DocCtx<'a> {
     pub patterns: &'a [Pattern],
     /// Colour mode (channel restrictions name its channels).
     pub mode: photocraft_color::ColorMode,
+    /// Sample depth (adjustment results are rounded to it).
+    pub depth: photocraft_color::SampleType,
 }
 
 impl<'a> DocCtx<'a> {
     pub fn of(doc: &'a Document) -> Self {
-        DocCtx { canvas: doc.bounds(), transfer: Transfer::for_mode(doc.mode), light: doc.global_light, patterns: &doc.patterns, mode: doc.mode }
+        DocCtx { canvas: doc.bounds(), transfer: Transfer::for_mode(doc.mode), light: doc.global_light, patterns: &doc.patterns, mode: doc.mode, depth: doc.depth }
     }
 }
 
@@ -335,11 +341,16 @@ pub const F_STROKE_OUT: u32 = 1024;
 pub const F_FIRST: u32 = 2048;
 /// `Lerp` per channel: weights in `p0` (channel restrictions), no opacity or mask.
 pub const F_CHANNELS: u32 = 4096;
+/// Lab document: Normal blending mixes in CIELAB (`psblend::LAB_MIX`).
+pub const F_LAB: u32 = 65536;
+/// `Lerp`: A rounded to `p0.x` steps per unit (adjustment results on integer documents).
+pub const F_QUANT: u32 = 32768;
 /// `Lerp` as A + (B − C) premultiplied (layers clipped to pass-through groups).
 pub const F_ADD_DIFF: u32 = 16384;
 /// Blend / Atop / FxMerge of a type layer: coverage mixed at `psblend::TEXT_GAMMA`.
 pub const F_TEXT_GAMMA: u32 = 8192;
 
+/// `F_TEXT_GAMMA` for type layers while text gamma blending is on; the gamma goes in `p4.w`.
 fn gamma_flag(layer: &Layer) -> u32 {
     if photocraft_compose::text_gamma(layer) != 1.0 { F_TEXT_GAMMA } else { 0 }
 }
@@ -383,6 +394,9 @@ impl<'a> Planner<'a> {
     fn emit(&mut self, mut pass: Pass<'a>) -> Slot {
         let dst = self.alloc();
         pass.dst = dst;
+        if self.cx.mode == photocraft_color::ColorMode::Lab {
+            pass.flags |= F_LAB;
+        }
         let (a, b, c, d) = (pass.a, pass.b, pass.c, pass.d);
         self.passes.push(pass);
         for s in [a, b, c, d].into_iter().flatten() {
@@ -406,6 +420,14 @@ impl<'a> Planner<'a> {
             let clipped = &layers[i + 1..j];
             if base.visible {
                 backdrop = self.layer(base, clipped, backdrop)?;
+                if let (LayerContent::Adjustment(_), Some(q)) = (&base.content, photocraft_compose::adjustment_quantum(self.cx.depth)) {
+                    // compose: adjustment results are rounded to the document's depth.
+                    let mut p = Pass::new(Kernel::Lerp, 0);
+                    p.a = Some(backdrop);
+                    p.flags = F_QUANT;
+                    p.params[0] = [q, 0.0, 0.0, 0.0];
+                    backdrop = self.emit(p);
+                }
             }
             i = j.max(i + 1);
         }
@@ -601,6 +623,7 @@ impl<'a> Planner<'a> {
         p.mode = layer.blend;
         p.opacity = opacity;
         p.flags = gamma_flag(layer);
+        p.extra[3] = photocraft_compose::text_gamma(layer);
         Ok(self.emit(p))
     }
 
@@ -738,6 +761,7 @@ impl<'a> Planner<'a> {
         p.mode = layer.blend;
         p.opacity = opacity;
         p.flags = gamma_flag(layer);
+        p.extra[3] = photocraft_compose::text_gamma(layer);
         Ok(self.emit(p))
     }
 
@@ -756,12 +780,9 @@ impl<'a> Planner<'a> {
     /// (atop = true: effects over the base treated as opaque, keeping the base's alpha).
     /// Consumes `backdrop`.
     fn effects(&mut self, layer: &'a Layer, clipped: &[&'a Layer], backdrop: Slot, atop: bool) -> Result<Slot, Unsupported> {
-        if layer.effects.items.iter().any(|e| matches!(e, Effect::BevelEmboss(b) if b.enabled && b.texture.is_some())) {
-            return Err(Unsupported(format!("bevel texture on `{}` (rendered on the CPU)", layer.name)));
-        }
         let canvas = self.cx.canvas;
         let region = bounds::effect_region(layer, canvas);
-        let sb = bounds::layer_bounds(layer, canvas);
+        let sb = photocraft_compose::paint_bounds(layer).unwrap_or_else(|| bounds::layer_bounds(layer, canvas));
         let clip = if bounds::transparent_outside(layer) { region } else { canvas };
         let mut content = self.content(layer)?;
         if !matches!(layer.content, LayerContent::Group(_))
@@ -925,6 +946,7 @@ impl<'a> Planner<'a> {
         p.mode = if layer.blend == BlendMode::PassThrough { BlendMode::Normal } else { layer.blend };
         p.opacity = layer.opacity;
         p.flags = if atop { F_ATOP } else { 0 } | gamma_flag(layer);
+        p.extra[3] = photocraft_compose::text_gamma(layer);
         p.clip = Some(clip);
         let merged = self.emit(p);
         self.release(content);

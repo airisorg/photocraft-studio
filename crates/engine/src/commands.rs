@@ -461,7 +461,7 @@ fn build() -> Vec<CommandSpec> {
             Ok(Value::Null)
         }),
         cmd!("layer.select", "Select Layer", [], None, r##"{"layer":id,"mode":"replace|toggle|range|add"="replace"} (toggle = ⌘-click, range = ⇧-click)"##, has_doc, crate::layer_multi_cmds::select),
-        cmd!("layer.setProps", "Layer Properties", [], None, r##"{"layer":id?,"name":str?,"visible":bool?,"opacity":0..1?,"fill":0..1?,"blend":"Multiply|…"?,"clipped":bool?,"locked":bool?,"locks":{"transparency","pixels","position","artboard","all":bool}?}"##, has_layer, |s, p| {
+        cmd!("layer.setProps", "Layer Properties", [], None, r##"{"layer":id?,"name":str?,"visible":bool?,"opacity":0..1?,"fill":0..1?,"blend":"Multiply|…"?,"clipped":bool?,"locked":bool?,"locks":{"transparency","pixels","position","artboard","all":bool}?,"channels":[bool,…]? (Advanced Blending: which colour channels blend, R G B / C M Y K / L a b)}"##, has_layer, |s, p| {
             let id = layer_param(s, p)?;
             let label = if p.get("visible").is_some() && p.as_object().is_some_and(|o| o.len() <= 2) { "Layer Visibility" } else { "Layer Properties" };
             s.edit(label, |doc, _| {
@@ -486,6 +486,10 @@ fn build() -> Vec<CommandSpec> {
                 }
                 if let Some(v) = p.get("locked").and_then(Value::as_bool) {
                     l.locks.all = v;
+                }
+                if let Some(Value::Array(ch)) = p.get("channels") {
+                    // Blending Options › Advanced Blending › Channels: unchecked = left out.
+                    l.excluded_channels = ch.iter().take(32).enumerate().filter(|(_, v)| v.as_bool() == Some(false)).fold(0, |m, (i, _)| m | 1 << i);
                 }
                 if let Some(Value::Object(m)) = p.get("locks") {
                     for (k, v) in m {

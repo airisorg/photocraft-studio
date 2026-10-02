@@ -321,6 +321,31 @@ impl Object {
     }
 }
 
+/// Compresses `objects` on scoped worker threads (sequentially on wasm).
+fn par_compress<'a>(objects: &[(&'a String, &'a Object)]) -> Vec<(&'a String, Arc<Vec<u8>>)> {
+    let threads = if cfg!(target_arch = "wasm32") { 1 } else { std::thread::available_parallelism().map_or(1, |n| n.get()).clamp(1, 32) };
+    if threads < 2 || objects.len() < 2 {
+        return objects.iter().map(|(p, o)| (*p, Arc::new(o.compressed()))).collect();
+    }
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    std::thread::scope(|sc| {
+        let hs: Vec<_> = (0..threads.min(objects.len()))
+            .map(|_| {
+                sc.spawn(|| {
+                    let mut out = Vec::new();
+                    loop {
+                        let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some((p, o)) = objects.get(i) else { break };
+                        out.push((*p, Arc::new(o.compressed())));
+                    }
+                    out
+                })
+            })
+            .collect();
+        hs.into_iter().flat_map(|h| h.join().expect("compress worker")).collect()
+    })
+}
+
 impl PcraftWriter {
     pub fn new() -> Self {
         Self::default()
@@ -379,6 +404,9 @@ impl PcraftWriter {
             z.add(name, data)?;
         }
         let mut next = HashMap::with_capacity(p.objects.len());
+        // New objects are compressed on all cores first (zstd dominates a full save).
+        let todo: Vec<(&String, &Object)> = p.objects.iter().filter(|(path, _)| !self.compressed.contains_key(*path)).collect();
+        let mut fresh: HashMap<&String, Arc<Vec<u8>>> = par_compress(&todo).into_iter().collect();
         for (path, obj) in &p.objects {
             let data = match self.compressed.get(path) {
                 Some(d) => {
@@ -392,7 +420,7 @@ impl PcraftWriter {
                         Object::Tile(..) => stats.tiles_written += 1,
                         Object::Blob(_) => stats.blobs_written += 1,
                     }
-                    Arc::new(obj.compressed())
+                    fresh.remove(path).unwrap_or_else(|| Arc::new(obj.compressed()))
                 }
             };
             z.add(path, &data)?;

@@ -45,9 +45,10 @@ const F_REL: u32 = 512u;         // effect paint: coverage relative to the layer
 const F_STROKE_OUT: u32 = 1024u; // effect paint: outside stroke band
 const F_FIRST: u32 = 2048u;      // outside strokes: nothing accumulated yet
 const F_CHANNELS: u32 = 4096u;   // lerp: per-channel weights in p0 (channel restrictions)
+const F_LAB: u32 = 65536u;      // Lab document: Normal mixes in CIELAB
+const F_QUANT: u32 = 32768u;    // lerp: A rounded to p0.x steps (adjustment results, integer docs)
 const F_ADD_DIFF: u32 = 16384u;  // lerp: A + (B - C) premultiplied (clips on pass-through groups)
-const F_TEXT_GAMMA: u32 = 8192u; // blend / atop / fx merge: type layer, mix coverage at gamma 1.45
-const TEXT_GAMMA: f32 = 1.45;
+const F_TEXT_GAMMA: u32 = 8192u; // blend / atop / fx merge: type layer, mix coverage at gamma p4.w
 
 @group(0) @binding(0) var<uniform> chunk: Chunk;
 @group(0) @binding(1) var<uniform> op: Op;
@@ -226,6 +227,12 @@ fn composite(mode: i32, b: vec4<f32>, s: vec4<f32>, opacity: f32) -> vec4<f32> {
     let ab = b.a;
     let as_ = s.a * opacity;
     if (as_ <= 0.0) { return b; }
+    if ((op.flags & F_LAB) != 0u && mode == M_NORMAL && ab > 0.0) {
+        // psblend::composite on Lab documents: Normal mixes in CIELAB.
+        let ao = as_ + ab * (1.0 - as_);
+        let m = srgb_to_lab(b.rgb) * (ab * (1.0 - as_) / ao) + srgb_to_lab(s.rgb) * (as_ / ao);
+        return vec4(lab_to_srgb(m), ao);
+    }
     let bl = blend_rgb(mode, b.rgb, s.rgb);
     let ao = as_ + ab * (1.0 - as_);
     if (ao <= 0.0) { return vec4(0.0); }
@@ -242,9 +249,40 @@ fn composite_g(mode: i32, b: vec4<f32>, s: vec4<f32>, opacity: f32, gamma_on: bo
     let bl = blend_rgb(mode, b.rgb, s.rgb);
     let ao = as_ + ab * (1.0 - as_);
     if (ao <= 0.0) { return vec4(0.0); }
-    let g = TEXT_GAMMA;
+    let g = op.p4.w; // psblend::text_gamma
     let pw = (1.0 - as_) * ab * pow(max(b.rgb, vec3(0.0)), vec3(g)) + (1.0 - ab) * as_ * pow(max(s.rgb, vec3(0.0)), vec3(g)) + as_ * ab * pow(max(bl, vec3(0.0)), vec3(g));
     return vec4(pow(pw / ao, vec3(1.0 / g)), ao);
+}
+
+// photocraft_color::convert::{srgb_to_lab, lab_to_srgb} (D50, Bradford to sRGB).
+const D50: vec3<f32> = vec3(0.96422, 1.0, 0.82521);
+fn lab_f(t: f32) -> f32 {
+    if (t > 0.008856452) { return pow(t, 1.0 / 3.0); }   // (6/29)^3
+    return t / 0.12841855 + 0.13793103;                    // 3 (6/29)^2, 4/29
+}
+fn lab_finv(t: f32) -> f32 {
+    if (t > 0.20689656) { return t * t * t; }             // 6/29
+    return 0.12841855 * (t - 0.13793103);
+}
+fn srgb_to_lab(c: vec3<f32>) -> vec3<f32> {
+    let lin = vec3(srgb_to_linear(c.r), srgb_to_linear(c.g), srgb_to_linear(c.b));
+    let x = (0.436074 * lin.r + 0.385064 * lin.g + 0.143080 * lin.b) / D50.x;
+    let y = (0.222504 * lin.r + 0.716878 * lin.g + 0.060618 * lin.b) / D50.y;
+    let z = (0.013932 * lin.r + 0.097104 * lin.g + 0.714173 * lin.b) / D50.z;
+    let fx = lab_f(x);
+    let fy = lab_f(y);
+    let fz = lab_f(z);
+    return vec3(116.0 * fy - 16.0, 500.0 * (fx - fy), 200.0 * (fy - fz));
+}
+fn lab_to_srgb(lab: vec3<f32>) -> vec3<f32> {
+    let fy = (lab.x + 16.0) / 116.0;
+    let fx = fy + lab.y / 500.0;
+    let fz = fy - lab.z / 200.0;
+    let xyz = vec3(lab_finv(fx) * D50.x, lab_finv(fy) * D50.y, lab_finv(fz) * D50.z);
+    let r = 3.133856 * xyz.x - 1.616867 * xyz.y - 0.490615 * xyz.z;
+    let g = -0.978768 * xyz.x + 1.916142 * xyz.y + 0.033454 * xyz.z;
+    let b = 0.071945 * xyz.x - 0.228991 * xyz.y + 1.405243 * xyz.z;
+    return vec3(linear_to_srgb(clamp(r, 0.0, 1.0)), linear_to_srgb(clamp(g, 0.0, 1.0)), linear_to_srgb(clamp(b, 0.0, 1.0)));
 }
 
 fn dissolve_noise(d: vec2<i32>) -> f32 {
@@ -513,13 +551,15 @@ fn gradient_t(d: vec2<i32>) -> f32 {
     let along = dx * c - dy * s;
     let across = dx * s + dy * c;
     let len = max(sqrt((c * w) * (c * w) + (s * h) * (s * h)), 1.0) * max(op.p0.y, 1e-3);
+    // effects::gradient_t: Linear / Reflected span the bounds' chord along the angle.
+    let chord = max(min(w / max(abs(c), 1e-6), h / max(abs(s), 1e-6)), 1.0) * max(op.p0.y, 1e-3);
     var t: f32;
     switch i32(op.p0.w) {
         case 1: { t = sqrt(dx * dx + dy * dy) / (len / 2.0); }                  // Radial
         case 2: { t = rem_euclid((a - atan2(-dy, dx)) / 6.28318530718, 1.0); }   // Angle
-        case 3: { t = abs(along / (len / 2.0)); }                               // Reflected
+        case 3: { t = abs(along / (chord / 2.0)); }                             // Reflected
         case 4: { t = (abs(along) + abs(across)) / (len / 2.0); }               // Diamond
-        default: { t = along / len + 0.5; }                                     // Linear
+        default: { t = along / chord + 0.5; }                                   // Linear
     }
     t = clamp(t, 0.0, 1.0);
     if (op.p0.z > 0.5) { t = 1.0 - t; }
@@ -613,6 +653,9 @@ fn fs_lerp(in: VOut) -> @location(0) vec4<f32> {
     let p = local(in.pos);
     let a = textureLoad(tex_a, p, 0);
     let b = textureLoad(tex_b, p, 0);
+    if ((op.flags & F_QUANT) != 0u) {
+        return floor(a * op.p0.x + 0.5) / op.p0.x;
+    }
     if ((op.flags & F_CHANNELS) != 0u) {
         return a + (b - a) * op.p0;
     }
@@ -827,12 +870,14 @@ fn fs_mshift(in: VOut) -> @location(0) vec4<f32> {
     return mout(v);
 }
 
-// effects::dilate: max(A, clamp(r + 0.5 - dist_outside)), B = distances, p0.x = r.
+// effects::dilate: inside (distance < 0) min(A + r, 1), else max(A, clamp(r + 0.5 - dist_outside));
+// B = distances, p0.x = r.
 @fragment
 fn fs_mdilate(in: VOut) -> @location(0) vec4<f32> {
     let p = local(in.pos);
     let a = textureLoad(tex_a, p, 0).r;
     let d = textureLoad(tex_b, p, 0).r;
+    if (d < 0.0) { return mout(min(a + op.p0.x, 1.0)); }
     return mout(max(a, clamp(op.p0.x + 0.5 - d, 0.0, 1.0)));
 }
 
@@ -922,7 +967,7 @@ fn fs_mbevelshade(in: VOut) -> @location(0) vec4<f32> {
     var region = s;
     if (op.p1.y > 0.5) {
         // Outside parts paint at full strength wherever the shape isn't opaque (edge pixels too).
-        region = select(0.0, 1.0, s < 1.0 - INSIDE_EPS && textureLoad(tex_a, p, 0).r > 0.0);
+        region = select(0.0, 1.0, s < 1.0 - INSIDE_EPS && textureLoad(tex_a, p, 0).r > 1e-5); // effects::BEVEL_H_EPS
     }
     let k = shade - se;
     var v = 0.0;
@@ -933,6 +978,17 @@ fn fs_mbevelshade(in: VOut) -> @location(0) vec4<f32> {
     }
     if (op.p1.w > 0.5) { v = lut(0, v); }
     return mout(v);
+}
+
+// Bevel texture (`effects::bevel_height`): A + k × luminance of the pattern (× its alpha; 1 −
+// that when inverted); p0 = (k, invert), placement in p3 / p4 as for pattern paints.
+@fragment
+fn fs_mbeveltex(in: VOut) -> @location(0) vec4<f32> {
+    let p = local(in.pos);
+    let c = pattern_sample(doc_px(p));
+    var l = (0.299 * c.r + 0.587 * c.g + 0.114 * c.b) * c.a;
+    if (op.p0.y > 0.5) { l = 1.0 - l; }
+    return mout(textureLoad(tex_a, p, 0).r + op.p0.x * l);
 }
 
 // Stroke band from a distance map: clamp(width + 0.5 - d), p0.x = width.

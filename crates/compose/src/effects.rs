@@ -335,7 +335,9 @@ fn dilate(s: &Map, r: f32) -> Map {
     let d = dist_outside(s);
     let mut out = s.clone();
     for (o, d) in out.v.iter_mut().zip(d) {
-        *o = o.max((r + 0.5 - d).clamp(0.0, 1.0));
+        // Partly covered pixels (distance sentinel < 0) grow by `r` from their own coverage, so a
+        // 2 % spread doesn't make every anti-aliased edge pixel opaque (ag-psd drop shadow).
+        *o = if d < 0.0 { (*o + r).min(1.0) } else { o.max((r + 0.5 - d).clamp(0.0, 1.0)) };
     }
     out
 }
@@ -422,9 +424,14 @@ pub fn gradient_t(style: GradientStyle, angle: f32, scale: f32, reverse: bool, o
     // norm (a unit gradient scaled to the bounds); fitted on psd-tools
     // gradient-styles.psd (cached Photoshop renderings of every style).
     let len = ((c * w).powi(2) + (s * h).powi(2)).sqrt().max(1.0) * scale.max(1e-3);
+    // Linear / Reflected span the chord of the bounds through their centre along the angle:
+    // min(w / |cos|, h / |sin|). A 45° gradient on a 29 px square runs 41 px (psd-tools
+    // shape-fx2), an 87° one on a 600 × 60 text line 60 px (layer_effects); axis-aligned angles
+    // span the width / height.
+    let chord = (w / c.abs().max(1e-6)).min(h / s.abs().max(1e-6)).max(1.0) * scale.max(1e-3);
     let mut t = match style {
-        GradientStyle::Linear => along / len + 0.5,
-        GradientStyle::Reflected => (along / (len / 2.0)).abs(),
+        GradientStyle::Linear => along / chord + 0.5,
+        GradientStyle::Reflected => (along / (chord / 2.0)).abs(),
         GradientStyle::Radial => (dx * dx + dy * dy).sqrt() / (len / 2.0),
         GradientStyle::Diamond => (along.abs() + across.abs()) / (len / 2.0),
         // Clockwise sweep starting at the gradient angle.
@@ -480,13 +487,21 @@ fn paint_color(dst: &mut Buffer, m: &Map, c: [f32; 3], blend: BlendMode, opacity
     paint(dst, m, |_| [c[0], c[1], c[2], 1.0], blend, opacity);
 }
 
+/// Spread / choke of a soft effect: (dilation radius, blur width). The dilation is whole pixels
+/// (`size × spread` rounded: a 2 % spread of a 5 px shadow doesn't grow it at all), the blur
+/// keeps `size × (1 − spread)` (ag-psd effects 10.6 → 3.8 % of pixels off).
+pub fn spread_split(size: f32, spread: f32) -> (f32, f32) {
+    ((size * spread).round(), size * (1.0 - spread))
+}
+
 fn shadow_map(shape: &Map, s: &Shadow, light: &GlobalLight, inner: bool) -> Map {
     let angle = if s.use_global_light { light.angle } else { s.angle };
     let (dx, dy) = offset(angle, s.distance);
     let src = if inner { shape.clone().map(|a| 1.0 - a) } else { shape.clone() };
     let mut m = src.shifted(dx, dy, if inner { 1.0 } else { 0.0 });
-    m = dilate(&m, s.size * s.spread);
-    blur(&mut m, s.size * (1.0 - s.spread));
+    let (r, bw) = spread_split(s.size, s.spread);
+    m = dilate(&m, r);
+    blur(&mut m, bw);
     let mut m = apply_contour(m, &s.contour);
     if inner {
         for (v, a) in m.v.iter_mut().zip(&shape.v) {
@@ -520,12 +535,13 @@ fn glow_map(shape: &Map, g: &Glow, inner: bool) -> Map {
             m
         }
         GlowTechnique::Softer => {
-            let mut m = dilate(&src, g.size * g.spread);
-            blur(&mut m, g.size * (1.0 - g.spread));
+            let (r, bw) = spread_split(g.size, g.spread);
+            let mut m = dilate(&src, r);
+            blur(&mut m, bw);
             if inner && g.source == GlowSource::Center {
                 // Brightest in the middle: coverage from the distance to the edge.
-                let mut e = dilate(&shape.clone().map(|a| 1.0 - a), g.size * g.spread);
-                blur(&mut e, g.size * (1.0 - g.spread));
+                let mut e = dilate(&shape.clone().map(|a| 1.0 - a), r);
+                blur(&mut e, bw);
                 m = e.map(|v| 1.0 - v);
             }
             m
@@ -607,41 +623,138 @@ pub fn tent_kernel(w: f32) -> (i32, Vec<f32>) {
     ((n as i32 - 1) / 2, t)
 }
 
-/// Separable convolution with a symmetric 1D kernel (outside reads 0).
-fn convolve(m: &mut Map, r: i64, kernel: &[f32]) {
-    let (w, h) = (m.w as i64, m.h as i64);
-    let mut tmp = vec![0.0f32; m.v.len()];
-    for y in 0..h {
-        for x in 0..w {
-            let mut acc = 0.0;
-            for (k, kv) in kernel.iter().enumerate() {
-                let xx = x + k as i64 - r;
-                if xx >= 0 && xx < w {
-                    acc += m.v[(y * w + xx) as usize] * kv;
+/// Box geometry for a (fractional) width: (`r`, end-tap weight `f`, 1 / width) — the
+/// [`box_weights`] taps are `r - 1` full ones each side of the centre plus the two end taps at `f`.
+fn box_geom(bw: f32) -> (i64, f64, f64) {
+    let half = bw.max(1.0) / 2.0;
+    let r = (half - 0.5).ceil().max(0.0) as i64;
+    let f = f64::from((half - (r as f32 - 0.5)).clamp(0.0, 1.0));
+    (r, f, 1.0 / f64::from(bw.max(1.0)))
+}
+
+/// One box pass over `src` (zero outside it) evaluated at `x0 .. x0 + dst.len()`, as a running
+/// sum (O(1) per sample whatever the width).
+fn box_line(src: &[f64], x0: i64, dst: &mut [f64], bw: f32) {
+    let n = src.len() as i64;
+    let (r, f, norm) = box_geom(bw);
+    let at = |i: i64| if i >= 0 && i < n { src[i as usize] } else { 0.0 };
+    if r == 0 {
+        for (k, d) in dst.iter_mut().enumerate() {
+            *d = at(x0 + k as i64);
+        }
+        return;
+    }
+    let mut inner: f64 = (x0 - (r - 1)..=x0 + (r - 1)).map(at).sum();
+    for (k, d) in dst.iter_mut().enumerate() {
+        let x = x0 + k as i64;
+        *d = (inner + f * (at(x - r) + at(x + r))) * norm;
+        inner += at(x + r) - at(x - r + 1);
+    }
+}
+
+/// Two box passes along a line, exactly the convolution with [`tent_kernel`] (zero outside): the
+/// first pass is evaluated `r` samples beyond each end so the second sees what lies there.
+fn tent_line(src: &[f32], dst: &mut [f32], bw: f32) {
+    let (r, _, _) = box_geom(bw);
+    let s: Vec<f64> = src.iter().map(|v| f64::from(*v)).collect();
+    let mut mid = vec![0.0f64; src.len() + 2 * r as usize];
+    box_line(&s, -r, &mut mid, bw);
+    let mut out = vec![0.0f64; src.len()];
+    // `mid[k]` holds position k - r: output position p reads index p + r.
+    box_line(&mid, r, &mut out, bw);
+    for (d, v) in dst.iter_mut().zip(out) {
+        *d = v as f32;
+    }
+}
+
+/// Rows of a `w`-wide row-major buffer, each through `f(src_row, dst_row)`, in parallel on
+/// scoped OS threads. Not rayon: maps are built inside a `OnceLock` while rayon renders tiles,
+/// and a rayon worker that stole another tile here would block on that same lock (deadlock).
+fn rows_par(src: &[f32], dst: &mut [f32], w: usize, f: impl Fn(&[f32], &mut [f32]) + Sync) {
+    if w == 0 {
+        return;
+    }
+    let threads = if cfg!(target_arch = "wasm32") || src.len() < 1 << 16 { 1 } else { std::thread::available_parallelism().map_or(1, |n| n.get()).clamp(1, 16) };
+    if threads == 1 {
+        dst.chunks_mut(w).zip(src.chunks(w)).for_each(|(d, s)| f(s, d));
+        return;
+    }
+    let rows = (src.len() / w).div_ceil(threads);
+    std::thread::scope(|sc| {
+        for (d, s) in dst.chunks_mut(rows * w).zip(src.chunks(rows * w)) {
+            let f = &f;
+            sc.spawn(move || d.chunks_mut(w).zip(s.chunks(w)).for_each(|(d, s)| f(s, d)));
+        }
+    });
+}
+
+fn transpose_map(v: &[f32], w: usize, h: usize) -> Vec<f32> {
+    let mut out = vec![0.0f32; v.len()];
+    const B: usize = 32;
+    for by in (0..h).step_by(B) {
+        for bx in (0..w).step_by(B) {
+            for y in by..(by + B).min(h) {
+                for x in bx..(bx + B).min(w) {
+                    out[x * h + y] = v[y * w + x];
                 }
             }
-            tmp[(y * w + x) as usize] = acc;
         }
     }
-    for y in 0..h {
-        for x in 0..w {
-            let mut acc = 0.0;
-            for (k, kv) in kernel.iter().enumerate() {
-                let yy = y + k as i64 - r;
-                if yy >= 0 && yy < h {
-                    acc += tmp[(yy * w + x) as usize] * kv;
+    out
+}
+
+/// Two box passes of width `w` along each axis (the tent [`tent_kernel`] describes, which the GPU
+/// convolves directly).
+fn tent(m: &mut Map, w: f32) {
+    if tent_kernel(w).0 == 0 || m.v.is_empty() {
+        return;
+    }
+    tent_fast(m, w);
+}
+
+/// [`tent`] as a direct convolution with [`tent_kernel`] (the GPU's way; tests compare).
+#[cfg(test)]
+fn tent_direct(m: &mut Map, w: f32) {
+    {
+        let (r, k) = tent_kernel(w);
+        let (mw, mh) = (m.w as i64, m.h as i64);
+        let mut tmp = vec![0.0f32; m.v.len()];
+        for y in 0..mh {
+            for x in 0..mw {
+                let mut acc = 0.0;
+                for (i, kv) in k.iter().enumerate() {
+                    let xx = x + i as i64 - r as i64;
+                    if xx >= 0 && xx < mw {
+                        acc += m.v[(y * mw + xx) as usize] * kv;
+                    }
                 }
+                tmp[(y * mw + x) as usize] = acc;
             }
-            m.v[(y * w + x) as usize] = acc;
+        }
+        for y in 0..mh {
+            for x in 0..mw {
+                let mut acc = 0.0;
+                for (i, kv) in k.iter().enumerate() {
+                    let yy = y + i as i64 - r as i64;
+                    if yy >= 0 && yy < mh {
+                        acc += tmp[(yy * mw + x) as usize] * kv;
+                    }
+                }
+                m.v[(y * mw + x) as usize] = acc;
+            }
         }
     }
 }
 
-fn tent(m: &mut Map, w: f32) {
-    let (r, k) = tent_kernel(w);
-    if r > 0 {
-        convolve(m, i64::from(r), &k);
-    }
+fn tent_fast(m: &mut Map, w: f32) {
+    let (mw, mh) = (m.w, m.h);
+    let twice = |s: &[f32], d: &mut [f32]| tent_line(s, d, w);
+    let mut a = vec![0.0f32; m.v.len()];
+    rows_par(&m.v, &mut a, mw, twice);
+    let t = transpose_map(&a, mw, mh);
+    let mut b = vec![0.0f32; t.len()];
+    rows_par(&t, &mut b, mh, twice);
+    m.v = transpose_map(&b, mh, mw);
 }
 
 /// Where a bevel's maps paint: inside the shape (with the layer), outside it (onto the
@@ -652,6 +765,10 @@ pub enum BevelPaint {
     Outer,
     Both,
 }
+
+/// Height below which an outer bevel pixel counts as off the bevel (beyond the blur's reach):
+/// above float noise of the running-sum blur (~3e-7), far below anything that shades.
+pub const BEVEL_H_EPS: f32 = 1e-5;
 
 /// Bevel geometry shared by the CPU maps and the GPU programs.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -778,7 +895,7 @@ fn bevel_maps(shape: &Map, b: &Bevel, light: &GlobalLight, tex: &TextureCtx) -> 
                 let n = [-gx, -gy, 1.0];
                 let len = (n[0] * n[0] + n[1] * n[1] + 1.0).sqrt();
                 let shade = (n[0] * light_v[0] + n[1] * light_v[1] + n[2] * light_v[2]) / len;
-                let region = if outer { f32::from(shape.v[i] < 1.0 - INSIDE_EPS && hmap.v[i] > 0.0) } else { shape.v[i] };
+                let region = if outer { f32::from(shape.v[i] < 1.0 - INSIDE_EPS && hmap.v[i] > BEVEL_H_EPS) } else { shape.v[i] };
                 let k = shade - se;
                 if k > 0.0 {
                     hi.v[i] = (k / (1.0 - se).max(1e-3)).clamp(0.0, 1.0) * region;
@@ -1230,6 +1347,21 @@ mod tests {
         assert!((at(1, 3) - (5f32.sqrt() + 1.0)).abs() < 1e-5, "knight + straight, not √10");
         assert!((at(2, 3) - (5f32.sqrt() + std::f32::consts::SQRT_2)).abs() < 1e-5);
         assert!(near.iter().all(|&n| n == 0));
+    }
+
+    #[test]
+    fn running_sum_tent_matches_the_kernel() {
+        let (w, h) = (37usize, 23usize);
+        let src: Vec<f32> = (0..w * h).map(|i| ((i * 7919) % 101) as f32 / 100.0).collect();
+        for width in [1.0f32, 2.0, 3.5, 5.0, 8.25, 41.0] {
+            let mut m = Map { w, h, v: src.clone() };
+            tent(&mut m, width);
+            let mut want = Map { w, h, v: src.clone() };
+            tent_direct(&mut want, width);
+            for (a, b) in m.v.iter().zip(&want.v) {
+                assert!((a - b).abs() < 1e-5, "width {width}: {a} vs {b}");
+            }
+        }
     }
 
     #[test]

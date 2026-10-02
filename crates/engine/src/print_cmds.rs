@@ -298,8 +298,11 @@ fn do_print(s: &mut Session, p: &Value, cmd: &str) -> Result<Value> {
     let pdf_path = match &output {
         Some(o) => o.clone(),
         None => {
+            // Unique per call: concurrent prints of same-named documents must not share a spool file.
+            static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let tmp = std::env::temp_dir().to_string_lossy().into_owned();
-            join(&tmp, &format!("{}-print-{}.pdf", crate::file_cmds::sanitize(&stem(&doc.name)), std::process::id()))
+            join(&tmp, &format!("{}-print-{}-{n}.pdf", crate::file_cmds::sanitize(&stem(&doc.name)), std::process::id()))
         }
     };
     write_file(&pdf_path, &pdf)?;

@@ -97,6 +97,11 @@ impl Placement {
         Placement { origin, cs: (a.cos(), a.sin()), inv_scale }
     }
 
+    /// (origin, inverse rotation (cos, sin), inverse scale), for GPU shaders.
+    pub fn parts(&self) -> ((f64, f64), (f64, f64), f64) {
+        (self.origin, self.cs, self.inv_scale)
+    }
+
     /// Tile coordinates of the document point `(x, y)`.
     #[inline]
     pub fn map(&self, x: f64, y: f64) -> (f64, f64) {

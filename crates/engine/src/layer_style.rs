@@ -149,8 +149,16 @@ pub fn effect_from_params(kind: &str, p: &Value) -> Option<Effect> {
             highlight_color: Color::WHITE,
             shadow: FxCommon::new(BlendMode::Multiply, 0.75),
             shadow_color: Color::BLACK,
-            contour: None,
-            texture: None,
+            contour: b(p, "contour", false).then(|| photocraft_doc::BevelContour { contour: Contour::Linear, range: (f(p, "contourRange", 50.0) / 100.0).clamp(0.01, 1.0), anti_alias: false }),
+            texture: p.get("texture").and_then(Value::as_str).filter(|t| !t.is_empty()).map(|t| photocraft_doc::BevelTexture {
+                name: t.to_string(),
+                id: t.to_string(),
+                scale: (f(p, "textureScale", 100.0) / 100.0).clamp(0.01, 10.0),
+                depth: (f(p, "textureDepth", 100.0) / 100.0).clamp(-10.0, 10.0),
+                invert: b(p, "textureInvert", false),
+                link: b(p, "textureLink", true),
+                phase: (0.0, 0.0),
+            }),
         }),
         _ => return None,
     })
@@ -215,7 +223,7 @@ pub fn specs() -> Vec<CommandSpec> {
         style_cmd!("colorOverlay", "Color Overlay…", r##"{"color":"#rrggbb","opacity":0..100=100,"blend":str,"add":bool}"##),
         style_cmd!("gradientOverlay", "Gradient Overlay…", r##"{"from":"#rrggbb","to":"#rrggbb","style":"linear|radial|angle|reflected|diamond","angle":deg=90,"scale":10..150=100,"reverse":bool,"opacity":0..100,"blend":str,"add":bool}"##),
         style_cmd!("patternOverlay", "Pattern Overlay…", r##"{"pattern":id|name?=first library pattern,"opacity":0..100=100,"blend":str,"scale":1..1000=100,"angle":deg=0,"link":bool=true,"phaseX":px,"phaseY":px,"add":bool}"##),
-        style_cmd!("bevelEmboss", "Bevel & Emboss…", r##"{"style":"inner|outer|emboss|pillow|stroke","technique":"smooth|chiselHard|chiselSoft","depth":1..1000=100,"direction":"up|down","size":px=5,"soften":px,"angle":deg,"altitude":deg,"add":bool}"##),
+        style_cmd!("bevelEmboss", "Bevel & Emboss…", r##"{"style":"inner|outer|emboss|pillow|stroke","technique":"smooth|chiselHard|chiselSoft","contour":bool,"contourRange":1..100=50,"texture":pattern id|name?,"textureScale":1..1000=100,"textureDepth":-1000..1000=100,"textureInvert":bool,"textureLink":bool=true,"depth":1..1000=100,"direction":"up|down","size":px=5,"soften":px,"angle":deg,"altitude":deg,"add":bool}"##),
         style_cmd!("satin", "Satin…", r##"{"color":"#rrggbb","opacity":0..100=50,"blend":str,"angle":deg,"distance":px,"size":px,"invert":bool,"add":bool}"##),
         CommandSpec {
             id: "layer.layerStyle.clear",
@@ -256,6 +264,18 @@ mod tests {
     fn effects(s: &Session) -> Vec<Effect> {
         let d = s.active().unwrap();
         d.doc.layer(d.active_layer.unwrap()).unwrap().effects.items.clone()
+    }
+
+    #[test]
+    fn bevel_command_sets_technique_contour_and_texture() {
+        let mut s = session();
+        s.execute("layer.layerStyle.bevelEmboss", json!({"style": "pillow", "technique": "chiselHard", "contour": true, "contourRange": 70, "texture": "Bubbles", "textureDepth": -200, "textureInvert": true})).unwrap();
+        let fx = effects(&s);
+        let Effect::BevelEmboss(b) = &fx[0] else { panic!("{fx:?}") };
+        assert_eq!((b.style, b.technique), (photocraft_doc::BevelStyle::PillowEmboss, BevelTechnique::ChiselHard));
+        assert!((b.contour.as_ref().unwrap().range - 0.7).abs() < 1e-6);
+        let t = b.texture.as_ref().unwrap();
+        assert_eq!((t.name.as_str(), t.depth, t.invert), ("Bubbles", -2.0, true));
     }
 
     #[test]

@@ -71,6 +71,13 @@ fn hard_mix_ps(cb: f32, cs: f32) -> f32 {
     if vivid_light_generic(cb, cs) >= 0.5 - 1e-6 { 1.0 } else { 0.0 }
 }
 
+thread_local! {
+    /// Set while rendering a Lab document: Normal blending mixes backdrop and source in CIELAB
+    /// (Photoshop composites Lab documents in Lab; an anti-aliased edge between two colours
+    /// differs by up to 14 / 255 from an sRGB mix: psd-tools stroke-color-descriptors-lab).
+    pub static LAB_MIX: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 /// `B(Cb, Cs)` with Photoshop's variants.
 pub fn blend_rgb(mode: BlendMode, cb: [f32; 3], cs: [f32; 3]) -> [f32; 3] {
     match mode {
@@ -91,6 +98,15 @@ pub fn composite(mode: BlendMode, backdrop: [f32; 4], source: [f32; 4], opacity:
         return backdrop;
     }
     let ao = as_ + ab * (1.0 - as_);
+    if mode == BlendMode::Normal && LAB_MIX.with(|l| l.get()) && ab > 0.0 && ao > 0.0 {
+        let lb = photocraft_color::convert::srgb_to_lab([backdrop[0], backdrop[1], backdrop[2]]);
+        let ls = photocraft_color::convert::srgb_to_lab([source[0], source[1], source[2]]);
+        let kb = ab * (1.0 - as_) / ao;
+        let k = as_ / ao;
+        let m: [f32; 3] = std::array::from_fn(|i| lb[i] * kb + ls[i] * k);
+        let r = photocraft_color::convert::lab_to_srgb(m);
+        return [r[0], r[1], r[2], ao];
+    }
     if mode == BlendMode::Normal {
         // Fast path: B(Cb, Cs) = Cs.
         if ao <= 0.0 {
@@ -125,6 +141,21 @@ pub fn composite(mode: BlendMode, backdrop: [f32; 4], source: [f32; 4], opacity:
 /// psd-tools layer_effects.psd: a 69 % edge pixel of a blue overlay over grey is 57/255 in red,
 /// a linear mix gives 40).
 pub const TEXT_GAMMA: f32 = 1.45;
+
+static TEXT_GAMMA_SETTING: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x3fb9_999a); // 1.45f32
+
+/// Sets Color Settings › "Blend Text Colors Using Gamma" (1 = off). It is an application
+/// setting, not stored in documents: files saved with it off (ag-psd float-color) mix type
+/// linearly. Values are clamped to Photoshop's 1.00–2.20.
+pub fn set_text_gamma(gamma: f32) {
+    let g = if gamma.is_finite() { gamma.clamp(1.0, 2.2) } else { TEXT_GAMMA };
+    TEXT_GAMMA_SETTING.store(g.to_bits(), std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The current text blending gamma (see [`set_text_gamma`]; 1 = off).
+pub fn text_gamma() -> f32 {
+    f32::from_bits(TEXT_GAMMA_SETTING.load(std::sync::atomic::Ordering::Relaxed))
+}
 
 /// [`composite`] with the coverage mix done in a `gamma` space (`gamma == 1` is [`composite`]).
 pub fn composite_gamma(mode: BlendMode, backdrop: [f32; 4], source: [f32; 4], opacity: f32, gamma: f32) -> [f32; 4] {

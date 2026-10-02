@@ -25,7 +25,7 @@ use std::sync::Arc;
 
 use photocraft_compose::effects::FieldKind;
 use photocraft_compose::effects::BevelPaint;
-use photocraft_doc::{BevelTechnique, Contour, Effect, GlobalLight, GlowSource, GlowTechnique, Layer, LayerContent};
+use photocraft_doc::{BevelTechnique, Contour, Pattern, Effect, GlobalLight, GlowSource, GlowTechnique, Layer, LayerContent};
 use photocraft_geom::{Rect, TileCoord};
 use photocraft_raster::{Surface, Tile};
 
@@ -53,6 +53,11 @@ pub(crate) struct Stage {
     pub lut: Option<Arc<Vec<f32>>>,
     pub p0: [f32; 4],
     pub p1: [f32; 4],
+    /// Pattern placement (`p3`: origin, rotation) and `p4` (inverse scale, tile size) for stages
+    /// that sample `pattern` (bevel texture).
+    pub p3: [f32; 4],
+    pub p4: [f32; 4],
+    pub pattern: Option<Pattern>,
     /// How far (px) the stage reads from its inputs around the output pixel.
     pub radius: i32,
     /// Final map index this stage writes (else a temporary).
@@ -164,7 +169,7 @@ struct B {
 }
 
 fn stage(kernel: Kernel, a: Option<In>, b: Option<In>, p0: [f32; 4], radius: i32) -> Stage {
-    Stage { kernel, a, b, s: None, lut: None, p0, p1: [0.0; 4], radius, out: None }
+    Stage { kernel, a, b, s: None, lut: None, p0, p1: [0.0; 4], p3: [0.0; 4], p4: [0.0; 4], pattern: None, radius, out: None }
 }
 
 impl B {
@@ -250,8 +255,15 @@ fn offset(angle: f32, distance: f32) -> (f32, f32) {
     ((-a.cos() * distance).round(), (a.sin() * distance).round())
 }
 
-/// The map program of one enabled effect (`build_maps`).
+/// The map program of one enabled effect (`build_maps`), without pattern sources.
+#[cfg(test)]
 pub(crate) fn program(e: &Effect, light: &GlobalLight, vector_shape: bool) -> MapProgram {
+    program_with(e, light, vector_shape, &[], (0.0, 0.0))
+}
+
+/// The map program of one enabled effect (`build_maps`); bevel textures tile `patterns` from
+/// `anchor` (`effects::TextureCtx`).
+pub(crate) fn program_with(e: &Effect, light: &GlobalLight, vector_shape: bool, patterns: &[Pattern], anchor: (f64, f64)) -> MapProgram {
     let mut b = B { stages: Vec::new(), fields: Vec::new() };
     let maps = match e {
         Effect::DropShadow(s) | Effect::InnerShadow(s) => {
@@ -260,7 +272,7 @@ pub(crate) fn program(e: &Effect, light: &GlobalLight, vector_shape: bool) -> Ma
             let angle = if s.use_global_light { light.angle } else { s.angle };
             let (dx, dy) = offset(angle, s.distance);
             let src = b.shift(In::Shape, dx, dy, if inner { 1.0 } else { 0.0 }, inner);
-            let r = s.size * s.spread;
+            let (r, bw) = photocraft_compose::effects::spread_split(s.size, s.spread);
             let mut m = src;
             if r > 0.0 {
                 // dist_outside of the shifted map is the shifted field (integer offsets; shifted-in
@@ -269,7 +281,7 @@ pub(crate) fn program(e: &Effect, light: &GlobalLight, vector_shape: bool) -> Ma
                 let d = if dx == 0.0 && dy == 0.0 { f } else { b.push(stage(Kernel::MShift, Some(f), None, [dx, dy, if inner { -0.5 } else { 1e10 }, 0.0], dx.abs().max(dy.abs()) as i32)) };
                 m = b.dilate(src, d, r);
             }
-            let m = b.blur(m, s.size * (1.0 - s.spread));
+            let m = b.blur(m, bw);
             b.finish(m, None, false, &s.contour, inner, 0);
             1
         }
@@ -289,13 +301,13 @@ pub(crate) fn program(e: &Effect, light: &GlobalLight, vector_shape: bool) -> Ma
                 GlowTechnique::Softer => {
                     // Inner glows (edge, and centre as 1 - the edge result) spread 1 - alpha.
                     let src = if inner { b.shift(In::Shape, 0.0, 0.0, 0.0, true) } else { In::Shape };
-                    let r = g.size * g.spread;
+                    let (r, bw) = photocraft_compose::effects::spread_split(g.size, g.spread);
                     let mut m = src;
                     if r > 0.0 {
                         let d = b.field(if inner { FieldKind::OutsideInverse } else { FieldKind::Outside }, r);
                         m = b.dilate(src, d, r);
                     }
-                    let m = b.blur(m, g.size * (1.0 - g.spread));
+                    let m = b.blur(m, bw);
                     b.finish_lut(m, None, center, photocraft_compose::effects::glow_lut(g), inner, 0);
                 }
             }
@@ -334,6 +346,19 @@ pub(crate) fn program(e: &Effect, light: &GlobalLight, vector_shape: bool) -> Ma
                 let lut = photocraft_compose::effects::ranged_lut(&c.contour, c.range).unwrap_or_else(|| (0..4096).map(|k| k as f32 / 4095.0).collect());
                 let mut st = stage(Kernel::MFinish, Some(h), None, [0.0, 0.0, 1.0, 0.0], 0);
                 st.lut = Some(Arc::new(lut));
+                h = b.push(st);
+            }
+            if let Some(t) = &bv.texture
+                && let Some(pat) = photocraft_doc::pattern::find(patterns, &t.id, &t.name).filter(|p| !p.is_empty())
+            {
+                // Texture element (`effects::bevel_height`): luminance × depth / unit added.
+                let unit = if bv.depth.abs() > 1e-6 { (g.depth / bv.depth).abs().max(1e-3) } else { g.width.max(1.0) };
+                let pl = photocraft_compose::pattern::Placement::anchored(anchor, t.link, t.phase, t.scale, 0.0);
+                let (origin, cs, inv) = pl.parts();
+                let mut st = stage(Kernel::MBevelTex, Some(h), None, [t.depth / unit, f32::from(u8::from(t.invert)), 0.0, 0.0], 0);
+                st.p3 = [origin.0 as f32, origin.1 as f32, cs.0 as f32, cs.1 as f32];
+                st.p4 = [inv as f32, pat.width as f32, pat.height as f32, 0.0];
+                st.pattern = Some(pat.clone());
                 h = b.push(st);
             }
             if bv.soften >= 1.0 {
@@ -384,8 +409,14 @@ pub(crate) fn program(e: &Effect, light: &GlobalLight, vector_shape: bool) -> Ma
     let mut h = std::collections::hash_map::DefaultHasher::new();
     for s in &b.stages {
         (format!("{:?}", s.kernel), s.a, s.b, s.s, s.radius, s.out).hash(&mut h);
-        for v in s.p0.iter().chain(&s.p1) {
+        for v in s.p0.iter().chain(&s.p1).chain(&s.p3).chain(&s.p4) {
             v.to_bits().hash(&mut h);
+        }
+        if let Some(p) = &s.pattern {
+            (&p.id, &p.name, p.width, p.height).hash(&mut h);
+            for (c, t) in p.surface.tiles() {
+                (c.tx, c.ty, Arc::as_ptr(t) as usize).hash(&mut h);
+            }
         }
         if let Some(l) = &s.lut {
             for v in l.iter() {

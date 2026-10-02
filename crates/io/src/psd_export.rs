@@ -95,10 +95,9 @@ impl Ex {
         invert.push(false);
         let planes = deinterleave(&bytes, self.cc + 1, self.fmt.sample, &invert);
         let (w, h) = (r.width() as usize, r.height() as usize);
-        let mut ch = vec![self.encode(-1, &planes[self.cc], w, h)];
-        for (c, plane) in planes.iter().take(self.cc).enumerate() {
-            ch.push(self.encode(c as i16, plane, w, h));
-        }
+        // Alpha (-1) first, then the colour channels; each compressed on its own thread.
+        let order: Vec<(i16, &Vec<u8>)> = std::iter::once((-1, &planes[self.cc])).chain(planes.iter().take(self.cc).enumerate().map(|(c, p)| (c as i16, p))).collect();
+        let ch = crate::pixels::par_map(order, |(id, plane)| self.encode(id, plane, w, h));
         (to_psd_rect(r), ch)
     }
 
@@ -559,15 +558,27 @@ pub fn document_to_psd_with(doc: &Document, opts: &PsdExportOptions) -> (PsdFile
     let comp = photocraft_compose::flatten(doc);
     let n = comp.px.len();
     let has_alpha = comp.px.iter().any(|p| q255(p[3]) < 255 || (sample == SampleType::F32 && p[3] < 1.0));
-    let mut color_planes: Vec<Vec<u8>> = vec![Vec::with_capacity(n * sample.bytes()); cc + 1];
     let white = photocraft_raster::from_rgba(&fmt, [1.0, 1.0, 1.0, 1.0]);
-    for p in &comp.px {
-        let v = photocraft_raster::from_rgba(&fmt, *p);
-        for c in 0..=cc {
-            // Matte against white like Photoshop (see `pixels::matte`).
-            let m = if c < cc && has_alpha { crate::pixels::matte(v[c], v[cc], white[c]) } else { v[c] };
-            let x = if ex.cmyk && c < cc { 1.0 - m } else { m };
-            encode_be(x, sample, &mut color_planes[c]);
+    let cmyk = ex.cmyk;
+    // Converted and encoded in bands on all cores, then joined per plane.
+    let parts = crate::pixels::par_map(crate::pixels::bands(n), |range| {
+        let mut planes: Vec<Vec<u8>> = vec![Vec::with_capacity(range.len() * sample.bytes()); cc + 1];
+        let mut v = [0.0f32; 5];
+        for p in &comp.px[range] {
+            photocraft_raster::from_rgba_into(&fmt, *p, &mut v);
+            for c in 0..=cc {
+                // Matte against white like Photoshop (see `pixels::matte`).
+                let m = if c < cc && has_alpha { crate::pixels::matte(v[c], v[cc], white[c]) } else { v[c] };
+                let x = if cmyk && c < cc { 1.0 - m } else { m };
+                encode_be(x, sample, &mut planes[c]);
+            }
+        }
+        planes
+    });
+    let mut color_planes: Vec<Vec<u8>> = vec![Vec::with_capacity(n * sample.bytes()); cc + 1];
+    for part in parts {
+        for (dst, src) in color_planes.iter_mut().zip(part) {
+            dst.extend_from_slice(&src);
         }
     }
     let mut planes = Vec::new();

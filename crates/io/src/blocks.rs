@@ -81,7 +81,9 @@ pub fn color_from_desc(d: &Descriptor) -> Option<Color> {
     let id = d.class_id.as_bytes();
     let g = |k: &str| num(d.get(k)).map(|v| v as f32);
     Some(match id {
-        b"RGBC" => Color::rgb(g("Rd  ")? / 255.0, g("Grn ")? / 255.0, g("Bl  ").or_else(|| g("Bl  "))? / 255.0),
+        // Newer Photoshop writes 0..1 floats (`RGBC` with redFloat / greenFloat / blueFloat).
+        b"RGBC" if d.get("redFloat").is_some() => Color::rgb(g("redFloat")?, g("greenFloat")?, g("blueFloat")?),
+        b"RGBC" => Color::rgb(g("Rd  ")? / 255.0, g("Grn ")? / 255.0, g("Bl  ")? / 255.0),
         b"CMYC" => Color {
             mode: ColorMode::Cmyk,
             c: [g("Cyn ")? / 100.0, g("Mgnt")? / 100.0, g("Ylw ")? / 100.0, g("Blck")? / 100.0],
@@ -509,6 +511,13 @@ mod tests {
 #[cfg(test)]
 mod more_tests {
     use super::*;
+
+    #[test]
+    fn float_rgb_colors_parse() {
+        let d = Descriptor::new("RGBC").with("redFloat", Value::Double(1.0)).with("greenFloat", Value::Double(0.5)).with("blueFloat", Value::Double(0.25));
+        let c = color_from_desc(&d).unwrap();
+        assert_eq!(c.to_rgb(), [1.0, 0.5, 0.25]);
+    }
 
     #[test]
     fn smart_transform_from_sold() {

@@ -644,7 +644,7 @@ fn effect_maps_are_cached_and_invalidated_by_pixel_changes() {
     let mut l = solid_layer("fx", Rect::new(16, 16, 48, 48), [1.0, 0.0, 0.0, 1.0]);
     l.effects.items.push(photocraft_doc::Effect::default_drop_shadow());
     doc.layers.push(l);
-    let cx = Ctx { canvas: doc.bounds(), transfer: adjust::Transfer::Srgb, light: doc.global_light, patterns: &doc.patterns, mode: doc.mode };
+    let cx = Ctx { canvas: doc.bounds(), transfer: adjust::Transfer::Srgb, light: doc.global_light, patterns: &doc.patterns, mode: doc.mode, depth: doc.depth };
     let a = effect_maps(&doc.layers[1], &cx);
     let b = effect_maps(&doc.layers[1], &cx);
     assert!(std::sync::Arc::ptr_eq(&a, &b), "second request hits the cache");
@@ -775,4 +775,32 @@ fn channel_restrictions_keep_the_backdrop() {
     // CMYK documents composite in display RGB: no exact equivalent, ignored.
     assert_eq!(channel_weights(&d.layers[1], ColorMode::Cmyk), None);
     assert_eq!(channel_weights(&d.layers[1], ColorMode::Rgb), Some([1.0, 1.0, 0.0]));
+}
+
+#[test]
+fn effect_maps_built_inside_parallel_tiles_do_not_deadlock() {
+    // A map large enough for the blur to go multi-threaded, built while rayon renders tiles that
+    // all wait on the same map (a rayon-parallel blur deadlocked here).
+    let mut d = doc_white(900, 700);
+    let mut l = solid_layer("fx", Rect::new(100, 100, 800, 600), [0.2, 0.4, 0.9, 1.0]);
+    l.effects.items = vec![photocraft_doc::Effect::default_drop_shadow()];
+    if let photocraft_doc::Effect::DropShadow(s) = &mut l.effects.items[0] {
+        s.size = 30.0;
+    }
+    d.layers.push(l);
+    let out = render(&d, d.bounds());
+    assert_eq!(out.px.len(), 900 * 700);
+}
+
+#[test]
+fn adjustment_results_are_rounded_to_the_document_depth() {
+    for (depth, q) in [(SampleType::U8, Some(255.0f32)), (SampleType::U16, Some(32768.0)), (SampleType::F32, None)] {
+        let mut d = Document::with_background("q", Size::new(4, 4), ColorMode::Rgb, depth, Color::rgb(0.3, 0.6, 0.9));
+        d.layers.push(Layer::new("lv", LayerContent::Adjustment(Adjustment::Exposure { exposure: 0.37, offset: 0.0, gamma: 1.0 })));
+        let p = px(&d, 1, 1);
+        match q {
+            Some(q) => assert!(p.iter().all(|v| ((v * q).round() - v * q).abs() < 1e-3), "{depth:?} {p:?}"),
+            None => assert!(p[..3].iter().any(|v| ((v * 255.0).round() - v * 255.0).abs() > 1e-3), "{p:?}"),
+        }
+    }
 }

@@ -482,3 +482,16 @@ fn duplicating_the_background_unlocks_the_copy() {
     assert_eq!(copy.locks, photocraft_doc::Locks::default());
     assert!(st.doc.layers[0].locks.transparency);
 }
+
+#[test]
+fn advanced_blending_channels() {
+    let mut s = session_with_doc();
+    let r = s.execute("layer.new.layer", json!({})).unwrap();
+    let id = r["layer"].as_u64().unwrap();
+    s.execute("layer.setProps", json!({"channels": [true, true, false]})).unwrap();
+    assert_eq!(s.active().unwrap().doc.layer(LayerId(id)).unwrap().excluded_channels, 0b100);
+    let ins = crate::inspect::layer(s.active().unwrap().doc.layer(LayerId(id)).unwrap());
+    assert_eq!(ins["channels"], json!([true, true, false, true]));
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(s.active().unwrap().doc.layer(LayerId(id)).unwrap().excluded_channels, 0);
+}

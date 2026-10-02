@@ -120,18 +120,38 @@ pub fn document_to_image(doc: &Document, warnings: &mut Vec<String>) -> Result<I
             icc = Some(photocraft_cms::Builtin::Srgb.profile().to_bytes().to_vec());
         }
         let layout = layout_for(if gray { ColorMode::Grayscale } else { ColorMode::Rgb }, !opaque);
-        let mut data = Vec::with_capacity(n * layout.channels());
-        for p in &buf.px {
-            if gray {
-                data.push(photocraft_color::convert::rgb_to_gray([p[0], p[1], p[2]]));
-            } else {
-                data.extend_from_slice(&p[..3]);
+        // Quantised straight from the composite in bands on all cores (the same rounding as
+        // `Image::from_normalized`, without a full-size f32 copy).
+        let cs = csample(fmt.sample);
+        let parts = crate::pixels::par_map(crate::pixels::bands(n), |range| {
+            let mut out = Vec::with_capacity(range.len() * layout.channels() * cs.bytes());
+            let mut put = |v: f32| {
+                let v = if v.is_nan() { 0.0 } else { v };
+                match cs {
+                    CSample::U8 => out.push((v.clamp(0.0, 1.0) * 255.0).round() as u8),
+                    CSample::U16 => out.extend_from_slice(&((v.clamp(0.0, 1.0) * 65535.0).round() as u16).to_ne_bytes()),
+                    CSample::F16 | CSample::F32 => out.extend_from_slice(&v.to_ne_bytes()),
+                }
+            };
+            for p in &buf.px[range] {
+                if gray {
+                    put(photocraft_color::convert::rgb_to_gray([p[0], p[1], p[2]]));
+                } else {
+                    put(p[0]);
+                    put(p[1]);
+                    put(p[2]);
+                }
+                if !opaque {
+                    put(p[3]);
+                }
             }
-            if !opaque {
-                data.push(p[3]);
-            }
+            out
+        });
+        let mut data = Vec::with_capacity(parts.iter().map(Vec::len).sum());
+        for part in parts {
+            data.extend_from_slice(&part);
         }
-        Image::from_normalized(w, h, layout, csample(fmt.sample), &data)?
+        Image::from_raw(w, h, layout, cs, data)?
     };
     let meta = codecs::Metadata {
         exif: doc.metadata.exif.as_ref().map(|e| e.to_vec()),

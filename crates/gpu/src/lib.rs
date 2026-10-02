@@ -20,8 +20,8 @@
 //! Vector masks (rasterised once per mask state into a combined mask texture), layers clipped to
 //! pass-through groups, stroked shapes with clipped layers (fill and stroke split once per shape
 //! state), pattern fills and artboards are planned like everything else. What remains
-//! (Multichannel documents, bevels with a texture, documents or effect regions larger than the
-//! device's texture limit) returns [`Unsupported`]; callers fall back to the CPU compositor.
+//! (Multichannel documents, documents or effect regions larger than the device's texture limit)
+//! returns [`Unsupported`]; callers fall back to the CPU compositor.
 #![forbid(unsafe_code)]
 
 pub mod bounds;
@@ -397,7 +397,7 @@ impl Compositor {
                 return Err(Unsupported(format!("effect region of `{}` larger than the GPU texture limit ({})", f.layer.name, self.max_dim)));
             }
             for e in f.layer.effects.items.iter().filter(|e| e.enabled()) {
-                for s in fx::program(e, &doc.global_light, false).stages {
+                for s in fx::program_with(e, &doc.global_light, false, &doc.patterns, (0.0, 0.0)).stages {
                     if s.lut.as_ref().is_some_and(|l| l.len() > 4096) {
                         return Err(Unsupported(format!("effect blur on `{}` too wide for the GPU path", f.layer.name)));
                     }
@@ -804,7 +804,8 @@ impl Compositor {
 
         // Programs, and the distance fields they read (max reach per field).
         let vector_shape = matches!(layer.content, LayerContent::Shape(_));
-        let progs: Vec<fx::MapProgram> = layer.effects.items.iter().filter(|e| e.enabled()).map(|e| fx::program(e, &doc.global_light, vector_shape)).collect();
+        let anchor = layer.effects.reference.unwrap_or((f64::from(f.bounds.x0), f64::from(f.bounds.y0)));
+        let progs: Vec<fx::MapProgram> = layer.effects.items.iter().filter(|e| e.enabled()).map(|e| fx::program_with(e, &doc.global_light, vector_shape, &doc.patterns, anchor)).collect();
         let mut want: HashMap<FieldKind, i32> = HashMap::new();
         for (k, r) in progs.iter().flat_map(|p| p.fields.iter()) {
             let w = want.entry(*k).or_insert(0);
@@ -859,6 +860,7 @@ impl Compositor {
     /// Record the passes of `prog` (maps of item `item` of `layer`) recomputing damage `d`.
     #[allow(clippy::too_many_arguments)]
     fn run_program(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, encoder: &mut wgpu::CommandEncoder, layer: LayerId, item: usize, prog: &fx::MapProgram, d: Rect, stats: &mut Stats) {
+        let pattern_views: Vec<Option<wgpu::TextureView>> = prog.stages.iter().map(|s| s.pattern.as_ref().map(|p| self.pattern_view(device, queue, p))).collect();
         let e = &self.fx[&layer];
         let region = e.region;
         let shape = e.shape.view.clone();
@@ -895,6 +897,8 @@ impl Compositor {
             let mut p = plan::Pass::new(s.kernel, 0);
             p.params[0] = s.p0;
             p.params[1] = s.p1;
+            p.params[3] = s.p3;
+            p.extra = s.p4;
             draws.push(MapDraw {
                 kernel: s.kernel,
                 format,
@@ -902,7 +906,7 @@ impl Compositor {
                 scissor: [(w.x0 - region.x0) as u32, (w.y0 - region.y0) as u32, w.width(), w.height()],
                 space: [region.x0, region.y0, region.width() as i32, region.height() as i32],
                 op: op_words(&p, None, None, None),
-                views: [view_of(s.a), view_of(s.b), view_of(s.s), None, None, None, None, None],
+                views: [view_of(s.a), view_of(s.b), view_of(s.s), None, None, None, None, pattern_views[i].clone()],
                 lut: s.lut.clone(),
             });
         }

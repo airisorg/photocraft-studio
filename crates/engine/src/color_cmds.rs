@@ -120,6 +120,9 @@ pub struct ColorSettings {
     pub intent: String,
     pub bpc: bool,
     pub dither: bool,
+    /// Advanced › "Blend Text Colors Using Gamma" (1 = off; Photoshop's default 1.45): type
+    /// layers mix anti-aliased edges in this gamma (`photocraft_compose::psblend::set_text_gamma`).
+    pub blend_text_gamma: f32,
 }
 
 impl Default for ColorSettings {
@@ -137,6 +140,7 @@ impl Default for ColorSettings {
             intent: Intent::RelativeColorimetric.id().into(),
             bpc: true,
             dither: true,
+            blend_text_gamma: photocraft_compose::psblend::TEXT_GAMMA,
         }
     }
 }
@@ -781,8 +785,18 @@ fn color_settings(s: &mut Session, p: &Value) -> Result<Value> {
     if let Some(v) = str_of("intent") {
         next.intent = Intent::parse(&v).map(|i| i.id().to_string()).unwrap_or(v);
     }
+    match p.get("blendTextGamma") {
+        Some(Value::Bool(false)) => next.blend_text_gamma = 1.0,
+        Some(Value::Bool(true)) => next.blend_text_gamma = photocraft_compose::psblend::TEXT_GAMMA,
+        Some(v) => {
+            let g = v.as_f64().filter(|g| (1.0..=2.2).contains(g)).ok_or_else(|| EngineError::BadParams { cmd: cmd.into(), msg: "`blendTextGamma` must be 1.0..2.2 or a bool".into() })?;
+            next.blend_text_gamma = g as f32;
+        }
+        None => {}
+    }
     validate_settings(&next).map_err(|msg| EngineError::BadParams { cmd: cmd.into(), msg })?;
     if next != s.color.settings {
+        photocraft_compose::psblend::set_text_gamma(next.blend_text_gamma);
         s.color.settings = next;
         // Persisted with the preferences.
         s.prefs.edit(|_| ());
@@ -855,7 +869,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "edit.colorSettings",
             "Color Settings…",
             ["Edit"],
-            r##"{"workingRgb":"srgb|display-p3|adobe-rgb-compat|prophoto-compat|linear-srgb|rec2020","workingCmyk":"coated-cmyk","workingGray":"sgray|gray-gamma-2.2","policyRgb":"preserve|convert|off","policyCmyk":"preserve|convert|off","policyGray":"preserve|convert|off","askOnMismatch":bool=true,"askOnPaste":bool=true,"askOnMissing":bool=false,"intent":"relative|perceptual|saturation|absolute","bpc":bool=true,"dither":bool=true,"reset":bool=false} (working spaces also accept .icc paths)"##,
+            r##"{"workingRgb":"srgb|display-p3|adobe-rgb-compat|prophoto-compat|linear-srgb|rec2020","workingCmyk":"coated-cmyk","workingGray":"sgray|gray-gamma-2.2","policyRgb":"preserve|convert|off","policyCmyk":"preserve|convert|off","policyGray":"preserve|convert|off","askOnMismatch":bool=true,"askOnPaste":bool=true,"askOnMissing":bool=false,"intent":"relative|perceptual|saturation|absolute","blendTextGamma":1.0..2.2|bool=1.45,"bpc":bool=true,"dither":bool=true,"reset":bool=false} (working spaces also accept .icc paths)"##,
             always,
             color_settings,
             true,
@@ -1095,6 +1109,20 @@ mod settings_tests {
         let mut t = Session::new();
         t.load_prefs_json(&s.prefs_to_json()).unwrap();
         assert_eq!(t.color.settings, s.color.settings);
+    }
+
+    #[test]
+    fn blend_text_gamma_setting() {
+        let mut s = Session::new();
+        assert!((s.color.settings.blend_text_gamma - 1.45).abs() < 1e-6);
+        assert!(s.execute("edit.colorSettings", json!({"blendTextGamma": 3.0})).is_err());
+        // The compositor's (application-wide) gamma follows; restored to the default at once.
+        s.execute("edit.colorSettings", json!({"blendTextGamma": 1.45})).unwrap();
+        assert!((photocraft_compose::psblend::text_gamma() - 1.45).abs() < 1e-6);
+        let r = s.execute("edit.colorSettings", json!({"blendTextGamma": false})).unwrap();
+        assert_eq!(r["settings"]["blendTextGamma"], 1.0);
+        s.execute("edit.colorSettings", json!({"blendTextGamma": true})).unwrap();
+        assert!((s.color.settings.blend_text_gamma - 1.45).abs() < 1e-6);
     }
 
     #[test]

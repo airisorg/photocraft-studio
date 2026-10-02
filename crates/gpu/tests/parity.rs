@@ -159,6 +159,14 @@ fn lookup(n: usize, tetrahedral: bool, dither: bool) -> Adjustment {
 #[test]
 fn adjustment_layers() {
     let Some(mut g) = gpu() else { return };
+    // 16-bit and float documents (adjustment results round to 1/32768 resp. not at all).
+    for depth in [SampleType::U16, SampleType::F32] {
+        let mut d = Document::new("t", Size::new(40, 30), ColorMode::Rgb, depth);
+        let fmt = d.pixel_format();
+        d.layers.push(noise_layer("bg", fmt, Rect::from_xywh(0, 0, 40, 30), 71, 0.5));
+        d.layers.push(Layer::new("ex", LayerContent::Adjustment(Adjustment::Exposure { exposure: 0.4, offset: 0.01, gamma: 1.1 })));
+        check(&mut g, &d, &format!("adjustment {depth:?}"));
+    }
     for adj in adjustments() {
         for (mode, opacity, masked) in [(BlendMode::Normal, 1.0, false), (BlendMode::Multiply, 0.7, true)] {
             let mut d = base_doc(48, 40);
@@ -464,6 +472,10 @@ fn effect_cases() -> Vec<(&'static str, Vec<Effect>)> {
         ("bevel pillow chisel hard", vec![Effect::BevelEmboss(Bevel { technique: BevelTechnique::ChiselHard, ..bevel(BevelStyle::PillowEmboss, false, 7.0, 0.0) })]),
         ("bevel emboss smooth wide", vec![Effect::BevelEmboss(bevel(BevelStyle::Emboss, true, 21.0, 0.0))]),
         ("bevel stroke emboss", vec![Effect::BevelEmboss(bevel(BevelStyle::StrokeEmboss, true, 6.0, 0.0))]),
+        ("bevel texture", vec![Effect::BevelEmboss(Bevel {
+            texture: Some(photocraft_doc::BevelTexture { name: "checker".into(), id: String::new(), scale: 1.4, depth: -1.5, invert: true, link: true, phase: (2.0, 1.0) }),
+            ..bevel(BevelStyle::InnerBevel, true, 7.0, 1.0)
+        })]),
         ("bevel contour", vec![Effect::BevelEmboss(Bevel { contour: Some(photocraft_doc::BevelContour { contour: contour(), range: 0.6, anti_alias: false }), ..bevel(BevelStyle::Emboss, true, 9.0, 1.0) })]),
         ("bevel contour own light", vec![Effect::BevelEmboss(bevel_contour)]),
         ("satin", vec![Effect::Satin(satin)]),
@@ -775,6 +787,12 @@ fn type_layers_blend_with_text_gamma() {
         c.blend = mode;
         d.layers.push(c);
         check(&mut g, &d, &format!("text {mode:?}"));
+        // Another gamma (Color Settings), and off.
+        for gamma in [1.8, 1.0] {
+            photocraft_compose::psblend::set_text_gamma(gamma);
+            check(&mut g, &d, &format!("text {mode:?} gamma {gamma}"));
+        }
+        photocraft_compose::psblend::set_text_gamma(photocraft_compose::psblend::TEXT_GAMMA);
     }
     // With effects (the merge of the layer onto its exterior effects).
     let mut d = fx_doc(96, 80, SampleType::U8);
@@ -870,7 +888,7 @@ fn artboards() {
             let mut ab = Layer::group("Artboard", vec![child, fx]);
             ab.blend = blend;
             if let LayerContent::Group(gr) = &mut ab.content {
-                gr.artboard = Some(Artboard { rect: Rect::new(12, 6, 60, 40), background: bg.clone(), preset: String::new() });
+                gr.artboard = Some(Artboard { rect: Rect::new(12, 6, 60, 40), background: bg, preset: String::new() });
             }
             d.layers.push(ab);
             // A second, partly off-canvas board.
@@ -913,3 +931,33 @@ fn pattern_fill_layers() {
     }
 }
 
+
+#[test]
+fn lab_documents_mix_in_lab() {
+    let Some(mut g) = gpu() else { return };
+    for depth in [SampleType::U8, SampleType::U16] {
+        let mut d = Document::new("lab", Size::new(48, 40), ColorMode::Lab, depth);
+        let fmt = d.pixel_format();
+        d.layers.push(noise_layer("bg", fmt, Rect::new(0, 0, 48, 40), 81, 0.7));
+        let mut top = noise_layer("top", fmt, Rect::new(4, 4, 44, 36), 82, 0.0);
+        top.opacity = 0.8;
+        d.layers.push(top);
+        let mut m = noise_layer("mul", fmt, Rect::new(10, 2, 30, 38), 83, 0.3);
+        m.blend = BlendMode::Multiply;
+        d.layers.push(m);
+        let mut fx = blob("fx", fmt, 24.0, 20.0, 12.0, [0.7, 0.3, 0.2]);
+        fx.effects.items = vec![Effect::DropShadow(shadow(BlendMode::Normal, 0.6, 120.0, 4.0, 5.0, 0.0))];
+        d.layers.push(fx);
+        fx_check(&mut g, &d, &format!("lab {depth:?}"));
+    }
+    // The mix really is in Lab: a half-transparent edge differs from an sRGB mix.
+    let mut d = Document::new("lab", Size::new(2, 1), ColorMode::Lab, SampleType::U8);
+    let fmt = d.pixel_format();
+    let mut a = Layer::raster("a", fmt);
+    a.surface_mut().unwrap().fill_rect(Rect::new(0, 0, 2, 1), &photocraft_raster::from_rgba(&fmt, [0.0, 0.0, 1.0, 1.0]));
+    let mut b = Layer::raster("b", fmt);
+    b.surface_mut().unwrap().fill_rect(Rect::new(0, 0, 2, 1), &photocraft_raster::from_rgba(&fmt, [1.0, 1.0, 0.0, 0.5]));
+    d.layers = vec![a, b];
+    let p = photocraft_compose::flatten(&d).px[0];
+    assert!((p[0] - 0.5).abs() > 0.05 || (p[2] - 0.5).abs() > 0.05, "{p:?}");
+}

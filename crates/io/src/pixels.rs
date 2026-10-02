@@ -69,6 +69,13 @@ pub fn interleave(planes: &[Option<&[u8]>], fill: &[Vec<u8>], n: usize, s: Sampl
 pub fn deinterleave(bytes: &[u8], ch: usize, s: SampleType, invert: &[bool]) -> Vec<Vec<u8>> {
     let bps = s.bytes();
     let n = bytes.len() / (ch * bps).max(1);
+    if s == SampleType::U8 {
+        // Fast path: one plane per thread, no per-sample copies.
+        return par_map((0..ch).collect(), |c| {
+            let it = bytes.iter().skip(c).step_by(ch).take(n);
+            if invert[c] { it.map(|v| 255 - v).collect() } else { it.copied().collect() }
+        });
+    }
     let mut planes = vec![Vec::with_capacity(n * bps); ch];
     let mut tmp = [0u8; 4];
     for i in 0..n {
@@ -136,6 +143,26 @@ pub fn unmatte(m: f32, a: f32, white: f32) -> f32 {
     if a <= 0.0 { white } else { ((m - white * (1.0 - a)) / a).clamp(0.0, 1.0) }
 }
 
+/// `items.map(f)` on scoped threads (one per item; callers pass a handful of channels or
+/// bands), in order; sequential on wasm or for a single item.
+pub fn par_map<T: Send, R: Send>(items: Vec<T>, f: impl Fn(T) -> R + Sync) -> Vec<R> {
+    if cfg!(target_arch = "wasm32") || items.len() < 2 {
+        return items.into_iter().map(f).collect();
+    }
+    std::thread::scope(|sc| {
+        let f = &f;
+        let hs: Vec<_> = items.into_iter().map(|t| sc.spawn(move || f(t))).collect();
+        hs.into_iter().map(|h| h.join().expect("worker panicked")).collect()
+    })
+}
+
+/// `0..n` split into about one band per core.
+pub fn bands(n: usize) -> Vec<std::ops::Range<usize>> {
+    let k = if cfg!(target_arch = "wasm32") { 1 } else { std::thread::available_parallelism().map_or(1, |v| v.get()).clamp(1, 32) };
+    let step = n.div_ceil(k).max(1);
+    (0..n).step_by(step).map(|a| a..(a + step).min(n)).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -177,3 +204,4 @@ mod tests {
         assert_eq!(decode_be(&f, 0, SampleType::F32), 2.5);
     }
 }
+

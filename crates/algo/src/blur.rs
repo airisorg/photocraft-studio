@@ -98,13 +98,41 @@ fn box_rows(buf: &mut [f32], w: usize, n: usize, r: usize) {
     }
     let norm = 1.0 / (2 * r + 1) as f32;
     let blur_row = |row: &mut [f32]| {
-        let src = row.to_vec();
-        let at = |x: isize, c: usize| src[(x.clamp(0, w as isize - 1) as usize) * n + c];
-        for c in 0..n {
-            let mut acc: f32 = (-(r as isize)..=r as isize).map(|x| at(x, c)).sum();
-            for x in 0..w {
-                row[x * n + c] = acc * norm;
-                acc += at(x as isize + r as isize + 1, c) - at(x as isize - r as isize, c);
+        // The row with clamped edges materialised (r + 1 pixels each side), so the running sum
+        // reads without bounds clamping, all channels per step.
+        let pad = r + 1;
+        let mut src = Vec::with_capacity((w + 2 * pad) * n);
+        for _ in 0..pad {
+            src.extend_from_slice(&row[..n]);
+        }
+        src.extend_from_slice(row);
+        for _ in 0..pad {
+            src.extend_from_slice(&row[(w - 1) * n..w * n]);
+        }
+        let mut acc = [0.0f32; 8];
+        let acc = &mut acc[..n.min(8)];
+        if n > 8 {
+            // Unusual channel counts: per channel.
+            for c in 0..n {
+                let mut a: f32 = (0..=2 * r).map(|i| src[(pad - r + i) * n + c]).sum();
+                for x in 0..w {
+                    row[x * n + c] = a * norm;
+                    a += src[(x + pad + r + 1) * n + c] - src[(x + pad - r) * n + c];
+                }
+            }
+            return;
+        }
+        for i in 0..=2 * r {
+            let o = (pad - r + i) * n;
+            for c in 0..n {
+                acc[c] += src[o + c];
+            }
+        }
+        for x in 0..w {
+            let (add, sub) = ((x + pad + r + 1) * n, (x + pad - r) * n);
+            for c in 0..n {
+                row[x * n + c] = acc[c] * norm;
+                acc[c] += src[add + c] - src[sub + c];
             }
         }
     };
@@ -119,17 +147,29 @@ fn box_rows(buf: &mut [f32], w: usize, n: usize, r: usize) {
 
 fn transpose(buf: &[f32], w: usize, h: usize, n: usize) -> Vec<f32> {
     let mut out = vec![0.0f32; buf.len()];
+    if w == 0 || h == 0 {
+        return out;
+    }
     const B: usize = 32; // cache-friendly blocks
-    for by in (0..h).step_by(B) {
-        for bx in (0..w).step_by(B) {
+    // Bands of B output rows (= input columns) are independent: transpose them in parallel.
+    let band = |(i, chunk): (usize, &mut [f32])| {
+        let bx = i * B;
+        for by in (0..h).step_by(B) {
             for y in by..(by + B).min(h) {
                 for x in bx..(bx + B).min(w) {
-                    let (s, d) = ((y * w + x) * n, (x * h + y) * n);
-                    out[d..d + n].copy_from_slice(&buf[s..s + n]);
+                    let (s, d) = ((y * w + x) * n, ((x - bx) * h + y) * n);
+                    chunk[d..d + n].copy_from_slice(&buf[s..s + n]);
                 }
             }
         }
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use rayon::prelude::*;
+        out.par_chunks_mut(B * h * n).enumerate().for_each(band);
     }
+    #[cfg(target_arch = "wasm32")]
+    out.chunks_mut(B * h * n).enumerate().for_each(band);
     out
 }
 

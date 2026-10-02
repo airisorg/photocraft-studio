@@ -14,6 +14,7 @@
 #![forbid(unsafe_code)]
 
 pub mod adjust;
+pub mod bounds;
 pub mod effects;
 pub mod masks;
 pub mod multichannel;
@@ -79,10 +80,14 @@ pub fn render(doc: &Document, rect: Rect) -> Buffer {
 
 /// [`render`] with an explicit tile size (tests check tile independence).
 pub fn render_tiled(doc: &Document, rect: Rect, tile: i32) -> Buffer {
-    let cx = Ctx { canvas: doc.bounds(), transfer: adjust::Transfer::for_mode(doc.mode), light: doc.global_light, patterns: &doc.patterns, mode: doc.mode };
+    let cx = Ctx { canvas: doc.bounds(), transfer: adjust::Transfer::for_mode(doc.mode), light: doc.global_light, patterns: &doc.patterns, mode: doc.mode, depth: doc.depth };
+    // Lab documents mix Normal blending in CIELAB, as Photoshop does (psblend::LAB_MIX).
+    let lab = doc.mode == photocraft_color::ColorMode::Lab;
     if rect.width() as i32 <= tile && rect.height() as i32 <= tile {
         let mut buf = multichannel::backdrop(doc, rect);
+        psblend::LAB_MIX.with(|l| l.set(lab));
         composite_stack(&doc.layers, &mut buf, &cx);
+        psblend::LAB_MIX.with(|l| l.set(false));
         return buf;
     }
     let mut tiles = Vec::new();
@@ -97,7 +102,9 @@ pub fn render_tiled(doc: &Document, rect: Rect, tile: i32) -> Buffer {
     }
     let run = |t: &Rect| {
         let mut b = multichannel::backdrop(doc, *t);
+        psblend::LAB_MIX.with(|l| l.set(lab));
         composite_stack(&doc.layers, &mut b, &cx);
+        psblend::LAB_MIX.with(|l| l.set(false));
         b
     };
     #[cfg(not(target_arch = "wasm32"))]
@@ -127,7 +134,7 @@ pub fn flatten(doc: &Document) -> Buffer {
 /// Render an arbitrary subset: a single layer (e.g. for thumbnails), isolated.
 pub fn render_layer(layer: &Layer, rect: Rect) -> Buffer {
     let mut buf = Buffer::transparent(rect);
-    composite_stack(std::slice::from_ref(layer), &mut buf, &Ctx { canvas: rect, transfer: adjust::Transfer::Srgb, light: photocraft_doc::GlobalLight::default(), patterns: &[], mode: photocraft_color::ColorMode::Rgb });
+    composite_stack(std::slice::from_ref(layer), &mut buf, &Ctx { canvas: rect, transfer: adjust::Transfer::Srgb, light: photocraft_doc::GlobalLight::default(), patterns: &[], mode: photocraft_color::ColorMode::Rgb, depth: photocraft_color::SampleType::F32 });
     buf
 }
 
@@ -182,6 +189,7 @@ struct Ctx<'a> {
     patterns: &'a [Pattern],
     /// The document's colour mode (channel restrictions name its channels).
     mode: photocraft_color::ColorMode,
+    depth: photocraft_color::SampleType,
 }
 
 fn composite_stack(layers: &[Layer], backdrop: &mut Buffer, cx: &Ctx) {
@@ -196,8 +204,33 @@ fn composite_stack(layers: &[Layer], backdrop: &mut Buffer, cx: &Ctx) {
         let clipped = &layers[i + 1..j];
         if base.visible {
             composite_layer(base, clipped, backdrop, cx);
+            if let (LayerContent::Adjustment(_), Some(q)) = (&base.content, adjustment_quantum(cx.depth)) {
+                quantize(backdrop, q);
+            }
         }
         i = j.max(i + 1);
+    }
+}
+
+/// Steps per unit of an integer document's samples: Photoshop applies adjustment layers to
+/// buffers of the document's depth (8-bit: 255 levels, 16-bit: 32768), so their result is
+/// rounded there; a steep curve then amplifies the rounding of its input exactly as in
+/// Photoshop (psd-tools adjustment_nested_composition_4: 9.6 → 5.1 % of pixels off;
+/// exposure_grayscale passes). Blends stay in float (quantising them too made other files
+/// worse).
+pub fn adjustment_quantum(depth: photocraft_color::SampleType) -> Option<f32> {
+    match depth {
+        photocraft_color::SampleType::U8 => Some(255.0),
+        photocraft_color::SampleType::U16 => Some(32768.0),
+        photocraft_color::SampleType::F32 => None,
+    }
+}
+
+fn quantize(b: &mut Buffer, q: f32) {
+    for p in &mut b.px {
+        for v in p.iter_mut() {
+            *v = (*v * q + 0.5).floor() / q;
+        }
     }
 }
 
@@ -212,8 +245,8 @@ fn dissolve_noise(x: i32, y: i32) -> f32 {
 }
 
 /// Bounds of a layer's own pixels (union over group children; the canvas
-/// for fill layers).
-fn layer_bounds(layer: &Layer, canvas: Rect) -> Rect {
+/// for fill layers; an artboard's board).
+pub fn layer_bounds(layer: &Layer, canvas: Rect) -> Rect {
     match &layer.content {
         LayerContent::Group(g) if g.artboard.is_some() => g.artboard.as_ref().map_or(Rect::EMPTY, |a| a.rect),
         LayerContent::Group(g) => g.children.iter().filter(|c| c.visible).fold(Rect::EMPTY, |acc, c| {
@@ -221,8 +254,19 @@ fn layer_bounds(layer: &Layer, canvas: Rect) -> Rect {
             if b.is_empty() { acc } else if acc.is_empty() { b } else { acc.union(&b) }
         }),
         LayerContent::Fill(_) => canvas,
-        _ => layer.surface().map_or(Rect::EMPTY, Surface::content_bounds),
+        _ => layer.surface().map_or(Rect::EMPTY, bounds::content_bounds),
     }
+}
+
+/// The frame layer-effect gradients and linked patterns are laid out in, when it isn't the
+/// layer's pixel bounds: a shape layer's path bounds (rounded out to whole pixels). Its rendered
+/// pixels can extend past the path (transparent anti-aliasing margin), which Photoshop ignores:
+/// psd-tools shape-fx2's 45° overlay spans the 29 px path, not the 32 px of pixels.
+pub fn paint_bounds(layer: &Layer) -> Option<Rect> {
+    let LayerContent::Shape(sh) = &layer.content else { return None };
+    let (x0, y0, x1, y1) = sh.path.control_bounds()?;
+    let r = Rect::new(x0.floor() as i32, y0.floor() as i32, x1.ceil() as i32, y1.ceil() as i32);
+    (!r.is_empty()).then_some(r)
 }
 
 /// The layer's effective mask over `rect` (row-major), read once per tile: the pixel mask
@@ -276,7 +320,7 @@ fn render_content(layer: &Layer, rect: Rect, cx: &Ctx) -> Option<Buffer> {
 /// The alpha of `layer`'s own content over `rect` (masks applied, row-major): the shape its
 /// effect maps are built from (for the GPU compositor). Zero for adjustment layers.
 pub fn layer_shape(doc: &Document, layer: &Layer, rect: Rect) -> Vec<f32> {
-    let cx = Ctx { canvas: doc.bounds(), transfer: adjust::Transfer::for_mode(doc.mode), light: doc.global_light, patterns: &doc.patterns, mode: doc.mode };
+    let cx = Ctx { canvas: doc.bounds(), transfer: adjust::Transfer::for_mode(doc.mode), light: doc.global_light, patterns: &doc.patterns, mode: doc.mode, depth: doc.depth };
     render_content(layer, rect, &cx).map(|b| b.px.iter().map(|p| p[3]).collect()).unwrap_or_else(|| vec![0.0; rect.width() as usize * rect.height() as usize])
 }
 
@@ -295,7 +339,7 @@ pub fn fill_frame(layer: &Layer, canvas: Rect) -> Rect {
         && m.enabled
         && m.surface.default_pixel().first().is_some_and(|v| *v <= 0.0)
     {
-        let b = m.surface.content_bounds().intersect(&canvas);
+        let b = bounds::content_bounds(&m.surface).intersect(&canvas);
         if !b.is_empty() {
             frame = b;
         }
@@ -370,7 +414,10 @@ fn sample_stops(stops: &[(f32, photocraft_color::Color)], t: f32) -> [f32; 4] {
 /// vanish with it.
 fn empty_in(layer: &Layer, rect: Rect) -> bool {
     if effects::has_effects(layer) {
-        return false;
+        // Effects reach at most `margin` beyond the layer's pixels (when it is transparent
+        // outside them): render tiles away from a small text layer skip it entirely.
+        let canvas = Rect::new(i32::MIN / 4, i32::MIN / 4, i32::MAX / 4, i32::MAX / 4);
+        return transparent_outside(layer) && layer_bounds(layer, canvas).inflate(effects::margin(layer)).intersect(&rect).is_empty();
     }
     match &layer.content {
         LayerContent::Raster(_) | LayerContent::Text(_) | LayerContent::Shape(_) | LayerContent::Smart(_) => match layer.surface() {
@@ -408,6 +455,18 @@ fn restore_channels(out: &mut Buffer, before: &Buffer, w: [f32; 3]) {
         for c in 0..3 {
             p[c] = b[c] + (p[c] - b[c]) * w[c];
         }
+    }
+}
+
+/// Whether the layer's content is transparent outside its bounds (every surface it draws from
+/// has a transparent default pixel), so its effects can't change pixels beyond its bounds grown
+/// by their reach.
+pub fn transparent_outside(layer: &Layer) -> bool {
+    match &layer.content {
+        LayerContent::Group(g) => g.children.iter().filter(|c| c.visible).all(transparent_outside),
+        // Fill layers cover the canvas (their bounds); adjustments draw nothing of their own.
+        LayerContent::Fill(_) | LayerContent::Adjustment(_) => true,
+        _ => layer.surface().is_none_or(|s| s.format().alpha && s.default_pixel().last().is_some_and(|a| *a <= 0.0)),
     }
 }
 
@@ -552,7 +611,7 @@ fn composite_layer_plain(layer: &Layer, clipped: &[Layer], backdrop: &mut Buffer
             composite_atop(c, &mut content, cx);
         }
         let maps = effect_maps(layer, cx);
-        effects::composite_with_effects(layer, &content, backdrop, &maps, layer_bounds(layer, cx.canvas), cx.patterns);
+        effects::composite_with_effects(layer, &content, backdrop, &maps, paint_bounds(layer).unwrap_or_else(|| layer_bounds(layer, cx.canvas)), cx.patterns);
         return;
     }
     if let Some((mut content, stroke)) = shape_parts(layer, clipped, rect, cx) {
@@ -572,9 +631,10 @@ fn composite_layer_plain(layer: &Layer, clipped: &[Layer], backdrop: &mut Buffer
     blend_into_g(backdrop, &content, layer.blend, opacity, text_gamma(layer));
 }
 
-/// The coverage-mixing gamma of a layer: [`psblend::TEXT_GAMMA`] for type layers, else 1.
+/// The coverage-mixing gamma of a layer: the text blending gamma
+/// ([`psblend::set_text_gamma`], Photoshop's default 1.45) for type layers, else 1.
 pub fn text_gamma(layer: &Layer) -> f32 {
-    if matches!(layer.content, LayerContent::Text(_)) { psblend::TEXT_GAMMA } else { 1.0 }
+    if matches!(layer.content, LayerContent::Text(_)) { psblend::text_gamma() } else { 1.0 }
 }
 
 /// A stroked shape layer with visible clipped layers: Photoshop draws the shape's vector stroke
@@ -743,7 +803,7 @@ fn effect_maps(layer: &Layer, cx: &Ctx) -> std::sync::Arc<effects::FxMaps> {
 }
 
 fn texture_ctx<'a>(layer: &Layer, region: Rect, cx: &Ctx<'a>) -> effects::TextureCtx<'a> {
-    let sb = layer_bounds(layer, cx.canvas);
+    let sb = paint_bounds(layer).unwrap_or_else(|| layer_bounds(layer, cx.canvas));
     effects::TextureCtx { rect: region, patterns: cx.patterns, anchor: layer.effects.reference.unwrap_or((f64::from(sb.x0), f64::from(sb.y0))) }
 }
 
@@ -783,7 +843,7 @@ fn composite_atop_any(layer: &Layer, base: &mut Buffer, cx: &Ctx) {
         let Some(content) = render_content(layer, big, cx) else { return };
         let mut opaque = Buffer { rect, px: base.px.iter().map(|p| [p[0], p[1], p[2], 1.0]).collect() };
         let maps = effect_maps(layer, cx);
-        effects::composite_with_effects(layer, &content, &mut opaque, &maps, layer_bounds(layer, cx.canvas), cx.patterns);
+        effects::composite_with_effects(layer, &content, &mut opaque, &maps, paint_bounds(layer).unwrap_or_else(|| layer_bounds(layer, cx.canvas)), cx.patterns);
         for (p, o) in base.px.iter_mut().zip(&opaque.px) {
             if p[3] > 0.0 {
                 *p = [o[0], o[1], o[2], p[3]];
