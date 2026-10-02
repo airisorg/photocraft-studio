@@ -16,6 +16,19 @@ mod services;
 use photocraft_engine::Session;
 use photocraft_ui_egui::PhotocraftApp;
 
+/// Matches the `.desktop` file and hicolor icon name, so Wayland docks pick up the icon.
+const APP_ID: &str = "ai.storyteller.photocraft";
+
+/// Window, taskbar and (when running unbundled) Dock icon. macOS gets the padded 1024 px render
+/// on Apple's icon grid; elsewhere the tighter 256 px hicolor render reads better at small sizes.
+fn app_icon() -> egui::IconData {
+    #[cfg(target_os = "macos")]
+    const PNG: &[u8] = include_bytes!("../../../assets/app-icon/photocraft-1024.png");
+    #[cfg(not(target_os = "macos"))]
+    const PNG: &[u8] = include_bytes!("../../../assets/app-icon/hicolor/256x256/apps/ai.storyteller.photocraft.png");
+    eframe::icon_data::from_png_bytes(PNG).unwrap_or_default()
+}
+
 fn main() -> eframe::Result {
     let mut control_port: Option<u16> = std::env::var("PHOTOCRAFT_CONTROL_PORT").ok().and_then(|p| p.parse().ok());
     let mut files = Vec::new();
@@ -34,7 +47,10 @@ fn main() -> eframe::Result {
     }
 
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_title("PhotoCraft").with_inner_size([1440.0, 900.0]).with_min_inner_size([760.0, 480.0]).with_drag_and_drop(true).with_fullsize_content_view(true).with_titlebar_shown(false).with_title_shown(false),
+        viewport: egui::ViewportBuilder::default()
+            .with_icon(app_icon())
+            .with_app_id(APP_ID)
+            .with_title("PhotoCraft").with_inner_size([1440.0, 900.0]).with_min_inner_size([760.0, 480.0]).with_drag_and_drop(true).with_fullsize_content_view(true).with_titlebar_shown(false).with_title_shown(false),
         ..Default::default()
     };
     eframe::run_native(

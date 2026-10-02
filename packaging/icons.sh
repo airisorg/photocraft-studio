@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Regenerate every app icon from assets/app-icon/photocraft.svg.
+# Regenerate every app icon from assets/app-icon/photocraft.svg (the canonical master).
 #
 # Needs: resvg (brew install resvg / cargo install resvg). On macOS, iconutil also writes the
 # .icns. The outputs are committed, so packaging never needs these tools.
@@ -14,14 +14,18 @@ trap 'rm -rf "$TMP"' EXIT
 
 command -v resvg >/dev/null || { echo "error: resvg not found (brew install resvg)" >&2; exit 1; }
 
-# macOS icons keep Apple's 824/1024 body grid (transparent margin). Windows and Linux icons are
-# cropped tighter so the shape reads at 16-48 px.
+# The artwork is a full-bleed 512-unit tile (rx=112). macOS icons pad it to Apple's 824/1024 body
+# grid (transparent margin). Windows and Linux icons crop 22 units off each side (into the
+# rounded corners) so the portrait reads at 16-48 px.
+grep -q 'viewBox="0 0 512 512"' "$SVG" || { echo "error: expected viewBox=\"0 0 512 512\" in $SVG" >&2; exit 1; }
+MAC="$TMP/mac.svg"
+sed 's/viewBox="0 0 512 512"/viewBox="-62 -62 636 636"/' "$SVG" >"$MAC"
 TIGHT="$TMP/tight.svg"
-sed 's/viewBox="0 0 1024 1024"/viewBox="88 88 848 848"/' "$SVG" >"$TIGHT"
+sed 's/viewBox="0 0 512 512"/viewBox="22 22 468 468"/' "$SVG" >"$TIGHT"
 
 render() { resvg -w "$2" -h "$2" "$1" "$3" </dev/null; }
 
-render "$SVG" 1024 "$DIR/photocraft-1024.png"
+render "$MAC" 1024 "$DIR/photocraft-1024.png"
 
 # Linux hicolor theme.
 for s in 16 24 32 48 64 128 256 512; do
@@ -29,7 +33,8 @@ for s in 16 24 32 48 64 128 256 512; do
   render "$TIGHT" "$s" "$DIR/hicolor/${s}x${s}/apps/ai.storyteller.photocraft.png"
 done
 mkdir -p "$DIR/hicolor/scalable/apps"
-cp "$SVG" "$DIR/hicolor/scalable/apps/ai.storyteller.photocraft.svg"
+# The lighter trace (photocraft-small.svg) keeps the scalable theme icon cheap to render.
+cp "$DIR/photocraft-small.svg" "$DIR/hicolor/scalable/apps/ai.storyteller.photocraft.svg"
 
 # Windows .ico.
 ICO_PNGS=()
@@ -44,8 +49,8 @@ if command -v iconutil >/dev/null; then
   SET="$TMP/photocraft.iconset"
   mkdir -p "$SET"
   for s in 16 32 128 256 512; do
-    render "$SVG" "$s" "$SET/icon_${s}x${s}.png"
-    render "$SVG" $((s * 2)) "$SET/icon_${s}x${s}@2x.png"
+    render "$MAC" "$s" "$SET/icon_${s}x${s}.png"
+    render "$MAC" $((s * 2)) "$SET/icon_${s}x${s}@2x.png"
   done
   iconutil -c icns -o "$DIR/photocraft.icns" "$SET"
 else
