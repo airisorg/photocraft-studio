@@ -76,6 +76,18 @@ pub struct DocM {
     pub last_applied_comp: Option<u32>,
     #[serde(default)]
     pub last_document_state: Option<LayerCompM>,
+    /// Image › Analysis: measurement scale, count groups, ruler.
+    #[serde(default)]
+    pub measurement: photocraft_doc::Measurement,
+    /// Note tool annotations.
+    #[serde(default)]
+    pub notes: Vec<photocraft_doc::Note>,
+    /// Character and paragraph styles.
+    #[serde(default)]
+    pub text_styles: photocraft_doc::TextStyles,
+    /// Web slices (user and layer-based; layer ids are remapped on load).
+    #[serde(default, skip_serializing_if = "photocraft_doc::Slices::is_empty")]
+    pub slices: photocraft_doc::Slices,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -191,6 +203,9 @@ pub struct LayerM {
     /// Link Layers group (`None` = not linked).
     #[serde(default)]
     pub link_group: Option<u64>,
+    /// Advanced Blending channels left out (bit per colour channel; 0 = all blend).
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub excluded_channels: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -321,4 +336,8 @@ mod channel_tests {
         assert_eq!(c.opacity, 0.5);
         assert_eq!(c.indicates, photocraft_doc::ColorIndicates::MaskedAreas);
     }
+}
+
+fn is_zero_u32(v: &u32) -> bool {
+    *v == 0
 }

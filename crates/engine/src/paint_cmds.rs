@@ -61,12 +61,16 @@ fn gradient(s: &mut Session, p: &Value) -> Result<Value> {
         _ => GradientShape::Linear,
     };
     let (fg, bg) = (s.tools.foreground, s.tools.background);
-    let colors: Vec<[f32; 4]> = match p.get("colors").and_then(Value::as_array) {
-        Some(a) if !a.is_empty() => a.iter().map(|v| color(Some(v), fg)).collect(),
-        _ => vec![fg, bg],
+    // A preset (`gradient`), explicit `stops`, or the current gradient (Gradients panel); the
+    // legacy `colors` list spaces its colours evenly.
+    let stops: Vec<(f32, [f32; 4])> = match crate::presets::gradients::tool_stops(s, p)? {
+        Some(st) => st,
+        None => {
+            let colors: Vec<[f32; 4]> = p.get("colors").and_then(Value::as_array).map(|a| a.iter().map(|v| color(Some(v), fg)).collect()).unwrap_or_else(|| vec![fg, bg]);
+            let n = colors.len();
+            colors.into_iter().enumerate().map(|(i, c)| (if n > 1 { i as f32 / (n - 1) as f32 } else { 0.0 }, c)).collect()
+        }
     };
-    let n = colors.len();
-    let stops: Vec<(f32, [f32; 4])> = colors.into_iter().enumerate().map(|(i, c)| (if n > 1 { i as f32 / (n - 1) as f32 } else { 0.0 }, c)).collect();
     let reverse = b(p, "reverse", false);
     let opacity = f(p, "opacity", 100.0) / 100.0;
     let blend = p.get("mode").and_then(Value::as_str).and_then(blend_from_str).unwrap_or(photocraft_color::BlendMode::Normal);
@@ -98,7 +102,7 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Gradient",
             menu: &[],
             shortcut: None,
-            params: r##"{"from":[x,y],"to":[x,y],"style":"linear|radial|angle|reflected|diamond"="linear","colors":["#rrggbb",…]=[foreground,background],"reverse":bool=false,"opacity":1..100=100,"mode":"normal|multiply|…"="normal","target":"pixels"|"mask"|"quickMask"|{"channel":i}=Channels panel target}"##,
+            params: r##"{"from":[x,y],"to":[x,y],"style":"linear|radial|angle|reflected|diamond"="linear","colors":["#rrggbb",…]? (evenly spaced),"gradient":preset name?,"stops":[[t,"#rrggbb"|"foreground"|"background"],…]?,"transparency":[[t,0..100],…]? (default: the current gradient, see gradient.presets.select),"reverse":bool=false,"opacity":1..100=100,"mode":"normal|multiply|…"="normal","target":"pixels"|"mask"|"quickMask"|{"channel":i}=Channels panel target}"##,
             enabled: crate::commands::has_paintable,
             run: gradient,
             journal: true,

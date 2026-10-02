@@ -201,6 +201,7 @@ fn layer_m(l: &Layer, sink: &mut dyn Sink) -> LayerM {
             surface: surface_m(&fc.surface, sink),
         }),
         link_group: l.link_group,
+        excluded_channels: l.excluded_channels,
     }
 }
 
@@ -275,6 +276,10 @@ pub(crate) fn doc_m(d: &Document, sink: &mut dyn Sink) -> DocM {
         layer_comps: d.layer_comps.iter().map(|c| comp_m(c, sink)).collect(),
         last_applied_comp: d.last_applied_comp,
         last_document_state: d.last_document_state.as_ref().map(|c| comp_m(c, sink)),
+        measurement: d.measurement.clone(),
+        notes: d.notes.clone(),
+        text_styles: d.text_styles.clone(),
+        slices: d.slices.clone(),
     }
 }
 
@@ -544,6 +549,7 @@ impl Loader<'_> {
             psd_id: m.psd_id,
             fill_cache,
             link_group: m.link_group,
+            excluded_channels: m.excluded_channels,
         })
     }
 
@@ -591,6 +597,17 @@ impl Loader<'_> {
         }
         let layer_comps = m.layer_comps.iter().map(|c| self.comp(c)).collect::<Result<Vec<_>>>()?;
         let last_document_state = m.last_document_state.as_ref().map(|c| self.comp(c)).transpose()?;
+        // Layer-based slices follow their layer through id remapping; a dangling one becomes a
+        // user slice (its rect stays where it was).
+        let mut slices = m.slices.clone();
+        for sl in &mut slices.list {
+            if let Some(l) = sl.layer {
+                sl.layer = self.id_map.get(&l.0).copied();
+                if sl.layer.is_none() && sl.origin == photocraft_doc::SliceOrigin::Layer {
+                    sl.origin = photocraft_doc::SliceOrigin::User;
+                }
+            }
+        }
         let id = if self.preserve_ids {
             self.max_id = self.max_id.max(m.id);
             DocId(m.id)
@@ -621,6 +638,10 @@ impl Loader<'_> {
             layer_comps,
             last_applied_comp: m.last_applied_comp,
             last_document_state,
+            measurement: m.measurement.clone(),
+            notes: m.notes.clone(),
+            text_styles: m.text_styles.clone(),
+            slices,
         })
     }
 

@@ -357,13 +357,13 @@ pub fn params_for(id: &str, p: &Value) -> Option<FilterParams> {
         // ---- Video ----
         "filter.video.deInterlace" => FilterParams::DeInterlace { eliminate_even: s(p, "eliminate", "oddFields") == "evenFields", interpolate: s(p, "createBy", "interpolation") != "duplication" },
         "filter.video.ntscColors" => FilterParams::NtscColors,
-        _ => return None,
+        _ => return crate::gallery_cmds::params_for(id, p),
     })
 }
 
 /// Ids whose rendering uses the foreground/background colours.
 fn uses_colours(id: &str) -> bool {
-    matches!(id, "filter.render.fibers" | "filter.stylize.tiles" | "filter.pixelate.pointillize")
+    matches!(id, "filter.render.fibers" | "filter.stylize.tiles" | "filter.pixelate.pointillize") || crate::gallery_cmds::uses_colours(id)
 }
 
 /// Fills in session state a filter reads (the current colours) as explicit params, so the

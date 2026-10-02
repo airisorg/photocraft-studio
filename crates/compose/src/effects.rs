@@ -19,7 +19,7 @@
 
 use photocraft_color::blend::BlendMode;
 use photocraft_doc::{
-    Bevel, BevelStyle, Contour, Effect, FxPaint, GlobalLight, Glow, GlowSource, GlowTechnique, Gradient, GradientStyle, Layer, Shadow,
+    Bevel, BevelStyle, BevelTechnique, Contour, Effect, FxPaint, GlobalLight, Glow, GlowSource, GlowTechnique, Gradient, GradientStyle, Layer, Shadow,
     StrokePosition,
 };
 use photocraft_doc::Pattern;
@@ -318,48 +318,12 @@ fn local_coverage(s: &Map) -> Map {
 /// Alpha above which a pixel belongs to the layer's shape (half an 8-bit step).
 const INSIDE_EPS: f32 = 0.5 / 255.0;
 
-/// Photoshop's effect "size" → Gaussian sigma (fitted on the corpus).
-fn sigma_for(size: f32) -> f32 {
-    // Least-squares fit of a drop shadow against Photoshop's composite
-    // (ag-psd effects fixture): sigma = 0.4 × size, offsets rounded to pixels.
-    size * 0.4
-}
-
-/// Separable Gaussian blur for an effect of `size` pixels.
+/// The soft falloff of an effect of `size` pixels: two box passes of width `size` (a tent),
+/// as Photoshop does. Fitted on psd-tools layer_effects.psd against the earlier Gaussian
+/// (sigma = 0.4 × size): drop shadow coverage error 0.0064 → 0.0038, satin 0.014 → 0.002.
 fn blur(m: &mut Map, size: f32) {
-    let sigma = sigma_for(size);
-    if sigma < 0.2 {
-        return;
-    }
-    let r = (sigma * 3.0).ceil() as i64;
-    let kernel: Vec<f32> = (-r..=r).map(|i| (-(i * i) as f32 / (2.0 * sigma * sigma)).exp()).collect();
-    let sum: f32 = kernel.iter().sum();
-    let kernel: Vec<f32> = kernel.iter().map(|k| k / sum).collect();
-    let (w, h) = (m.w as i64, m.h as i64);
-    let mut tmp = vec![0.0f32; m.v.len()];
-    for y in 0..h {
-        for x in 0..w {
-            let mut acc = 0.0;
-            for (k, kv) in kernel.iter().enumerate() {
-                let xx = x + k as i64 - r;
-                if xx >= 0 && xx < w {
-                    acc += m.v[(y * w + xx) as usize] * kv;
-                }
-            }
-            tmp[(y * w + x) as usize] = acc;
-        }
-    }
-    for y in 0..h {
-        for x in 0..w {
-            let mut acc = 0.0;
-            for (k, kv) in kernel.iter().enumerate() {
-                let yy = y + k as i64 - r;
-                if yy >= 0 && yy < h {
-                    acc += tmp[(yy * w + x) as usize] * kv;
-                }
-            }
-            m.v[(y * w + x) as usize] = acc;
-        }
+    if size.is_finite() {
+        tent(m, size);
     }
 }
 
@@ -380,6 +344,37 @@ fn contour_lut(c: &Contour) -> Option<Vec<f32>> {
     match c {
         Contour::Linear => None,
         Contour::Custom { points, .. } => Some(crate::adjust::curve_lut(points)),
+    }
+}
+
+/// Interpolated lookup in a 0..=1 table (as the GPU's `lut()`).
+fn lut_at(l: &[f32], v: f32) -> f32 {
+    let x = v.clamp(0.0, 1.0) * (l.len() - 1) as f32;
+    let i = x.floor() as usize;
+    let j = (i + 1).min(l.len() - 1);
+    l[i] + (l[j] - l[i]) * (x - i as f32)
+}
+
+/// A glow's coverage transfer: its contour applied over the Range (Photoshop maps the glow's
+/// coverage `v` through `contour(min(v / range, 1))`, so the default 50 % doubles a blurred
+/// edge's 0.5 to full strength). `None` = identity.
+pub fn glow_lut(g: &Glow) -> Option<Vec<f32>> {
+    let base = contour_lut(&g.contour);
+    let range = if g.range.is_finite() { g.range.clamp(0.01, 1.0) } else { 1.0 };
+    if range >= 0.999 {
+        return base;
+    }
+    let n = 4096;
+    Some((0..n).map(|k| {
+        let v = (k as f32 / (n - 1) as f32 / range).min(1.0);
+        base.as_ref().map_or(v, |l| lut_at(l, v))
+    }).collect())
+}
+
+fn apply_lut(m: Map, l: Option<Vec<f32>>) -> Map {
+    match l {
+        None => m,
+        Some(l) => m.map(|v| lut_at(&l, v)),
     }
 }
 
@@ -531,7 +526,7 @@ fn glow_map(shape: &Map, g: &Glow, inner: bool) -> Map {
             m
         }
     };
-    m = apply_contour(m, &g.contour);
+    m = apply_lut(m, glow_lut(g));
     if inner {
         for (v, a) in m.v.iter_mut().zip(&shape.v) {
             *v *= a;
@@ -581,48 +576,196 @@ fn paint_fx(dst: &mut Buffer, m: &Map, p: &FxPaint, shape_bounds: Rect, anchor: 
     }
 }
 
-/// Bevel highlight and shadow maps for the inner (or outer) bevel.
-fn bevel_maps(shape: &Map, b: &Bevel, light: &GlobalLight) -> (Map, Map, bool) {
-    let outer = b.style == BevelStyle::OuterBevel;
-    let size = b.size.max(1.0);
-    let (din, dout) = (dist_inside(shape), dist_outside(shape));
-    let mut hmap = Map::new(shape.w, shape.h, 0.0);
-    for i in 0..hmap.v.len() {
-        hmap.v[i] = match b.style {
-            BevelStyle::OuterBevel => 1.0 - (dout[i] / size).clamp(0.0, 1.0),
-            BevelStyle::Emboss | BevelStyle::PillowEmboss => {
-                if din[i] > 0.0 { 0.5 + 0.5 * (din[i] / (size / 2.0)).clamp(0.0, 1.0) } else { 0.5 - 0.5 * (dout[i] / (size / 2.0)).clamp(0.0, 1.0) }
-            }
-            _ => (din[i] / size).clamp(0.0, 1.0),
-        };
+/// Normalised weights of a centred box of (fractional) width `w`: tap `i` gets the overlap of
+/// `[i - 0.5, i + 0.5]` with `[-w/2, w/2]`.
+fn box_weights(w: f32) -> Vec<f32> {
+    let w = w.max(1.0);
+    let half = w / 2.0;
+    let r = (half - 0.5).ceil().max(0.0) as i64;
+    let v: Vec<f32> = (-r..=r).map(|i| ((i as f32 + 0.5).min(half) - (i as f32 - 0.5).max(-half)).max(0.0)).collect();
+    let sum: f32 = v.iter().sum();
+    v.iter().map(|x| x / sum).collect()
+}
+
+/// The 1D kernel of two box passes of width `w` (a tent of half-width ≈ `w`): `(radius, weights)`.
+/// Photoshop's bevel height maps are this blur of the shape (fitted on the corpus: a smooth
+/// inner bevel of size 5 matches within 0.7 % mean, size 41 within 2.6 %).
+pub fn tent_kernel(w: f32) -> (i32, Vec<f32>) {
+    let b = box_weights(w);
+    let n = b.len() * 2 - 1;
+    let mut t = vec![0.0f32; n];
+    for (i, x) in b.iter().enumerate() {
+        for (j, y) in b.iter().enumerate() {
+            t[i + j] += x * y;
+        }
     }
-    // Smooth technique: round the profile.
-    hmap = hmap.map(|v| (v * std::f32::consts::FRAC_PI_2).sin());
-    blur(&mut hmap, b.soften.max(1.0));
+    ((n as i32 - 1) / 2, t)
+}
+
+/// Separable convolution with a symmetric 1D kernel (outside reads 0).
+fn convolve(m: &mut Map, r: i64, kernel: &[f32]) {
+    let (w, h) = (m.w as i64, m.h as i64);
+    let mut tmp = vec![0.0f32; m.v.len()];
+    for y in 0..h {
+        for x in 0..w {
+            let mut acc = 0.0;
+            for (k, kv) in kernel.iter().enumerate() {
+                let xx = x + k as i64 - r;
+                if xx >= 0 && xx < w {
+                    acc += m.v[(y * w + xx) as usize] * kv;
+                }
+            }
+            tmp[(y * w + x) as usize] = acc;
+        }
+    }
+    for y in 0..h {
+        for x in 0..w {
+            let mut acc = 0.0;
+            for (k, kv) in kernel.iter().enumerate() {
+                let yy = y + k as i64 - r;
+                if yy >= 0 && yy < h {
+                    acc += tmp[(yy * w + x) as usize] * kv;
+                }
+            }
+            m.v[(y * w + x) as usize] = acc;
+        }
+    }
+}
+
+fn tent(m: &mut Map, w: f32) {
+    let (r, k) = tent_kernel(w);
+    if r > 0 {
+        convolve(m, i64::from(r), &k);
+    }
+}
+
+/// Where a bevel's maps paint: inside the shape (with the layer), outside it (onto the
+/// backdrop), or both (emboss styles: maps 0–1 inside, 2–3 outside).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BevelPaint {
+    Inner,
+    Outer,
+    Both,
+}
+
+/// Bevel geometry shared by the CPU maps and the GPU programs.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BevelGeom {
+    pub paint: BevelPaint,
+    /// Box width of the smooth height blur (size; half the size for emboss styles).
+    pub width: f32,
+    /// Height-map gradient scale: depth × width (smooth) or depth × size (chisel), signed by
+    /// direction.
+    pub depth: f32,
+    /// Pillow emboss: the outside slopes face the other way.
+    pub pillow: bool,
+    /// Chisel Soft: extra tent width over the chiselled height map.
+    pub chisel_soft: f32,
+}
+
+pub fn bevel_geom(b: &Bevel) -> BevelGeom {
+    let size = b.size.max(1.0);
+    let emboss = matches!(b.style, BevelStyle::Emboss | BevelStyle::PillowEmboss);
+    let paint = match b.style {
+        BevelStyle::OuterBevel => BevelPaint::Outer,
+        BevelStyle::Emboss | BevelStyle::PillowEmboss => BevelPaint::Both,
+        BevelStyle::InnerBevel | BevelStyle::StrokeEmboss => BevelPaint::Inner,
+    };
+    let width = if emboss { size / 2.0 } else { size };
+    let smooth = b.technique == BevelTechnique::Smooth;
+    let sign = if b.up { 1.0 } else { -1.0 };
+    BevelGeom {
+        paint,
+        width,
+        depth: b.depth * if smooth { width } else { size } * sign,
+        pillow: b.style == BevelStyle::PillowEmboss,
+        chisel_soft: if b.technique == BevelTechnique::ChiselSoft { (size / 4.0).max(1.0) } else { 0.0 },
+    }
+}
+
+/// Bevel height map in `0..=1`. Smooth: the shape blurred by two box passes of the bevel
+/// width. Chisel: linear ramps of the exact distance to the edge (size wide; emboss styles
+/// straddle the edge), slightly blurred for Chisel Soft. Soften blurs the result.
+fn bevel_height(shape: &Map, b: &Bevel, g: &BevelGeom) -> Map {
+    let size = b.size.max(1.0);
+    let mut h = if b.technique == BevelTechnique::Smooth {
+        let mut h = shape.clone();
+        tent(&mut h, g.width);
+        h
+    } else {
+        let (din, dout) = (dist_inside(shape), dist_outside(shape));
+        let mut h = Map::new(shape.w, shape.h, 0.0);
+        for i in 0..h.v.len() {
+            h.v[i] = bevel_chisel_h(g.paint, size, din[i], dout[i]);
+        }
+        if g.chisel_soft > 0.0 {
+            tent(&mut h, g.chisel_soft);
+        }
+        h
+    };
+    if b.soften >= 1.0 {
+        tent(&mut h, b.soften);
+    }
+    h
+}
+
+/// Chiselled height from the inside / outside distances (keep in sync with `fs_mbevelh`).
+pub fn bevel_chisel_h(paint: BevelPaint, size: f32, din: f32, dout: f32) -> f32 {
+    match paint {
+        BevelPaint::Outer => 1.0 - (dout / size).clamp(0.0, 1.0),
+        BevelPaint::Both => {
+            if din > 0.0 {
+                0.5 + 0.5 * (din / (size / 2.0)).clamp(0.0, 1.0)
+            } else {
+                0.5 - 0.5 * (dout / (size / 2.0)).clamp(0.0, 1.0)
+            }
+        }
+        BevelPaint::Inner => (din / size).clamp(0.0, 1.0),
+    }
+}
+
+/// Bevel highlight and shadow maps: `[hi, sh]` (inner or outer) or `[hi, sh, hi_out, sh_out]`
+/// (emboss styles).
+fn bevel_maps(shape: &Map, b: &Bevel, light: &GlobalLight) -> (Vec<Map>, BevelPaint) {
+    let g = bevel_geom(b);
+    let hmap = bevel_height(shape, b, &g);
     let (angle, altitude) = if b.use_global_light { (light.angle, light.altitude) } else { (b.angle, b.altitude) };
     let (sa, ca) = angle.to_radians().sin_cos();
     let (se, ce) = altitude.to_radians().sin_cos();
     let light_v = [ca * ce, -sa * ce, se];
-    let depth = b.depth * size * if b.up { 1.0 } else { -1.0 };
-    let (mut hi, mut sh) = (Map::new(shape.w, shape.h, 0.0), Map::new(shape.w, shape.h, 0.0));
-    for y in 0..shape.h as i64 {
-        for x in 0..shape.w as i64 {
-            let i = y as usize * shape.w + x as usize;
-            let gx = (hmap.get(x + 1, y) - hmap.get(x - 1, y)) * 0.5 * depth;
-            let gy = (hmap.get(x, y + 1) - hmap.get(x, y - 1)) * 0.5 * depth;
-            let n = [-gx, -gy, 1.0];
-            let len = (n[0] * n[0] + n[1] * n[1] + 1.0).sqrt();
-            let shade = (n[0] * light_v[0] + n[1] * light_v[1] + n[2] * light_v[2]) / len;
-            let region = if outer { (1.0 - shape.v[i]) * f32::from(hmap.v[i] > 0.0) } else { shape.v[i] };
-            let k = shade - se;
-            if k > 0.0 {
-                hi.v[i] = (k / (1.0 - se).max(1e-3)).clamp(0.0, 1.0) * region;
-            } else {
-                sh.v[i] = (-k / se.max(1e-3)).clamp(0.0, 1.0) * region;
+    let shade_into = |depth: f32, outer: bool| -> (Map, Map) {
+        let (mut hi, mut sh) = (Map::new(shape.w, shape.h, 0.0), Map::new(shape.w, shape.h, 0.0));
+        for y in 0..shape.h as i64 {
+            for x in 0..shape.w as i64 {
+                let i = y as usize * shape.w + x as usize;
+                let gx = (hmap.get(x + 1, y) - hmap.get(x - 1, y)) * 0.5 * depth;
+                let gy = (hmap.get(x, y + 1) - hmap.get(x, y - 1)) * 0.5 * depth;
+                let n = [-gx, -gy, 1.0];
+                let len = (n[0] * n[0] + n[1] * n[1] + 1.0).sqrt();
+                let shade = (n[0] * light_v[0] + n[1] * light_v[1] + n[2] * light_v[2]) / len;
+                let region = if outer { f32::from(shape.v[i] < 1.0 - INSIDE_EPS && hmap.v[i] > 0.0) } else { shape.v[i] };
+                let k = shade - se;
+                if k > 0.0 {
+                    hi.v[i] = (k / (1.0 - se).max(1e-3)).clamp(0.0, 1.0) * region;
+                } else {
+                    sh.v[i] = (-k / se.max(1e-3)).clamp(0.0, 1.0) * region;
+                }
             }
         }
-    }
-    (apply_contour(hi, &b.gloss_contour), apply_contour(sh, &b.gloss_contour), outer)
+        (apply_contour(hi, &b.gloss_contour), apply_contour(sh, &b.gloss_contour))
+    };
+    let maps = match g.paint {
+        BevelPaint::Inner | BevelPaint::Outer => {
+            let (hi, sh) = shade_into(g.depth, g.paint == BevelPaint::Outer);
+            vec![hi, sh]
+        }
+        BevelPaint::Both => {
+            let (hi, sh) = shade_into(g.depth, false);
+            let (ho, so) = shade_into(if g.pillow { -g.depth } else { g.depth }, true);
+            vec![hi, sh, ho, so]
+        }
+    };
+    (maps, g.paint)
 }
 
 /// Effect maps derived from a layer's shape (its alpha), computed once over the layer's whole
@@ -633,7 +776,7 @@ pub struct FxMaps {
     shape: Map,
     /// Per enabled effect (in `items` order): the maps it paints through.
     per: Vec<Vec<Map>>,
-    outer_bevel: Vec<bool>,
+    bevel_paint: Vec<BevelPaint>,
     din: Option<Vec<f32>>,
     dout: Option<Vec<f32>>,
     /// Shape layers: distance outside the vector outline (from local coverage).
@@ -675,8 +818,9 @@ fn satin_map(shape: &Map, s: &photocraft_doc::effects::Satin) -> Map {
     let (dx, dy) = offset(s.angle, s.distance);
     let mut a = shape.shifted(dx, dy, 0.0);
     let mut b = shape.shifted(-dx, -dy, 0.0);
-    blur(&mut a, s.size);
-    blur(&mut b, s.size);
+    // Two box passes of the satin size (fitted: 0.2 % mean error on psd-tools layer_effects).
+    tent(&mut a, s.size);
+    tent(&mut b, s.size);
     let mut m = Map { w: shape.w, h: shape.h, v: a.v.iter().zip(&b.v).map(|(x, y)| (x - y).abs()).collect() };
     if s.invert {
         m = m.map(|v| 1.0 - v);
@@ -693,7 +837,7 @@ pub fn build_maps(layer: &Layer, shape: Vec<f32>, rect: Rect, light: &GlobalLigh
     let (w, h) = (rect.width() as usize, rect.height() as usize);
     let shape = Map { w, h, v: shape };
     let items: Vec<&Effect> = layer.effects.items.iter().filter(|e| e.enabled()).collect();
-    let mut outer_bevel = vec![false; items.len()];
+    let mut bevel_paint = vec![BevelPaint::Inner; items.len()];
     let per: Vec<Vec<Map>> = items
         .iter()
         .enumerate()
@@ -704,9 +848,9 @@ pub fn build_maps(layer: &Layer, shape: Vec<f32>, rect: Rect, light: &GlobalLigh
             Effect::InnerGlow(g) => vec![glow_map(&shape, g, true)],
             Effect::Satin(s) => vec![satin_map(&shape, s)],
             Effect::BevelEmboss(b) => {
-                let (hi, sh, outer) = bevel_maps(&shape, b, light);
-                outer_bevel[i] = outer;
-                vec![hi, sh]
+                let (maps, paint) = bevel_maps(&shape, b, light);
+                bevel_paint[i] = paint;
+                maps
             }
             _ => Vec::new(),
         })
@@ -715,7 +859,7 @@ pub fn build_maps(layer: &Layer, shape: Vec<f32>, rect: Rect, light: &GlobalLigh
     let vector_shape = matches!(layer.content, photocraft_doc::LayerContent::Shape(_));
     let (din, dout) = if has_stroke { (Some(dist_inside_by(&shape, Metric::Chamfer)), Some(dist_outside_by(&shape, Metric::Chamfer))) } else { (None, None) };
     let vdout = (has_stroke && vector_shape).then(|| dist_outside_by(&local_coverage(&shape), Metric::Chamfer));
-    FxMaps { rect, shape, per, outer_bevel, din, dout, vdout }
+    FxMaps { rect, shape, per, bevel_paint, din, dout, vdout }
 }
 
 /// Far outside any shape (distance fill for cropped distance fields).
@@ -839,7 +983,7 @@ pub fn composite_with_effects(layer: &Layer, content: &Buffer, backdrop: &mut Bu
     }
     for (i, e) in rev() {
         if let Effect::BevelEmboss(b) = e
-            && !maps.outer_bevel[i]
+            && maps.bevel_paint[i] != BevelPaint::Outer
         {
             let (hi, sh) = (rel(fx(i, 0)), rel(fx(i, 1)));
             paint_color(&mut lay, &hi, rgb(&b.highlight_color), b.highlight.blend, b.highlight.opacity);
@@ -904,9 +1048,10 @@ pub fn composite_with_effects(layer: &Layer, content: &Buffer, backdrop: &mut Bu
     }
     for (i, e) in rev() {
         if let Effect::BevelEmboss(b) = e
-            && maps.outer_bevel[i]
+            && maps.bevel_paint[i] != BevelPaint::Inner
         {
-            let (hi, sh) = (fx(i, 0), fx(i, 1));
+            let k = if maps.bevel_paint[i] == BevelPaint::Both { 2 } else { 0 };
+            let (hi, sh) = (fx(i, k), fx(i, k + 1));
             paint_color(&mut work, &hi, rgb(&b.highlight_color), b.highlight.blend, b.highlight.opacity);
             paint_color(&mut work, &sh, rgb(&b.shadow_color), b.shadow.blend, b.shadow.opacity);
         }
@@ -914,9 +1059,10 @@ pub fn composite_with_effects(layer: &Layer, content: &Buffer, backdrop: &mut Bu
 
     // Layer (with interior effects) onto the exterior result, in the layer's mode.
     let mode = if layer.blend == BlendMode::PassThrough { BlendMode::Normal } else { layer.blend };
+    let gamma = crate::text_gamma(layer);
     for (wp, lp) in work.px.iter_mut().zip(&lay.px) {
         if lp[3] > 0.0 {
-            *wp = psblend::composite(mode, *wp, *lp, 1.0);
+            *wp = psblend::composite_gamma(mode, *wp, *lp, 1.0, gamma);
         }
     }
     // Layer opacity applies to the whole stack.
@@ -1049,6 +1195,108 @@ mod tests {
         assert!((at(1, 3) - (5f32.sqrt() + 1.0)).abs() < 1e-5, "knight + straight, not √10");
         assert!((at(2, 3) - (5f32.sqrt() + std::f32::consts::SQRT_2)).abs() < 1e-5);
         assert!(near.iter().all(|&n| n == 0));
+    }
+
+    #[test]
+    fn tent_kernel_is_two_boxes() {
+        let (r, k) = tent_kernel(5.0);
+        assert_eq!(r, 4);
+        let sum: f32 = k.iter().sum();
+        assert!((sum - 1.0).abs() < 1e-6);
+        assert!((k[4] - 5.0 / 25.0).abs() < 1e-6 && (k[0] - 1.0 / 25.0).abs() < 1e-6);
+        // Fractional widths taper the end taps; width 1 is the identity.
+        let (r, k) = tent_kernel(4.0);
+        assert_eq!(r, 4);
+        assert!(k[0] > 0.0 && k[0] < 1.0 / 25.0);
+        assert_eq!(tent_kernel(1.0), (0, vec![1.0]));
+    }
+
+    fn square(n: usize, x0: usize, x1: usize) -> Map {
+        let mut m = Map::new(n, n, 0.0);
+        for y in x0..x1 {
+            for x in x0..x1 {
+                m.v[y * n + x] = 1.0;
+            }
+        }
+        m
+    }
+
+    fn bevel_of(style: BevelStyle, technique: BevelTechnique) -> Bevel {
+        Bevel {
+            enabled: true,
+            style,
+            technique,
+            depth: 1.0,
+            up: true,
+            size: 5.0,
+            soften: 0.0,
+            angle: 90.0,
+            altitude: 30.0,
+            use_global_light: false,
+            gloss_contour: Contour::Linear,
+            highlight: photocraft_doc::FxCommon::new(BlendMode::Screen, 0.75),
+            highlight_color: photocraft_color::Color::WHITE,
+            shadow: photocraft_doc::FxCommon::new(BlendMode::Multiply, 0.75),
+            shadow_color: photocraft_color::Color::BLACK,
+        }
+    }
+
+    #[test]
+    fn smooth_inner_bevel_lights_the_top_edge_inside_only() {
+        let shape = square(40, 10, 30);
+        let (maps, paint) = bevel_maps(&shape, &bevel_of(BevelStyle::InnerBevel, BevelTechnique::Smooth), &GlobalLight::default());
+        assert_eq!(paint, BevelPaint::Inner);
+        let at = |m: &Map, x: usize, y: usize| m.v[y * 40 + x];
+        // Light from the top: highlight along the top edge, shadow along the bottom, flat middle.
+        assert!(at(&maps[0], 20, 10) > 0.5 && at(&maps[1], 20, 10) == 0.0);
+        assert!(at(&maps[1], 20, 29) > 0.5);
+        assert!(at(&maps[0], 20, 20) < 1e-3 && at(&maps[1], 20, 20) < 1e-3);
+        // Nothing outside the shape; the ramp reaches about `size` inside.
+        assert_eq!(at(&maps[0], 20, 8), 0.0);
+        assert!(at(&maps[0], 20, 15) < 0.05);
+    }
+
+    #[test]
+    fn emboss_paints_both_sides_and_pillow_flips_the_outside() {
+        let shape = square(40, 10, 30);
+        let l = GlobalLight::default();
+        let (e, paint) = bevel_maps(&shape, &bevel_of(BevelStyle::Emboss, BevelTechnique::Smooth), &l);
+        assert_eq!((paint, e.len()), (BevelPaint::Both, 4));
+        let at = |m: &Map, x: usize, y: usize| m.v[y * 40 + x];
+        // Emboss: the slope across the top edge faces the light on both sides.
+        assert!(at(&e[0], 20, 10) > 0.3 && at(&e[2], 20, 9) > 0.3);
+        let (p, _) = bevel_maps(&shape, &bevel_of(BevelStyle::PillowEmboss, BevelTechnique::Smooth), &l);
+        assert!(at(&p[0], 20, 10) > 0.3 && at(&p[3], 20, 9) > 0.3, "pillow: outside top edge in shadow");
+    }
+
+    #[test]
+    fn chisel_hard_has_flat_facets() {
+        let shape = square(48, 10, 38);
+        let (m, _) = bevel_maps(&shape, &bevel_of(BevelStyle::InnerBevel, BevelTechnique::ChiselHard), &GlobalLight::default());
+        let at = |x: usize, y: usize| m[0].v[y * 48 + x];
+        // A constant slope: equal highlight along the top facet.
+        assert!(at(24, 12) > 0.1 && (at(24, 12) - at(24, 13)).abs() < 1e-3);
+    }
+
+    #[test]
+    fn glow_range_stretches_the_contour() {
+        let mut g = Glow {
+            common: photocraft_doc::FxCommon::new(BlendMode::Screen, 1.0),
+            paint: FxPaint::Color(photocraft_color::Color::WHITE),
+            technique: GlowTechnique::Softer,
+            spread: 0.0,
+            size: 10.0,
+            contour: Contour::Linear,
+            anti_alias: false,
+            range: 0.5,
+            jitter: 0.0,
+            noise: 0.0,
+            source: GlowSource::Edge,
+        };
+        let l = glow_lut(&g).unwrap();
+        assert!((lut_at(&l, 0.25) - 0.5).abs() < 1e-3 && (lut_at(&l, 0.75) - 1.0).abs() < 1e-6);
+        g.range = 1.0;
+        assert!(glow_lut(&g).is_none());
     }
 
     #[test]

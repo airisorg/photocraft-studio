@@ -22,7 +22,7 @@ pub struct PenPath {
 }
 
 pub fn is_shape_tool(t: Tool) -> bool {
-    matches!(t, Tool::Rectangle | Tool::EllipseShape | Tool::Triangle | Tool::Polygon | Tool::Line)
+    matches!(t, Tool::Rectangle | Tool::EllipseShape | Tool::Triangle | Tool::Polygon | Tool::Line | Tool::CustomShape)
 }
 
 fn hex(c: [f32; 4]) -> String {
@@ -62,6 +62,11 @@ pub fn finish_shape(app: &mut PhotocraftApp, tool: Tool, start: [f64; 2], end: [
         let (w, h) = if mods.alt { (w * 2.0, h * 2.0) } else { (w, h) };
         let rect = [x0.min(x0 + w).round(), y0.min(y0 + h).round(), w.abs().round(), h.abs().round()];
         if rect[2] < 1.0 || rect[3] < 1.0 {
+            return;
+        }
+        if tool == Tool::CustomShape {
+            // ⇧ keeps the shape's proportions (the rect is already squared).
+            crate::preset_panels::finish_custom_shape(app, rect, mods.shift, fill, stroke);
             return;
         }
         match tool {
@@ -319,6 +324,10 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool) -> bo
             crate::widgets::vline(ui, 22.0);
             lbl(ui, "Weight:");
             crate::widgets::value_field(ui, &mut o.line_weight, 1.0..=1000.0, "px", 58.0);
+        }
+        Tool::CustomShape => {
+            crate::widgets::vline(ui, 22.0);
+            crate::preset_panels::shape_picker(app, ui);
         }
         _ => {}
     }

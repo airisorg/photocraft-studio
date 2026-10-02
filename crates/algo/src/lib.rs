@@ -17,6 +17,8 @@
 //! rayon on native targets; single-threaded on wasm).
 #![forbid(unsafe_code)]
 
+mod artistic;
+mod artistic_fx;
 mod blur;
 mod blur2;
 mod denoise;
@@ -29,6 +31,7 @@ mod oil;
 mod other2;
 mod pixelate;
 mod render;
+pub mod render2;
 mod stylize2;
 mod video;
 mod noise;
@@ -53,9 +56,19 @@ pub mod seam;
 pub mod content_aware;
 pub mod features;
 pub mod pyramid;
+pub mod panorama;
+pub mod hdr;
+pub mod exif;
+pub mod lens;
+pub mod wideangle;
+pub mod scancrop;
+pub mod camera_raw;
+pub mod vanishing;
+mod photo_util;
 mod sharpen;
 mod stylize;
 
+pub use artistic::{GALLERY_CATEGORIES, GalleryEffect, GalleryFilter, GalleryParam, GalleryParamKind};
 pub use image::{Edge, Image};
 pub use params_ext::*;
 
@@ -290,6 +303,8 @@ pub enum FilterParams {
     /// Removes the even (or odd) lines and rebuilds them by interpolation (or duplication).
     DeInterlace { eliminate_even: bool, interpolate: bool },
     NtscColors,
+    /// Filter Gallery: a stack of gallery effects applied in order.
+    FilterGallery { effects: Vec<GalleryEffect> },
 }
 
 impl FilterParams {
@@ -388,6 +403,10 @@ impl FilterParams {
             FilterParams::HsbHsl { .. } => "HSB/HSL",
             FilterParams::DeInterlace { .. } => "De-Interlace",
             FilterParams::NtscColors => "NTSC Colors",
+            FilterParams::FilterGallery { effects } => match effects.as_slice() {
+                [one] => one.filter.name(),
+                _ => "Filter Gallery",
+            },
         }
     }
 }
@@ -422,6 +441,7 @@ fn halo_ext(p: &FilterParams) -> Halo {
         FilterParams::PathBlur { paths } => r(paths.iter().map(|p| p.speed.abs()).fold(0.0, f32::max) / 2.0 + 1.0),
         FilterParams::Custom { .. } => r(2.0),
         FilterParams::DeInterlace { .. } => r(1.0),
+        FilterParams::FilterGallery { effects } => Halo::Radius(artistic_fx::reach(effects)),
         _ => Halo::Radius(0),
     }
 }
@@ -548,6 +568,7 @@ pub fn kernel(params: &FilterParams, src: &Image, out: Rect, ctx: &Ctx) -> Vec<f
         FilterParams::HsbHsl { input, output } => other2::hsb_hsl(src, out, ctx, *input, *output),
         FilterParams::DeInterlace { eliminate_even, interpolate } => video::deinterlace(src, out, ctx, *eliminate_even, *interpolate),
         FilterParams::NtscColors => video::ntsc(src, out, ctx),
+        FilterParams::FilterGallery { effects } => artistic_fx::run(effects, src, out, ctx),
     }
 }
 

@@ -224,6 +224,22 @@ fn groups_masks_and_clipping() {
     c.clipped = true;
     d.layers.extend([gb, c]);
     check(&mut g, &d, "clipped to isolated group");
+    // Layers clipped to a pass-through group (with opacity and a mask, children in modes).
+    for (op, masked) in [(1.0, false), (0.6, true)] {
+        let mut d = base_doc(56, 44);
+        let mut pt = Layer::group("pt", vec![child(31, BlendMode::Normal), child(32, BlendMode::Multiply)]);
+        pt.opacity = op;
+        if masked {
+            pt.mask = Some(mask(Rect::new(5, 0, 50, 44), 33, 1.0));
+        }
+        let mut c1 = child(34, BlendMode::Screen);
+        c1.clipped = true;
+        c1.opacity = 0.8;
+        let mut c2 = Layer::new("inv", LayerContent::Adjustment(Adjustment::Invert));
+        c2.clipped = true;
+        d.layers.extend([pt, c1, c2]);
+        check(&mut g, &d, &format!("clipped to pass-through op {op} masked {masked}"));
+    }
 }
 
 #[test]
@@ -441,6 +457,11 @@ fn effect_cases() -> Vec<(&'static str, Vec<Effect>)> {
         ("bevel outer", vec![Effect::BevelEmboss(bevel(BevelStyle::OuterBevel, true, 6.0, 0.0))]),
         ("bevel emboss down", vec![Effect::BevelEmboss(bevel(BevelStyle::Emboss, false, 8.0, 1.0))]),
         ("bevel pillow", vec![Effect::BevelEmboss(bevel(BevelStyle::PillowEmboss, true, 5.0, 4.0))]),
+        ("bevel inner chisel hard", vec![Effect::BevelEmboss(Bevel { technique: BevelTechnique::ChiselHard, ..bevel(BevelStyle::InnerBevel, true, 9.0, 0.0) })]),
+        ("bevel outer chisel soft", vec![Effect::BevelEmboss(Bevel { technique: BevelTechnique::ChiselSoft, ..bevel(BevelStyle::OuterBevel, false, 7.5, 2.0) })]),
+        ("bevel pillow chisel hard", vec![Effect::BevelEmboss(Bevel { technique: BevelTechnique::ChiselHard, ..bevel(BevelStyle::PillowEmboss, false, 7.0, 0.0) })]),
+        ("bevel emboss smooth wide", vec![Effect::BevelEmboss(bevel(BevelStyle::Emboss, true, 21.0, 0.0))]),
+        ("bevel stroke emboss", vec![Effect::BevelEmboss(bevel(BevelStyle::StrokeEmboss, true, 6.0, 0.0))]),
         ("bevel contour own light", vec![Effect::BevelEmboss(bevel_contour)]),
         ("satin", vec![Effect::Satin(satin)]),
         ("satin inverted contour", vec![Effect::Satin(satin_inv)]),
@@ -683,3 +704,209 @@ fn layer_effects_on_shape_layers() {
         fx_check(&mut g, &d, &format!("shape layer alpha {alpha}"));
     }
 }
+
+#[test]
+fn channel_restrictions() {
+    let Some(mut g) = gpu() else { return };
+    for mask_bits in [0b001u32, 0b010, 0b100, 0b101, 0b111] {
+        // Raster layer in a blend mode, an adjustment and a clipped layer.
+        let mut d = base_doc(64, 48);
+        let mut l = noise_layer("top", PixelFormat::RGBA8, Rect::new(4, 3, 60, 45), 2, 0.0);
+        l.blend = BlendMode::Multiply;
+        l.excluded_channels = mask_bits;
+        d.layers.push(l);
+        let mut adj = Layer::new("inv", LayerContent::Adjustment(Adjustment::Invert));
+        adj.excluded_channels = mask_bits.rotate_left(1) & 0b111;
+        d.layers.push(adj);
+        let mut c = noise_layer("clip", PixelFormat::RGBA8, Rect::new(10, 10, 50, 40), 3, 0.2);
+        c.clipped = true;
+        c.excluded_channels = mask_bits;
+        d.layers.push(c);
+        check(&mut g, &d, &format!("channels {mask_bits:03b}"));
+
+        // An effect layer (exterior and interior effects).
+        let mut d = fx_doc(96, 80, SampleType::U8);
+        let mut l = blob("fx", d.pixel_format(), 46.0, 40.0, 22.0, [0.9, 0.4, 0.2]);
+        l.effects.items = vec![
+            Effect::DropShadow(shadow(BlendMode::Multiply, 0.7, 120.0, 6.0, 8.0, 0.1)),
+            Effect::InnerGlow(glow(FxPaint::Color(Color::rgb(1.0, 1.0, 0.5)), GlowTechnique::Softer, 9.0, 0.0, GlowSource::Edge)),
+        ];
+        l.excluded_channels = mask_bits;
+        d.layers.push(l);
+        fx_check(&mut g, &d, &format!("fx channels {mask_bits:03b}"));
+    }
+    // Grayscale: the single channel left out keeps the backdrop.
+    let mut d = Document::new("g", Size::new(32, 32), ColorMode::Grayscale, SampleType::U8);
+    d.layers.push(noise_layer("bg", PixelFormat::GRAYA8, Rect::new(0, 0, 32, 32), 9, 1.0));
+    let mut l = noise_layer("top", PixelFormat::GRAYA8, Rect::new(0, 0, 32, 32), 10, 1.0);
+    l.excluded_channels = 1;
+    d.layers.push(l);
+    check(&mut g, &d, "gray channels");
+    let flat = photocraft_compose::flatten(&d);
+    let bg = photocraft_compose::render_layer(&d.layers[0], d.bounds());
+    assert!(flat.px.iter().zip(&bg.px).all(|(a, b)| (a[0] - b[0]).abs() < 1e-6));
+}
+
+/// A type layer whose rendered pixels are `src`'s (blends with the text gamma).
+fn as_text(src: Layer) -> Layer {
+    let t = photocraft_doc::TextLayer { cache: src.surface().cloned(), ..Default::default() };
+    let mut l = Layer::new(&src.name, LayerContent::Text(t));
+    l.blend = src.blend;
+    l.opacity = src.opacity;
+    l.effects = src.effects;
+    l
+}
+
+#[test]
+fn type_layers_blend_with_text_gamma() {
+    let Some(mut g) = gpu() else { return };
+    for mode in [BlendMode::Normal, BlendMode::Multiply, BlendMode::Screen, BlendMode::Color] {
+        let mut d = base_doc(64, 48);
+        let mut l = as_text(noise_layer("text", PixelFormat::RGBA8, Rect::new(4, 3, 60, 45), 21, 0.0));
+        l.blend = mode;
+        l.opacity = 0.9;
+        d.layers.push(l);
+        // Clipped type layer.
+        let mut c = as_text(noise_layer("clip", PixelFormat::RGBA8, Rect::new(8, 8, 50, 40), 22, 0.0));
+        c.clipped = true;
+        c.blend = mode;
+        d.layers.push(c);
+        check(&mut g, &d, &format!("text {mode:?}"));
+    }
+    // With effects (the merge of the layer onto its exterior effects).
+    let mut d = fx_doc(96, 80, SampleType::U8);
+    let mut l = as_text(blob("fx", d.pixel_format(), 46.0, 40.0, 22.0, [0.2, 0.1, 0.6]));
+    l.effects.items = vec![Effect::ColorOverlay { common: FxCommon::new(BlendMode::Normal, 1.0), color: Color::rgb(0.0, 0.2, 0.6) }, Effect::DropShadow(shadow(BlendMode::Multiply, 0.6, 90.0, 5.0, 6.0, 0.0))];
+    d.layers.push(l);
+    fx_check(&mut g, &d, "text fx");
+    // The gamma changes edge pixels against a linear mix.
+    let flat = photocraft_compose::flatten(&d);
+    let mut lin = d.clone();
+    let raster = {
+        let LayerContent::Text(t) = &lin.layers[1].content else { unreachable!() };
+        let mut r = Layer::new("r", LayerContent::Raster(t.cache.clone().unwrap()));
+        r.effects = lin.layers[1].effects.clone();
+        r
+    };
+    lin.layers[1] = raster;
+    let flat_lin = photocraft_compose::flatten(&lin);
+    assert!(flat.px.iter().zip(&flat_lin.px).any(|(a, b)| (a[0] - b[0]).abs() > 0.02));
+}
+
+#[test]
+fn blend_mode_extremes() {
+    // Exact 0 / 1 channels on both sides (Color Burn / Dodge / Vivid Light / Hard Mix corners).
+    let Some(mut g) = gpu() else { return };
+    let vals = [0.0f32, 1.0, 0.5];
+    for depth in [SampleType::U8, SampleType::U16] {
+        for mode in BlendMode::LAYER_MODES {
+            let mut d = Document::new("x", Size::new(9, 9), ColorMode::Rgb, depth);
+            let fmt = d.pixel_format();
+            let mut bg = Layer::raster("bg", fmt);
+            let mut top = Layer::raster("top", fmt);
+            for (i, &b) in vals.iter().enumerate() {
+                for (j, &s) in vals.iter().enumerate() {
+                    for k in 0..3 {
+                        let (x, y) = ((i * 3 + k) as i32, j as i32 * 3);
+                        let r = Rect::from_xywh(x, y, 1, 3);
+                        bg.surface_mut().unwrap().fill_rect(r, &photocraft_raster::from_rgba(&fmt, [b, b, b, 1.0]));
+                        top.surface_mut().unwrap().fill_rect(r, &photocraft_raster::from_rgba(&fmt, [s, s, s, [1.0, 0.6, 0.2][k]]));
+                    }
+                }
+            }
+            top.blend = mode;
+            d.layers.push(bg);
+            d.layers.push(top);
+            check(&mut g, &d, &format!("extremes {mode:?} {depth:?}"));
+        }
+    }
+}
+
+#[test]
+fn stroked_shapes_with_clipped_layers() {
+    let Some(mut g) = gpu() else { return };
+    use photocraft_doc::vector::{Path, ShapeLayer, ShapeStroke, Subpath};
+    for (blend, masked) in [(BlendMode::Normal, false), (BlendMode::Multiply, true)] {
+        let mut d = base_doc(80, 64);
+        let path = Path::new(vec![Subpath::polygon(&[(10.3, 8.6), (66.2, 12.1), (58.7, 54.4), (16.9, 48.2)])]);
+        let stroke = ShapeStroke { width: 5.0, paint: Fill::Solid(Color::rgb(0.9, 0.9, 0.1)), ..Default::default() };
+        let mut sh = ShapeLayer { path, fill: Some(Fill::Solid(Color::rgb(0.2, 0.3, 0.8))), stroke: Some(stroke), live: None, cache: None, psd_raw: None };
+        sh.cache = Some(photocraft_vector::render_shape(&sh, d.pixel_format(), d.bounds()));
+        let mut l = Layer::new("shape", LayerContent::Shape(sh));
+        l.blend = blend;
+        l.opacity = 0.9;
+        if masked {
+            l.mask = Some(mask(Rect::new(0, 0, 80, 64), 41, 1.0));
+        }
+        let mut c = noise_layer("clip", PixelFormat::RGBA8, Rect::new(0, 0, 80, 64), 42, 0.5);
+        c.clipped = true;
+        c.blend = BlendMode::Screen;
+        d.layers.extend([l, c]);
+        let st = photocraft_gpu::render_to_vec_stats(&mut g.comp, &g.device, &g.queue, &d, d.bounds());
+        assert!(st.is_ok(), "planned on the GPU");
+        check(&mut g, &d, &format!("stroked shape + clipped {blend:?} masked {masked}"));
+    }
+}
+
+#[test]
+fn artboards() {
+    let Some(mut g) = gpu() else { return };
+    use photocraft_doc::{Artboard, ArtboardBackground};
+    let backgrounds = [ArtboardBackground::White, ArtboardBackground::Transparent, ArtboardBackground::Custom({
+        let mut c = Color::rgb(0.2, 0.7, 0.4);
+        c.alpha = 0.5;
+        c
+    })];
+    for bg in backgrounds {
+        for blend in [BlendMode::PassThrough, BlendMode::Normal, BlendMode::Multiply] {
+            let mut d = base_doc(72, 48);
+            let mut child = noise_layer("c", PixelFormat::RGBA8, Rect::new(0, 0, 72, 48), 51, 0.0);
+            child.blend = BlendMode::Screen;
+            let mut fx = blob("fx", PixelFormat::RGBA8, 34.0, 24.0, 12.0, [0.8, 0.3, 0.2]);
+            fx.effects.items = vec![Effect::DropShadow(shadow(BlendMode::Multiply, 0.8, 120.0, 6.0, 8.0, 0.0))];
+            let mut ab = Layer::group("Artboard", vec![child, fx]);
+            ab.blend = blend;
+            if let LayerContent::Group(gr) = &mut ab.content {
+                gr.artboard = Some(Artboard { rect: Rect::new(12, 6, 60, 40), background: bg.clone(), preset: String::new() });
+            }
+            d.layers.push(ab);
+            // A second, partly off-canvas board.
+            let mut ab2 = Layer::group("Artboard 2", vec![noise_layer("c2", PixelFormat::RGBA8, Rect::new(0, 0, 72, 48), 52, 0.3)]);
+            if let LayerContent::Group(gr) = &mut ab2.content {
+                gr.artboard = Some(Artboard { rect: Rect::new(50, 30, 90, 70), background: ArtboardBackground::Black, preset: String::new() });
+            }
+            d.layers.push(ab2);
+            fx_check(&mut g, &d, &format!("artboard {bg:?} {blend:?}"));
+        }
+    }
+}
+
+#[test]
+fn pattern_fill_layers() {
+    let Some(mut g) = gpu() else { return };
+    let pat = checker_pattern();
+    for (link, scale, angle, masked) in [(true, 1.0, 0.0, false), (false, 0.7, 25.0, true), (true, 1.6, -40.0, false)] {
+        let mut d = base_doc(70, 50);
+        d.patterns.push(pat.clone());
+        let fill = Fill::Pattern { name: pat.name.clone(), id: pat.id.clone(), scale, angle, link, phase: (3.0, -2.0) };
+        let mut l = Layer::new("pat", LayerContent::Fill(fill));
+        l.opacity = 0.85;
+        l.blend = BlendMode::Overlay;
+        if masked {
+            l.mask = Some(mask(Rect::new(5, 5, 60, 45), 61, 0.0));
+        }
+        d.layers.push(l.clone());
+        // With effects, and a missing pattern (transparent).
+        let mut fx = l.clone();
+        fx.id = photocraft_doc::LayerId::fresh();
+        fx.effects.items = vec![Effect::DropShadow(shadow(BlendMode::Multiply, 0.6, 90.0, 3.0, 4.0, 0.0))];
+        fx.mask = Some(mask(Rect::new(20, 10, 50, 40), 62, 0.0));
+        d.layers.push(fx);
+        let mut missing = l;
+        missing.id = photocraft_doc::LayerId::fresh();
+        missing.content = LayerContent::Fill(Fill::Pattern { name: "nope".into(), id: "nope".into(), scale: 1.0, angle: 0.0, link: true, phase: (0.0, 0.0) });
+        d.layers.push(missing);
+        fx_check(&mut g, &d, &format!("pattern fill link {link} scale {scale} angle {angle}"));
+    }
+}
+

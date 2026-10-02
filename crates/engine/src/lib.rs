@@ -7,15 +7,20 @@
 #![forbid(unsafe_code)]
 
 pub mod adjust_cmds;
+pub mod analysis_cmds;
+pub mod notes_cmds;
+pub mod proof_sim;
 pub mod build_info;
 pub mod layer_menu_cmds;
 pub mod mode_cmds;
+pub mod multichannel_cmds;
 pub mod channel_cmds;
 pub mod commands;
 pub mod inspect;
 pub mod layer_style;
 pub mod filters;
 pub mod filters_ext;
+pub mod gallery_cmds;
 pub mod type_cmds;
 pub mod transform_cmds;
 pub mod vector_cmds;
@@ -27,7 +32,9 @@ pub mod paint_cmds;
 pub mod pattern_cmds;
 pub mod warp_cmds;
 pub mod distort_cmds;
+pub mod render_cmds;
 pub mod selection_cmds;
+pub mod select_extra_cmds;
 pub mod brush_cmds;
 pub mod extra_cmds;
 pub mod color_cmds;
@@ -35,13 +42,24 @@ pub mod layer_multi_cmds;
 pub mod smart_cmds;
 pub mod file_cmds;
 pub mod type_extra_cmds;
+pub mod type_spell_cmds;
+pub mod type_styles_cmds;
 mod pixels;
 pub mod prefs;
 pub mod snap;
 pub mod edit_menu_cmds;
 pub mod align_cmds;
+pub mod photo_cmds;
+pub mod lens_cmds;
+pub mod vp_cmds;
 pub mod artboard_cmds;
 pub mod comps_cmds;
+pub mod automate_cmds;
+pub mod pick_cmds;
+pub mod print_cmds;
+pub mod slice_cmds;
+pub mod web_cmds;
+pub mod presets;
 
 use std::sync::Arc;
 
@@ -95,6 +113,8 @@ pub struct DocState {
     pub coalesce: Option<String>,
     /// Channels panel: targeted channel and eye toggles (view state, not history).
     pub channel_view: channel_cmds::ChannelView,
+    /// Select › Isolate Layers: the Layers panel lists only these layers (empty = off; view state).
+    pub isolated_layers: Vec<LayerId>,
 }
 
 impl DocState {
@@ -112,6 +132,7 @@ impl DocState {
             last_damage: None,
             coalesce: None,
             channel_view: Default::default(),
+            isolated_layers: Vec::new(),
         }
     }
     /// The selected layers in bottom-to-top document order, always including the active layer.
@@ -183,6 +204,13 @@ pub struct Session {
     pub edit_state: edit_menu_cmds::EditState,
     /// The pattern library (Window › Patterns; see `pattern.*`).
     pub patterns: pattern_cmds::PatternLibrary,
+    /// Image › Analysis: Measurement Log and Select Data Points (see `analysis_cmds`).
+    pub analysis: analysis_cmds::AnalysisState,
+    /// Window › Gradients, Patterns (groups), Styles, Shapes, Tool Presets and Clone Source.
+    pub presets: presets::PresetState,
+    /// File menu state: Lock Slices, Image Assets, last Print / Save for Web settings, script
+    /// event log (see `automate_cmds`).
+    pub file_menu: automate_cmds::FileMenuState,
 }
 
 impl Session {
@@ -250,6 +278,7 @@ impl Session {
         self.color_restrict = None;
         let r = r?;
         edit_menu_cmds::after_command(self, id);
+        automate_cmds::after_command(self, id);
         if spec.journal {
             self.journal.push((id.to_string(), params));
         }

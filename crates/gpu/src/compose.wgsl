@@ -44,6 +44,10 @@ const F_GATE: u32 = 256u;        // effect paint: coverage only inside the layer
 const F_REL: u32 = 512u;         // effect paint: coverage relative to the layer's alpha
 const F_STROKE_OUT: u32 = 1024u; // effect paint: outside stroke band
 const F_FIRST: u32 = 2048u;      // outside strokes: nothing accumulated yet
+const F_CHANNELS: u32 = 4096u;   // lerp: per-channel weights in p0 (channel restrictions)
+const F_ADD_DIFF: u32 = 16384u;  // lerp: A + (B - C) premultiplied (clips on pass-through groups)
+const F_TEXT_GAMMA: u32 = 8192u; // blend / atop / fx merge: type layer, mix coverage at gamma 1.45
+const TEXT_GAMMA: f32 = 1.45;
 
 @group(0) @binding(0) var<uniform> chunk: Chunk;
 @group(0) @binding(1) var<uniform> op: Op;
@@ -104,13 +108,16 @@ fn gray(c: vec3<f32>) -> f32 { return 0.299 * c.r + 0.587 * c.g + 0.114 * c.b; }
 const M_NORMAL: i32 = 1;
 const M_DISSOLVE: i32 = 2;
 
+// Backdrop extremes within EDGE of 0 / 1 count as exact (psblend::EDGE): composited values that
+// should be 1 come out a rounding step below it, which would flip Color Burn's corner case.
+const EDGE: f32 = 1e-4;
 fn color_burn(cb: f32, cs: f32) -> f32 {
-    if (cb >= 1.0) { return 1.0; }
+    if (cb >= 1.0 - EDGE) { return 1.0; }
     if (cs <= 0.0) { return 0.0; }
     return 1.0 - min((1.0 - cb) / cs, 1.0);
 }
 fn color_dodge(cb: f32, cs: f32) -> f32 {
-    if (cb <= 0.0) { return 0.0; }
+    if (cb <= EDGE) { return 0.0; }
     if (cs >= 1.0) { return 1.0; }
     return min(cb / (1.0 - cs), 1.0);
 }
@@ -133,11 +140,11 @@ fn vivid_light_ps(cb: f32, cs: f32) -> f32 {
 }
 fn vivid_light_generic(cb: f32, cs: f32) -> f32 {
     if (cs <= 0.5) {
-        if (cb >= 1.0) { return 1.0; }
+        if (cb >= 1.0 - EDGE) { return 1.0; }
         if (cs <= 0.0) { return 0.0; }
         return 1.0 - min((1.0 - cb) / (2.0 * cs), 1.0);
     }
-    if (cb <= 0.0) { return 0.0; }
+    if (cb <= EDGE) { return 0.0; }
     if (cs >= 1.0) { return 1.0; }
     return min(cb / (2.0 * (1.0 - cs)), 1.0);
 }
@@ -224,6 +231,20 @@ fn composite(mode: i32, b: vec4<f32>, s: vec4<f32>, opacity: f32) -> vec4<f32> {
     if (ao <= 0.0) { return vec4(0.0); }
     let rgb = ((1.0 - as_) * ab * b.rgb + (1.0 - ab) * as_ * s.rgb + as_ * ab * bl) / ao;
     return vec4(rgb, ao);
+}
+
+// `psblend::composite_gamma`: coverage mixed in a gamma space (type layers, gamma 1.45).
+fn composite_g(mode: i32, b: vec4<f32>, s: vec4<f32>, opacity: f32, gamma_on: bool) -> vec4<f32> {
+    if (!gamma_on) { return composite(mode, b, s, opacity); }
+    let ab = b.a;
+    let as_ = s.a * opacity;
+    if (as_ <= 0.0) { return b; }
+    let bl = blend_rgb(mode, b.rgb, s.rgb);
+    let ao = as_ + ab * (1.0 - as_);
+    if (ao <= 0.0) { return vec4(0.0); }
+    let g = TEXT_GAMMA;
+    let pw = (1.0 - as_) * ab * pow(max(b.rgb, vec3(0.0)), vec3(g)) + (1.0 - ab) * as_ * pow(max(s.rgb, vec3(0.0)), vec3(g)) + as_ * ab * pow(max(bl, vec3(0.0)), vec3(g));
+    return vec4(pow(pw / ao, vec3(1.0 / g)), ao);
 }
 
 fn dissolve_noise(d: vec2<i32>) -> f32 {
@@ -550,7 +571,7 @@ fn fs_blend(in: VOut) -> @location(0) vec4<f32> {
         s.a = select(0.0, 1.0, dissolve_noise(doc_px(p)) < s.a * op.opacity);
         return composite(M_NORMAL, b, s, 1.0);
     }
-    return composite(op.mode, b, s, op.opacity);
+    return composite_g(op.mode, b, s, op.opacity, (op.flags & F_TEXT_GAMMA) != 0u);
 }
 
 // composite_atop(base = A, src = B): blend as if the base were opaque, keep its alpha.
@@ -560,7 +581,7 @@ fn fs_atop(in: VOut) -> @location(0) vec4<f32> {
     let base = textureLoad(tex_a, p, 0);
     if (base.a <= 0.0) { return base; }
     let s = textureLoad(tex_b, p, 0);
-    let r = composite(op.mode, vec4(base.rgb, 1.0), s, op.opacity);
+    let r = composite_g(op.mode, vec4(base.rgb, 1.0), s, op.opacity, (op.flags & F_TEXT_GAMMA) != 0u);
     return vec4(r.rgb, base.a);
 }
 
@@ -592,6 +613,17 @@ fn fs_lerp(in: VOut) -> @location(0) vec4<f32> {
     let p = local(in.pos);
     let a = textureLoad(tex_a, p, 0);
     let b = textureLoad(tex_b, p, 0);
+    if ((op.flags & F_CHANNELS) != 0u) {
+        return a + (b - a) * op.p0;
+    }
+    if ((op.flags & F_ADD_DIFF) != 0u) {
+        // compose: pass-through group + (with clipped − without), premultiplied.
+        let c = textureLoad(tex_c, p, 0);
+        var pm = vec4(a.rgb * a.a, a.a) + vec4(b.rgb * b.a, b.a) - vec4(c.rgb * c.a, c.a);
+        let al = clamp(pm.a, 0.0, 1.0);
+        if (al <= 0.0) { return vec4(0.0); }
+        return vec4(clamp(pm.rgb / al, vec3(0.0), vec3(1.0)), al);
+    }
     let k = op.opacity * mask_value(doc_px(p));
     return a + (b - a) * k;
 }
@@ -761,7 +793,7 @@ fn fs_fxmerge(in: VOut) -> @location(0) vec4<f32> {
     var w = textureLoad(tex_a, p, 0);
     let l = textureLoad(tex_b, p, 0);
     let c = textureLoad(tex_c, p, 0);
-    if (l.a > 0.0) { w = composite(op.mode, w, l, 1.0); }
+    if (l.a > 0.0) { w = composite_g(op.mode, w, l, 1.0, (op.flags & F_TEXT_GAMMA) != 0u); }
     let atop = (op.flags & F_ATOP) != 0u;
     var before = c;
     if (atop) { before = vec4(c.rgb, 1.0); }
@@ -851,8 +883,8 @@ fn fs_mfinish(in: VOut) -> @location(0) vec4<f32> {
     return mout(v);
 }
 
-// Bevel height profile from A = dist_inside, B = dist_outside: p0 = (style (0 outer, 1 emboss,
-// 2 inner), size); the smooth (quarter sine) rounding comes from LUT row 0.
+// Chiselled bevel height from A = dist_inside, B = dist_outside (`effects::bevel_chisel_h`):
+// p0 = (paint (0 outer, 1 both / emboss, 2 inner), size).
 @fragment
 fn fs_mbevelh(in: VOut) -> @location(0) vec4<f32> {
     let p = local(in.pos);
@@ -871,7 +903,7 @@ fn fs_mbevelh(in: VOut) -> @location(0) vec4<f32> {
         }
         default: { h = clamp(din / size, 0.0, 1.0); }
     }
-    return mout(lut(0, h));
+    return mout(h);
 }
 
 // Bevel shading of the blurred height map A over shape S (`layer_tex`): p0 = light vector,
@@ -889,7 +921,8 @@ fn fs_mbevelshade(in: VOut) -> @location(0) vec4<f32> {
     let s = textureLoad(layer_tex, p, 0).r;
     var region = s;
     if (op.p1.y > 0.5) {
-        region = (1.0 - s) * select(0.0, 1.0, textureLoad(tex_a, p, 0).r > 0.0);
+        // Outside parts paint at full strength wherever the shape isn't opaque (edge pixels too).
+        region = select(0.0, 1.0, s < 1.0 - INSIDE_EPS && textureLoad(tex_a, p, 0).r > 0.0);
     }
     let k = shade - se;
     var v = 0.0;

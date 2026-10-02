@@ -31,6 +31,7 @@ pub mod grabcut;
 pub mod maxflow;
 pub mod quick;
 pub mod slic;
+pub mod sky;
 pub mod subject;
 
 use photocraft_geom::Rect;

@@ -15,8 +15,11 @@
 
 pub mod adjust;
 pub mod effects;
+pub mod masks;
+pub mod multichannel;
 pub mod pattern;
 pub mod psblend;
+pub mod shape_split;
 
 use photocraft_color::blend::BlendMode;
 use psblend as blend;
@@ -76,9 +79,9 @@ pub fn render(doc: &Document, rect: Rect) -> Buffer {
 
 /// [`render`] with an explicit tile size (tests check tile independence).
 pub fn render_tiled(doc: &Document, rect: Rect, tile: i32) -> Buffer {
-    let cx = Ctx { canvas: doc.bounds(), transfer: adjust::Transfer::for_mode(doc.mode), light: doc.global_light, patterns: &doc.patterns };
+    let cx = Ctx { canvas: doc.bounds(), transfer: adjust::Transfer::for_mode(doc.mode), light: doc.global_light, patterns: &doc.patterns, mode: doc.mode };
     if rect.width() as i32 <= tile && rect.height() as i32 <= tile {
-        let mut buf = Buffer::transparent(rect);
+        let mut buf = multichannel::backdrop(doc, rect);
         composite_stack(&doc.layers, &mut buf, &cx);
         return buf;
     }
@@ -93,7 +96,7 @@ pub fn render_tiled(doc: &Document, rect: Rect, tile: i32) -> Buffer {
         y += tile;
     }
     let run = |t: &Rect| {
-        let mut b = Buffer::transparent(*t);
+        let mut b = multichannel::backdrop(doc, *t);
         composite_stack(&doc.layers, &mut b, &cx);
         b
     };
@@ -124,7 +127,7 @@ pub fn flatten(doc: &Document) -> Buffer {
 /// Render an arbitrary subset: a single layer (e.g. for thumbnails), isolated.
 pub fn render_layer(layer: &Layer, rect: Rect) -> Buffer {
     let mut buf = Buffer::transparent(rect);
-    composite_stack(std::slice::from_ref(layer), &mut buf, &Ctx { canvas: rect, transfer: adjust::Transfer::Srgb, light: photocraft_doc::GlobalLight::default(), patterns: &[] });
+    composite_stack(std::slice::from_ref(layer), &mut buf, &Ctx { canvas: rect, transfer: adjust::Transfer::Srgb, light: photocraft_doc::GlobalLight::default(), patterns: &[], mode: photocraft_color::ColorMode::Rgb });
     buf
 }
 
@@ -177,6 +180,8 @@ struct Ctx<'a> {
     light: photocraft_doc::GlobalLight,
     /// The document's patterns (pattern fills and overlays).
     patterns: &'a [Pattern],
+    /// The document's colour mode (channel restrictions name its channels).
+    mode: photocraft_color::ColorMode,
 }
 
 fn composite_stack(layers: &[Layer], backdrop: &mut Buffer, cx: &Ctx) {
@@ -271,7 +276,7 @@ fn render_content(layer: &Layer, rect: Rect, cx: &Ctx) -> Option<Buffer> {
 /// The alpha of `layer`'s own content over `rect` (masks applied, row-major): the shape its
 /// effect maps are built from (for the GPU compositor). Zero for adjustment layers.
 pub fn layer_shape(doc: &Document, layer: &Layer, rect: Rect) -> Vec<f32> {
-    let cx = Ctx { canvas: doc.bounds(), transfer: adjust::Transfer::for_mode(doc.mode), light: doc.global_light, patterns: &doc.patterns };
+    let cx = Ctx { canvas: doc.bounds(), transfer: adjust::Transfer::for_mode(doc.mode), light: doc.global_light, patterns: &doc.patterns, mode: doc.mode };
     render_content(layer, rect, &cx).map(|b| b.px.iter().map(|p| p[3]).collect()).unwrap_or_else(|| vec![0.0; rect.width() as usize * rect.height() as usize])
 }
 
@@ -376,8 +381,49 @@ fn empty_in(layer: &Layer, rect: Rect) -> bool {
     }
 }
 
-/// Composite `layer` (plus its clipping group) onto `backdrop`.
+/// Blending Options › Channels as per-channel weights over display RGB (1 = the layer's result,
+/// 0 = the backdrop's value kept), or `None` when every channel blends. RGB documents map R, G, B
+/// directly and a grayscale document's single channel covers all three; other modes composite in
+/// display RGB, where a restriction to their own channels has no exact equivalent, so it is
+/// ignored there.
+pub fn channel_weights(layer: &Layer, mode: photocraft_color::ColorMode) -> Option<[f32; 3]> {
+    use photocraft_color::ColorMode as M;
+    let x = layer.excluded_channels;
+    if x == 0 {
+        return None;
+    }
+    let keep = |bit: u32| if x & (1 << bit) != 0 { 0.0 } else { 1.0 };
+    match mode {
+        M::Rgb => Some([keep(0), keep(1), keep(2)]),
+        M::Grayscale | M::Duotone => Some([keep(0); 3]),
+        _ => None,
+    }
+    .filter(|w| w != &[1.0; 3])
+}
+
+/// Put back the backdrop's values in the channels a layer leaves out (`w` from
+/// [`channel_weights`]); alpha stays the layer's result.
+fn restore_channels(out: &mut Buffer, before: &Buffer, w: [f32; 3]) {
+    for (p, b) in out.px.iter_mut().zip(&before.px) {
+        for c in 0..3 {
+            p[c] = b[c] + (p[c] - b[c]) * w[c];
+        }
+    }
+}
+
+/// Composite `layer` (plus its clipping group) onto `backdrop`, honouring its channel restrictions.
 fn composite_layer(layer: &Layer, clipped: &[Layer], backdrop: &mut Buffer, cx: &Ctx) {
+    match channel_weights(layer, cx.mode) {
+        Some(w) => {
+            let before = backdrop.clone();
+            composite_layer_any(layer, clipped, backdrop, cx);
+            restore_channels(backdrop, &before, w);
+        }
+        None => composite_layer_any(layer, clipped, backdrop, cx),
+    }
+}
+
+fn composite_layer_any(layer: &Layer, clipped: &[Layer], backdrop: &mut Buffer, cx: &Ctx) {
     if let LayerContent::Group(g) = &layer.content
         && let Some(ab) = &g.artboard
     {
@@ -523,7 +569,12 @@ fn composite_layer_plain(layer: &Layer, clipped: &[Layer], backdrop: &mut Buffer
     for c in clipped.iter().filter(|c| c.visible) {
         composite_atop(c, &mut content, cx);
     }
-    blend_into(backdrop, &content, layer.blend, opacity);
+    blend_into_g(backdrop, &content, layer.blend, opacity, text_gamma(layer));
+}
+
+/// The coverage-mixing gamma of a layer: [`psblend::TEXT_GAMMA`] for type layers, else 1.
+pub fn text_gamma(layer: &Layer) -> f32 {
+    if matches!(layer.content, LayerContent::Text(_)) { psblend::TEXT_GAMMA } else { 1.0 }
 }
 
 /// A stroked shape layer with visible clipped layers: Photoshop draws the shape's vector stroke
@@ -534,11 +585,9 @@ fn shape_parts(layer: &Layer, clipped: &[Layer], rect: Rect, cx: &Ctx) -> Option
     if sh.stroke.is_none() || !clipped.iter().any(|c| c.visible) {
         return None;
     }
-    let fmt = photocraft_color::PixelFormat::RGBA8;
-    let fill_only = photocraft_doc::vector::ShapeLayer { stroke: None, cache: None, ..sh.clone() };
-    let stroke_only = photocraft_doc::vector::ShapeLayer { fill: None, cache: None, ..sh.clone() };
-    let mut f = surface_to_buffer(&photocraft_vector::render_shape(&fill_only, fmt, cx.canvas.intersect(&rect)), rect);
-    let mut s = surface_to_buffer(&photocraft_vector::render_shape(&stroke_only, fmt, cx.canvas.intersect(&rect)), rect);
+    let (fs, ss) = shape_split::split(sh, cx.canvas)?;
+    let mut f = surface_to_buffer(&fs, rect);
+    let mut s = surface_to_buffer(&ss, rect);
     if let Some(m) = mask_vals(layer, rect) {
         for ((a, b), k) in f.px.iter_mut().zip(s.px.iter_mut()).zip(&m) {
             a[3] *= k;
@@ -693,8 +742,20 @@ fn effect_maps(layer: &Layer, cx: &Ctx) -> std::sync::Arc<effects::FxMaps> {
     maps
 }
 
-/// Composite `layer` onto `base` restricted to the base's alpha (clipping mask semantics).
+/// Composite `layer` onto `base` restricted to the base's alpha (clipping mask semantics),
+/// honouring its channel restrictions.
 fn composite_atop(layer: &Layer, base: &mut Buffer, cx: &Ctx) {
+    match channel_weights(layer, cx.mode) {
+        Some(w) => {
+            let before = base.clone();
+            composite_atop_any(layer, base, cx);
+            restore_channels(base, &before, w);
+        }
+        None => composite_atop_any(layer, base, cx),
+    }
+}
+
+fn composite_atop_any(layer: &Layer, base: &mut Buffer, cx: &Ctx) {
     let rect = base.rect;
     if let LayerContent::Adjustment(adj) = &layer.content {
         let mut adjusted = base.clone();
@@ -727,6 +788,7 @@ fn composite_atop(layer: &Layer, base: &mut Buffer, cx: &Ctx) {
     }
     let Some(content) = render_content(layer, rect, cx) else { return };
     let opacity = layer.opacity * layer.fill_opacity;
+    let gamma = text_gamma(layer);
     for (i, p) in base.px.iter_mut().enumerate() {
         let alpha = p[3];
         if alpha <= 0.0 {
@@ -734,13 +796,18 @@ fn composite_atop(layer: &Layer, base: &mut Buffer, cx: &Ctx) {
         }
         let s = content.px[i];
         // Blend as if the base were opaque, then keep the base's alpha.
-        let r = blend::composite(layer.blend, [p[0], p[1], p[2], 1.0], s, opacity);
+        let r = blend::composite_gamma(layer.blend, [p[0], p[1], p[2], 1.0], s, opacity, gamma);
         *p = [r[0], r[1], r[2], alpha];
     }
 }
 
 /// Blend an isolated layer buffer into the backdrop.
 fn blend_into(backdrop: &mut Buffer, src: &Buffer, mode: BlendMode, opacity: f32) {
+    blend_into_g(backdrop, src, mode, opacity, 1.0);
+}
+
+/// [`blend_into`] mixing coverage in a `gamma` space (type layers).
+fn blend_into_g(backdrop: &mut Buffer, src: &Buffer, mode: BlendMode, opacity: f32, gamma: f32) {
     let rect = backdrop.rect;
     let w = rect.width() as i32;
     for (i, b) in backdrop.px.iter_mut().enumerate() {
@@ -757,7 +824,7 @@ fn blend_into(backdrop: &mut Buffer, src: &Buffer, mode: BlendMode, opacity: f32
             *b = blend::composite(mode, *b, s, 1.0);
             continue;
         }
-        *b = blend::composite(mode, *b, s, opacity);
+        *b = blend::composite_gamma(mode, *b, s, opacity, gamma);
     }
 }
 

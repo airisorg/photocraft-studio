@@ -35,6 +35,9 @@ pub struct ProofSetup {
     pub bpc: bool,
     /// Simulate paper colour (absolute colorimetric proof → display, black ink simulated).
     pub simulate_paper: bool,
+    /// What is simulated: the profile itself, one or more of its plates, an RGB display or a
+    /// colour vision deficiency (see `proof_sim`).
+    pub kind: crate::proof_sim::ProofKind,
 }
 
 impl Default for ProofSetup {
@@ -45,6 +48,7 @@ impl Default for ProofSetup {
             intent: Intent::RelativeColorimetric,
             bpc: true,
             simulate_paper: false,
+            kind: crate::proof_sim::ProofKind::Profile,
         }
     }
 }
@@ -183,6 +187,8 @@ pub struct ColorState {
     /// Monitor profile bytes supplied by the platform (`None` = sRGB display).
     pub monitor_profile: Option<Arc<Vec<u8>>>,
     display_cache: Mutex<HashMap<DisplayKey, Arc<Transform>>>,
+    /// View › 32-bit Preview Options per document.
+    pub hdr: HashMap<DocId, crate::proof_sim::HdrPreview>,
 }
 
 impl ColorState {
@@ -256,7 +262,7 @@ impl ColorState {
         self.proofs.get(&doc).cloned().unwrap_or_else(|| ProofView { gamut_threshold: photocraft_cms::gamut::DEFAULT_THRESHOLD, ..Default::default() })
     }
 
-    fn proof_mut(&mut self, doc: DocId) -> &mut ProofView {
+    pub(crate) fn proof_mut(&mut self, doc: DocId) -> &mut ProofView {
         self.proofs.entry(doc).or_insert_with(|| ProofView { gamut_threshold: photocraft_cms::gamut::DEFAULT_THRESHOLD, ..Default::default() })
     }
 
@@ -299,6 +305,9 @@ impl ColorState {
     /// The display transform as an `size³` RGBA 3D LUT (upload with
     /// [`Lut3d::to_rgba16f_bytes`] and apply in the canvas shader).
     pub fn display_lut(&self, doc: &Document, size: usize) -> Result<Lut3d> {
+        if let Some(lut) = crate::proof_sim::display_lut(self, doc, size)? {
+            return Ok(lut);
+        }
         let t = self.display_transform(doc)?;
         Ok(Lut3d::from_transform(&t, size))
     }
@@ -308,7 +317,7 @@ impl ColorState {
     /// out of the proof gamut (only with Gamut Warning on).
     pub fn canvas_lut(&self, doc: &Document, size: usize) -> Result<Option<Vec<u8>>> {
         let pv = self.proof(doc.id);
-        if !pv.enabled && !pv.gamut_warning {
+        if !pv.enabled && !pv.gamut_warning && !crate::proof_sim::hdr_active(self, doc) {
             return Ok(None);
         }
         let lut = self.display_lut(doc, size)?;
@@ -595,6 +604,9 @@ pub fn convert_document(doc: &mut Document, dst: &Profile, intent: Intent, bpc: 
 /// default the mode's working profile), `intent` (default relative), `bpc` (default true).
 pub fn convert_mode(s: &mut Session, mode: ColorMode, p: &Value) -> Result<Value> {
     let doc = &s.active().ok_or(EngineError::NoDocument)?.doc;
+    if doc.mode == ColorMode::Multichannel && mode != ColorMode::Multichannel {
+        return crate::multichannel_cmds::convert_from(s, mode, p);
+    }
     if doc.mode == mode && p.get("profile").is_none() {
         return Ok(Value::Null);
     }
@@ -708,7 +720,7 @@ fn proof_setup(s: &mut Session, p: &Value) -> Result<Value> {
     let name = p.get("profile").and_then(Value::as_str).unwrap_or("working-cmyk").to_string();
     let profile = s.color.resolve(&name, Some(&doc), Some(ColorMode::Cmyk))?;
     let intent = intent_param(p)?;
-    let setup = ProofSetup { name, profile, intent, bpc: bool_param(p, "bpc", true), simulate_paper: bool_param(p, "simulatePaper", false) };
+    let setup = ProofSetup { name, profile, intent, bpc: bool_param(p, "bpc", true), simulate_paper: bool_param(p, "simulatePaper", false), kind: crate::proof_sim::ProofKind::Profile };
     let pv = s.color.proof_mut(id);
     pv.setup = setup.clone();
     Ok(json!({ "profile": setup.profile.description, "intent": setup.intent.id(), "bpc": setup.bpc, "simulatePaper": setup.simulate_paper, "proofColors": pv.enabled }))

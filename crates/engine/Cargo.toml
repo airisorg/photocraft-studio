@@ -18,6 +18,7 @@ photocraft-compose = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+rayon = { workspace = true }
 photocraft-paint = { workspace = true }
 photocraft-algo = { workspace = true }
 photocraft-text = { workspace = true }
@@ -25,3 +26,5 @@ photocraft-vector = { workspace = true }
 photocraft-io = { workspace = true }
 photocraft-format = { workspace = true }
 blake3 = { version = "1.8", default-features = false, features = ["pure"] }
+photocraft-codecs = { workspace = true }
+flate2 = { workspace = true }

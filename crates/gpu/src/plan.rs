@@ -135,14 +135,16 @@ impl Kernel {
 pub enum Role {
     Content,
     Mask,
+    /// A stroked shape's stroke alone (its fill uses `Content`).
+    Stroke,
 }
 
 /// A surface the pass needs on the GPU.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct TexUse<'a> {
     pub layer: LayerId,
     pub role: Role,
-    pub surface: &'a Surface,
+    pub surface: SurfaceRef<'a>,
 }
 
 /// An effect map sampled by a pass: map `map` of enabled effect `item` of `plan.fx[fx]`.
@@ -189,10 +191,27 @@ pub struct Pass<'a> {
     pub clip: Option<Rect>,
 }
 
-#[derive(Clone, Copy, Debug)]
+/// Pixels a pass samples: a surface of the document, or one derived from it on the CPU (a
+/// combined pixel × vector mask, a shape's fill or stroke alone).
+#[derive(Clone, Debug)]
+pub enum SurfaceRef<'a> {
+    Doc(&'a Surface),
+    Derived(std::sync::Arc<Surface>),
+}
+
+impl SurfaceRef<'_> {
+    pub fn get(&self) -> &Surface {
+        match self {
+            SurfaceRef::Doc(s) => s,
+            SurfaceRef::Derived(s) => s,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct MaskUse<'a> {
     pub layer: LayerId,
-    pub surface: &'a Surface,
+    pub surface: SurfaceRef<'a>,
     pub density: f32,
     pub default: f32,
 }
@@ -262,16 +281,21 @@ pub struct DocCtx<'a> {
     pub transfer: Transfer,
     pub light: GlobalLight,
     pub patterns: &'a [Pattern],
+    /// Colour mode (channel restrictions name its channels).
+    pub mode: photocraft_color::ColorMode,
 }
 
 impl<'a> DocCtx<'a> {
     pub fn of(doc: &'a Document) -> Self {
-        DocCtx { canvas: doc.bounds(), transfer: Transfer::for_mode(doc.mode), light: doc.global_light, patterns: &doc.patterns }
+        DocCtx { canvas: doc.bounds(), transfer: Transfer::for_mode(doc.mode), light: doc.global_light, patterns: &doc.patterns, mode: doc.mode }
     }
 }
 
 /// Build the pass list for `doc`.
 pub fn plan(doc: &Document) -> Result<Plan<'_>, Unsupported> {
+    if doc.mode == photocraft_color::ColorMode::Multichannel {
+        return Err(Unsupported("Multichannel inks (printed on the CPU)".into()));
+    }
     let mut p = Planner::new(DocCtx::of(doc));
     let root = p.clear();
     let root = p.stack(&doc.layers, root)?;
@@ -309,6 +333,16 @@ pub const F_REL: u32 = 512;
 pub const F_STROKE_OUT: u32 = 1024;
 /// First outside stroke (no accumulated share yet).
 pub const F_FIRST: u32 = 2048;
+/// `Lerp` per channel: weights in `p0` (channel restrictions), no opacity or mask.
+pub const F_CHANNELS: u32 = 4096;
+/// `Lerp` as A + (B − C) premultiplied (layers clipped to pass-through groups).
+pub const F_ADD_DIFF: u32 = 16384;
+/// Blend / Atop / FxMerge of a type layer: coverage mixed at `psblend::TEXT_GAMMA`.
+pub const F_TEXT_GAMMA: u32 = 8192;
+
+fn gamma_flag(layer: &Layer) -> u32 {
+    if photocraft_compose::text_gamma(layer) != 1.0 { F_TEXT_GAMMA } else { 0 }
+}
 
 /// `FxInit` kinds: A at `opacity` × alpha; an opaque copy of A; A's colour with alpha `opacity`
 /// inside B's shape; A with alpha × B's alpha.
@@ -378,32 +412,86 @@ impl<'a> Planner<'a> {
         Ok(backdrop)
     }
 
-    fn check(&self, layer: &Layer) -> Result<(), Unsupported> {
-        if layer.artboard().is_some() {
-            return Err(Unsupported(format!("artboard `{}` (clipped and rendered on the CPU)", layer.name)));
-        }
-        if layer.vector_mask.is_some() {
-            return Err(Unsupported(format!("vector mask on `{}`", layer.name)));
-        }
-        if let LayerContent::Fill(f @ Fill::Pattern { .. }) = &layer.content
-            && layer.fill_cache.as_ref().is_none_or(|c| c.fill != *f)
-        {
-            return Err(Unsupported(format!("pattern fill `{}` (rendered on the CPU)", layer.name)));
-        }
-        Ok(())
-    }
-
     fn mask_use(&self, layer: &'a Layer) -> Option<MaskUse<'a>> {
+        if let Some(c) = photocraft_compose::masks::combined_mask(layer, self.cx.canvas) {
+            let default = c.default_pixel().first().copied().unwrap_or(1.0);
+            return Some(MaskUse { layer: layer.id, surface: SurfaceRef::Derived(std::sync::Arc::new(c)), density: 1.0, default });
+        }
         let m = layer.mask.as_ref()?;
         if !m.enabled {
             return None;
         }
-        Some(MaskUse { layer: layer.id, surface: &m.surface, density: m.density, default: m.surface.default_pixel().first().copied().unwrap_or(1.0) })
+        Some(MaskUse { layer: layer.id, surface: SurfaceRef::Doc(&m.surface), density: m.density, default: m.surface.default_pixel().first().copied().unwrap_or(1.0) })
     }
 
-    /// composite_layer
+    /// composite_layer, honouring the layer's channel restrictions.
     fn layer(&mut self, layer: &'a Layer, clipped: &'a [Layer], backdrop: Slot) -> Result<Slot, Unsupported> {
-        self.check(layer)?;
+        match photocraft_compose::channel_weights(layer, self.cx.mode) {
+            Some(w) => {
+                let before = self.retain(backdrop);
+                let after = self.layer_any(layer, clipped, backdrop)?;
+                Ok(self.restore_channels(before, after, w))
+            }
+            None => self.layer_any(layer, clipped, backdrop),
+        }
+    }
+
+    /// `compose::restore_channels`: `after` with the channels a layer leaves out taken from
+    /// `before` (consumes both).
+    fn restore_channels(&mut self, before: Slot, after: Slot, w: [f32; 3]) -> Slot {
+        let mut p = Pass::new(Kernel::Lerp, 0);
+        p.a = Some(before);
+        p.b = Some(after);
+        p.flags = F_CHANNELS;
+        p.params[0] = [w[0], w[1], w[2], 1.0];
+        self.emit(p)
+    }
+
+    fn layer_any(&mut self, layer: &'a Layer, clipped: &'a [Layer], backdrop: Slot) -> Result<Slot, Unsupported> {
+        match layer.artboard() {
+            Some(ab) => self.artboard(layer, ab, clipped, backdrop),
+            None => self.layer_plain(layer, clipped, backdrop),
+        }
+    }
+
+    /// compose::composite_artboard: the board's background and the group composited over the
+    /// backdrop, kept only inside the board (contents and effects outside it are clipped away).
+    fn artboard(&mut self, layer: &'a Layer, ab: &photocraft_doc::Artboard, clipped: &'a [Layer], backdrop: Slot) -> Result<Slot, Unsupported> {
+        let board = ab.rect.intersect(&self.cx.canvas);
+        if board.is_empty() {
+            return Ok(backdrop);
+        }
+        let before = self.retain(backdrop);
+        let mut sub = backdrop;
+        if let Some(bg) = ab.background.rgba() {
+            let mut c = Pass::new(Kernel::Content, 0);
+            c.color = bg;
+            let c = self.emit(c);
+            let mut p = Pass::new(Kernel::Blend, 0);
+            p.a = Some(sub);
+            p.b = Some(c);
+            sub = self.emit(p);
+        }
+        let sub = self.layer_plain(layer, clipped, sub)?;
+        let dst = if self.refs[before as usize] == 1 {
+            before
+        } else {
+            let n = self.alloc();
+            let mut p = Pass::new(Kernel::CopyFull, n);
+            p.a = Some(before);
+            self.passes.push(p);
+            self.release(before);
+            n
+        };
+        let mut p = Pass::new(Kernel::CopyRect, dst);
+        p.a = Some(sub);
+        p.clip = Some(board);
+        self.passes.push(p);
+        self.release(sub);
+        Ok(dst)
+    }
+
+    fn layer_plain(&mut self, layer: &'a Layer, clipped: &'a [Layer], backdrop: Slot) -> Result<Slot, Unsupported> {
         let opacity = layer.opacity * layer.fill_opacity;
         let visible_clipped: Vec<&'a Layer> = clipped.iter().filter(|c| c.visible).collect();
 
@@ -411,21 +499,45 @@ impl<'a> Planner<'a> {
             && layer.blend == BlendMode::PassThrough
             && !has_effects(layer)
         {
-            if !visible_clipped.is_empty() {
-                return Err(Unsupported(format!("layers clipped to pass-through group `{}`", layer.name)));
-            }
             let before = self.retain(backdrop);
-            let after = self.stack(&g.children, backdrop)?;
-            if opacity < 1.0 || layer.mask.is_some() {
+            let mut after = self.stack(&g.children, backdrop)?;
+            if opacity < 1.0 || layer.mask.is_some() || layer.vector_mask.is_some() {
                 let mut p = Pass::new(Kernel::Lerp, 0);
-                p.a = Some(before);
+                p.a = Some(self.retain(before));
                 p.b = Some(after);
                 p.opacity = opacity;
                 p.mask = self.mask_use(layer);
-                return Ok(self.emit(p));
+                after = self.emit(p);
             }
-            self.release(before);
-            return Ok(after);
+            if visible_clipped.is_empty() {
+                self.release(before);
+                return Ok(after);
+            }
+            // Layers clipped to a pass-through group (compose: their effect on the group's
+            // isolated rendering, each placed over the original backdrop, is added to the
+            // pass-through result, premultiplied).
+            let iso = self.content(layer)?;
+            let iso_keep = self.retain(iso);
+            let mut clipped_iso = iso;
+            for c in visible_clipped {
+                clipped_iso = self.atop(c, clipped_iso)?;
+            }
+            let over = |s: &mut Self, src: Slot, before: Slot| {
+                let mut p = Pass::new(Kernel::Blend, 0);
+                p.a = Some(before);
+                p.b = Some(src);
+                p.opacity = opacity;
+                s.emit(p)
+            };
+            let b2 = self.retain(before);
+            let without = over(self, iso_keep, b2);
+            let with = over(self, clipped_iso, before);
+            let mut p = Pass::new(Kernel::Lerp, 0);
+            p.a = Some(after);
+            p.b = Some(with);
+            p.c = Some(without);
+            p.flags = F_ADD_DIFF;
+            return Ok(self.emit(p));
         }
 
         if let LayerContent::Adjustment(adj) = &layer.content {
@@ -448,11 +560,35 @@ impl<'a> Planner<'a> {
         }
 
         if let LayerContent::Shape(sh) = &layer.content
-            && sh.stroke.is_some()
             && !visible_clipped.is_empty()
+            && let Some((fill, stroke)) = photocraft_compose::shape_split::split(sh, self.cx.canvas)
         {
-            // The vector stroke goes above the clipped layers (CPU path splits fill and stroke).
-            return Err(Unsupported(format!("stroked shape `{}` with clipped layers", layer.name)));
+            // The vector stroke goes above the clipped layers: the fill is the clipping base,
+            // the stroke is laid over the clipped result (compose::shape_parts).
+            let part = |s: &mut Self, role: Role, surface: Surface| {
+                let mut p = Pass::new(Kernel::Content, 0);
+                p.mask = s.mask_use(layer);
+                p.color = photocraft_raster::to_rgba(&surface.format(), &surface.default_pixel());
+                if surface.tile_count() > 0 {
+                    p.tex = Some(TexUse { layer: layer.id, role, surface: SurfaceRef::Derived(std::sync::Arc::new(surface)) });
+                }
+                s.emit(p)
+            };
+            let mut content = part(self, Role::Content, fill);
+            for c in visible_clipped {
+                content = self.atop(c, content)?;
+            }
+            let stroke = part(self, Role::Stroke, stroke);
+            let mut p = Pass::new(Kernel::Blend, 0);
+            p.a = Some(content);
+            p.b = Some(stroke);
+            let content = self.emit(p);
+            let mut p = Pass::new(Kernel::Blend, 0);
+            p.a = Some(backdrop);
+            p.b = Some(content);
+            p.mode = layer.blend;
+            p.opacity = opacity;
+            return Ok(self.emit(p));
         }
 
         let mut content = self.content(layer)?;
@@ -464,6 +600,7 @@ impl<'a> Planner<'a> {
         p.b = Some(content);
         p.mode = layer.blend;
         p.opacity = opacity;
+        p.flags = gamma_flag(layer);
         Ok(self.emit(p))
     }
 
@@ -473,7 +610,7 @@ impl<'a> Planner<'a> {
             LayerContent::Group(g) => {
                 let empty = self.clear();
                 let s = self.stack(&g.children, empty)?;
-                if layer.mask.is_some() {
+                if layer.mask.is_some() || layer.vector_mask.is_some() {
                     let mut p = Pass::new(Kernel::Mask, 0);
                     p.a = Some(s);
                     p.mask = self.mask_use(layer);
@@ -482,6 +619,24 @@ impl<'a> Planner<'a> {
                 Ok(s)
             }
             LayerContent::Adjustment(_) => unreachable!("adjustments handled by the caller"),
+            LayerContent::Fill(f @ Fill::Pattern { name, scale, id, angle, link, phase }) if layer.fill_cache.as_ref().is_none_or(|c| c.fill != *f) => {
+                // compose::render_fill: the pattern tiled from the layer's frame (transparent
+                // when missing), then the layer's masks.
+                let empty = self.clear();
+                let Some(pat) = photocraft_doc::pattern::find(self.cx.patterns, id, name).filter(|p| !p.is_empty()) else { return Ok(empty) };
+                let frame = photocraft_compose::fill_frame(layer, self.cx.canvas);
+                let anchor = if frame.is_empty() { (0.0, 0.0) } else { (f64::from(frame.x0), f64::from(frame.y0)) };
+                let paint = Paint::Pattern(pat, placement(anchor, *link, *phase, *scale, *angle));
+                let canvas = self.cx.canvas;
+                let s = self.paint(empty, empty, Cov::One, &paint, BlendMode::Normal, 1.0, 0, canvas, canvas);
+                if layer.mask.is_some() || layer.vector_mask.is_some() {
+                    let mut p = Pass::new(Kernel::Mask, 0);
+                    p.a = Some(s);
+                    p.mask = self.mask_use(layer);
+                    return Ok(self.emit(p));
+                }
+                Ok(s)
+            }
             _ => {
                 let p = self.content_pass(layer);
                 Ok(self.emit(p))
@@ -511,7 +666,7 @@ impl<'a> Planner<'a> {
         let dp = s.default_pixel();
         p.color = photocraft_raster::to_rgba(&s.format(), &dp);
         if s.tile_count() > 0 {
-            p.tex = Some(TexUse { layer: id, role: Role::Content, surface: s });
+            p.tex = Some(TexUse { layer: id, role: Role::Content, surface: SurfaceRef::Doc(s) });
         }
     }
 
@@ -547,9 +702,20 @@ impl<'a> Planner<'a> {
         }
     }
 
-    /// composite_atop: `layer` onto `base`, restricted to the base's alpha.
+    /// composite_atop: `layer` onto `base`, restricted to the base's alpha, honouring the
+    /// layer's channel restrictions.
     fn atop(&mut self, layer: &'a Layer, base: Slot) -> Result<Slot, Unsupported> {
-        self.check(layer)?;
+        match photocraft_compose::channel_weights(layer, self.cx.mode) {
+            Some(w) => {
+                let before = self.retain(base);
+                let after = self.atop_any(layer, base)?;
+                Ok(self.restore_channels(before, after, w))
+            }
+            None => self.atop_any(layer, base),
+        }
+    }
+
+    fn atop_any(&mut self, layer: &'a Layer, base: Slot) -> Result<Slot, Unsupported> {
         let opacity = layer.opacity * layer.fill_opacity;
         if let LayerContent::Adjustment(adj) = &layer.content {
             let before = self.retain(base);
@@ -571,6 +737,7 @@ impl<'a> Planner<'a> {
         p.b = Some(content);
         p.mode = layer.blend;
         p.opacity = opacity;
+        p.flags = gamma_flag(layer);
         Ok(self.emit(p))
     }
 
@@ -695,6 +862,7 @@ impl<'a> Planner<'a> {
             if let Effect::BevelEmboss(b) = e
                 && b.style != photocraft_doc::BevelStyle::OuterBevel
             {
+                // Inner part (emboss styles: maps 0–1 inside, 2–3 outside).
                 l = self.paint(l, content, Cov::Map(map(i, 0), 0.0), &Paint::Color(b.highlight_color.to_rgb()), b.highlight.blend, b.highlight.opacity, F_REL, clip, sb);
                 l = self.paint(l, content, Cov::Map(map(i, 1), 0.0), &Paint::Color(b.shadow_color.to_rgb()), b.shadow.blend, b.shadow.opacity, F_REL, clip, sb);
             }
@@ -738,10 +906,12 @@ impl<'a> Planner<'a> {
         }
         for &(i, e) in &rev {
             if let Effect::BevelEmboss(b) = e
-                && b.style == photocraft_doc::BevelStyle::OuterBevel
+                && let paint = photocraft_compose::effects::bevel_geom(b).paint
+                && paint != photocraft_compose::effects::BevelPaint::Inner
             {
-                w = self.paint(w, content, Cov::Map(map(i, 0), 0.0), &Paint::Color(b.highlight_color.to_rgb()), b.highlight.blend, b.highlight.opacity, 0, clip, sb);
-                w = self.paint(w, content, Cov::Map(map(i, 1), 0.0), &Paint::Color(b.shadow_color.to_rgb()), b.shadow.blend, b.shadow.opacity, 0, clip, sb);
+                let k = if paint == photocraft_compose::effects::BevelPaint::Both { 2 } else { 0 };
+                w = self.paint(w, content, Cov::Map(map(i, k), 0.0), &Paint::Color(b.highlight_color.to_rgb()), b.highlight.blend, b.highlight.opacity, 0, clip, sb);
+                w = self.paint(w, content, Cov::Map(map(i, k + 1), 0.0), &Paint::Color(b.shadow_color.to_rgb()), b.shadow.blend, b.shadow.opacity, 0, clip, sb);
             }
         }
 
@@ -751,7 +921,7 @@ impl<'a> Planner<'a> {
         p.c = Some(self.retain(backdrop));
         p.mode = if layer.blend == BlendMode::PassThrough { BlendMode::Normal } else { layer.blend };
         p.opacity = layer.opacity;
-        p.flags = if atop { F_ATOP } else { 0 };
+        p.flags = if atop { F_ATOP } else { 0 } | gamma_flag(layer);
         p.clip = Some(clip);
         let merged = self.emit(p);
         self.release(content);

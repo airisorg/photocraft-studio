@@ -8,22 +8,32 @@
 
 pub mod actions;
 pub mod adjust_ui;
+pub mod analysis_ui;
+pub mod file_ui;
+pub mod slice_ui;
 pub mod artboard_ui;
 pub mod brush_panel;
 pub mod canvas;
 pub mod channel_view;
 pub mod channels_panel;
+pub mod chrome_ui;
+pub mod color_picker_ui;
 pub mod comps_ui;
 pub mod control;
 pub mod dialogs;
+pub mod doc_props_ui;
+pub mod enable_rules;
 pub mod export_dialog;
 pub mod gpu_canvas;
 pub mod filter_dialog;
 pub mod icons;
+pub mod layer_menu_ui;
+pub mod layer_props_ui;
 pub mod layer_style;
 pub mod links;
 pub mod menu_catalog;
 pub mod menus;
+pub mod new_doc_ui;
 pub mod outline;
 pub mod palette;
 pub mod proxy;
@@ -34,6 +44,8 @@ pub mod panels;
 pub mod parity;
 pub mod shortcuts;
 pub mod prefs_ui;
+pub mod preset_panels;
+pub mod type_panels_ui;
 pub mod snap_ui;
 mod sizing;
 pub mod state;
@@ -41,6 +53,9 @@ pub mod theme;
 pub mod tone;
 pub mod transform_tool;
 pub mod distort_ui;
+pub mod camera_raw_ui;
+pub mod wide_angle_ui;
+pub mod gallery_ui;
 pub mod liquify_ui;
 pub mod puppet_ui;
 pub mod perspective_ui;
@@ -48,6 +63,7 @@ pub mod type_tool;
 pub mod vector_ui;
 pub mod view_cmds;
 pub mod widgets;
+pub mod workspace_ui;
 mod icon_data;
 
 use std::collections::HashMap;
@@ -171,6 +187,10 @@ pub struct PhotocraftApp {
     pub(crate) transform_preview: Option<transform_tool::TransformPreview>,
     /// Liquify dialog, Puppet Warp and Perspective Warp sessions (distort_ui).
     pub(crate) distort: distort_ui::Distort,
+    /// Filter › Camera Raw Filter dialog (camera_raw_ui).
+    pub(crate) camera_raw: Option<camera_raw_ui::CameraRawDialog>,
+    /// Filter › Adaptive Wide Angle dialog (wide_angle_ui).
+    pub(crate) wide_angle: Option<wide_angle_ui::WideAngleDialog>,
     /// Signature of the image we last put on the OS clipboard (to tell ours from other apps').
     os_clip_sig: Option<u64>,
     /// Pointer position over the canvas (document px), for the Info panel and status bar.
@@ -234,6 +254,8 @@ impl PhotocraftApp {
             os_clip_sig: None,
             transform_preview: None,
             distort: Default::default(),
+            camera_raw: None,
+            wide_angle: None,
             tone_hist: None,
             doc_hist: None,
             gpu: None,
@@ -244,6 +266,8 @@ impl PhotocraftApp {
         };
         // Saved preferences (and recovered documents) are in place before the first frame.
         prefs_ui::load(&mut app);
+        // File › Scripts › Script Events Manager: "Start Application".
+        photocraft_engine::automate_cmds::fire_event(&mut app.session, "startApplication");
         app
     }
 
@@ -304,6 +328,9 @@ impl PhotocraftApp {
         let (_, color) = self.session.open_document(doc, Some(name.to_string()));
         self.sync_views();
         self.ui.status = format!("Opened {name}");
+        // Script events bound to "Open Document".
+        photocraft_engine::automate_cmds::document_opened(&mut self.session);
+        self.sync_views();
         let ask = color.get("ask").and_then(Value::as_bool) == Some(true);
         if ask && (color.get("mismatch").and_then(Value::as_bool) == Some(true) || color.get("missing").is_some()) {
             prefs_ui::open_mismatch(self, &color);
@@ -341,6 +368,13 @@ impl PhotocraftApp {
             st.saved_revision = st.revision;
         }
         self.ui.status = format!("Saved {path}");
+        // "Save Document" script events and File › Generate › Image Assets.
+        if let Some(i) = self.session.active_index()
+            && let Some(r) = photocraft_engine::automate_cmds::document_saved(&mut self.session, i)
+        {
+            self.ui.status = format!("Saved {path}; {} image assets in {}", r["files"].as_array().map_or(0, Vec::len), r["dir"].as_str().unwrap_or(""));
+        }
+        self.sync_views();
         Ok(path)
     }
 
@@ -507,9 +541,15 @@ impl eframe::App for PhotocraftApp {
         });
         panels::properties_window(self, &ctx);
         brush_panel::window(self, &ctx);
+        preset_panels::windows(self, &ctx);
+        type_panels_ui::windows(self, &ctx);
+        analysis_ui::windows(self, &ctx);
+        workspace_ui::windows(self, &ctx);
         palette::show(self, &ctx);
         dialogs::show(self, &ctx);
         distort_ui::show(self, &ctx);
+        camera_raw_ui::show(self, &ctx);
+        wide_angle_ui::show(self, &ctx);
         canvas::extra_windows(self, &ctx);
         self.perf.frame(gpu_canvas::now_ms() - t0);
         // Synthetic input is injected one press/release step per frame: keep frames coming until

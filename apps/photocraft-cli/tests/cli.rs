@@ -332,3 +332,38 @@ fn mcp_stdio_handshake_and_tool_call() {
     let _ = child.kill();
     let _ = child.wait();
 }
+
+#[test]
+fn droplet_runs_an_action_on_files() {
+    let d = tmp("droplet");
+    write_png(&d.join("a.png"), 8, 4, 3);
+    write_png(&d.join("b.png"), 6, 2, 5);
+    let droplet = d.join("rot.pcdroplet");
+    std::fs::write(
+        &droplet,
+        json!({"photocraftDroplet": 1, "name": "rot", "action": {"steps": [["image.imageRotation.90cw", {}]]}, "options": {"format": "png"}}).to_string(),
+    )
+    .unwrap();
+    let out_dir = d.join("out");
+    let (out, _) = ok(bin()
+        .arg("droplet")
+        .arg(&droplet)
+        .arg(d.join("a.png"))
+        .arg(d.join("b.png"))
+        .arg("--out")
+        .arg(&out_dir));
+    assert_eq!(
+        out.lines().filter(|l| l.starts_with("ok")).count(),
+        2,
+        "{out}"
+    );
+    let img = photocraft_codecs::decode(&std::fs::read(out_dir.join("a.png")).unwrap()).unwrap();
+    assert_eq!(img.dimensions(), (4, 8));
+    let o = bin()
+        .arg("droplet")
+        .arg(d.join("a.png"))
+        .arg(d.join("b.png"))
+        .output()
+        .unwrap();
+    assert!(!o.status.success(), "not a droplet");
+}

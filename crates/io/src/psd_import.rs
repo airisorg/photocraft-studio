@@ -186,6 +186,11 @@ impl Ctx<'_> {
             let f = |s: &[u8]| f64::from_be_bytes(s.try_into().unwrap_or([0; 8]));
             l.effects.reference = Some((f(x), f(y)));
         }
+        // Advanced Blending channel restrictions (`brst`: the u32 ids of channels left out);
+        // also kept in `psd_blocks`, where export rewrites it from the field.
+        if let Some(b) = rec.block(b"brst") {
+            l.excluded_channels = crate::blocks::parse_brst(&b.data);
+        }
         l.psd_id = rec.layer_id();
         let name = l.name.clone();
         l.mask = self.record_mask(rec, &name);
@@ -376,7 +381,8 @@ pub fn psd_to_document(file: &PsdFile) -> (Document, Vec<String>) {
         ColorMode::Rgb
     });
     let layered = matches!(mode, ColorMode::Grayscale | ColorMode::Rgb | ColorMode::Cmyk | ColorMode::Lab) && h.depth != 1;
-    let depth = if layered { sample_for_depth(h.depth) } else { SampleType::U8 };
+    let multichannel = mode == ColorMode::Multichannel && h.depth != 1;
+    let depth = if layered || multichannel { sample_for_depth(h.depth) } else { SampleType::U8 };
     let mut doc = Document::new("Untitled", Size::new(h.width, h.height), mode, depth);
 
     // Resources.
@@ -430,6 +436,11 @@ pub fn psd_to_document(file: &PsdFile) -> (Document, Vec<String>) {
         doc.metadata.psd_global_blocks.push((b.signature, b.key, Arc::new(b.data.clone())));
     }
     doc.patterns = crate::pattern_map::from_global_blocks(&doc);
+    // Notes (`Anno`) and the measurement scale (resource 1074); raw data stays for verbatim export.
+    doc.notes = crate::annotations_map::notes_from_blocks(&doc);
+    if let Some(scale) = crate::annotations_map::raw_scale(&doc) {
+        doc.measurement.scale = scale;
+    }
 
     let fmt = doc.pixel_format();
     let cc = fmt.mode.color_channels();
@@ -451,7 +462,16 @@ pub fn psd_to_document(file: &PsdFile) -> (Document, Vec<String>) {
         cx.warn(format!("merged image could not be decoded: {e}"));
     }
 
-    if layered {
+    if multichannel {
+        // Ink channels only (no layers); see `multichannel_map`.
+        if let Ok(all) = &merged {
+            let names = file.resource(1045).map(|r| unicode_names(&r.data)).unwrap_or_default();
+            crate::multichannel_map::import(file, all, &mut doc, &names, &mut cx.warnings);
+        }
+        if !file.layers().is_empty() {
+            cx.warn(format!("Multichannel documents have no layers: {} layer records were not imported", file.layers().len()));
+        }
+    } else if layered {
         let tree = file.layer_tree();
         doc.layers = cx.build(&tree);
         // Layer › Link Layers: resource 1026 holds one group id per layer record (0 = unlinked).
@@ -580,6 +600,10 @@ pub fn psd_to_document(file: &PsdFile) -> (Document, Vec<String>) {
     // Layer comps (resource 1065 + per-layer `cmls`); the raw data stays for verbatim export.
     let raw_comps = doc.metadata.psd_resources.iter().find(|(id, _, _)| *id == crate::comps_map::LAYER_COMPS).map(|(_, _, d)| d.clone());
     (doc.layer_comps, doc.last_applied_comp, doc.last_document_state) = crate::comps_map::comps_from_psd(raw_comps.as_deref().map(Vec::as_slice), &doc);
+    // Slices (resource 1050), after layer ids are known; the raw data stays for verbatim export.
+    crate::slices_map::import(&mut doc);
+    // Character and paragraph styles from the type layers' engine data.
+    crate::text_styles_map::import(&mut doc);
 
     (doc, cx.warnings)
 }

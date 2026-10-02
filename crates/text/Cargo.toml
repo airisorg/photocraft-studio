@@ -19,3 +19,4 @@ photocraft-psd = { workspace = true }
 # directories ourselves (native) and always register the bundled fonts (native + web).
 parley = { version = "0.11", default-features = false, features = ["std"] }
 skrifa = "0.44"
+flate2 = { workspace = true }

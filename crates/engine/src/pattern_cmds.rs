@@ -114,7 +114,8 @@ fn has_pattern(s: &Session) -> std::result::Result<(), String> {
 /// picks the first library pattern (Photoshop's default).
 pub fn resolve(s: &Session, key: &str) -> Option<Pattern> {
     if key.is_empty() {
-        return s.patterns.items.first().cloned();
+        // The Patterns panel's selection, else the first library pattern.
+        return crate::presets::patterns::current(s).or(s.patterns.items.first()).cloned();
     }
     if let Some(d) = s.active()
         && let Some(p) = photocraft_doc::pattern::find(&d.doc.patterns, key, key)

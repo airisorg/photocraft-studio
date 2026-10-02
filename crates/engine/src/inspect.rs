@@ -34,6 +34,7 @@ pub fn document(d: &DocState) -> Value {
         "resolution": doc.resolution_dpi,
         "activeLayer": d.active_layer.map(|l| l.0),
         "selectedLayers": selected.iter().map(|l| l.0).collect::<Vec<_>>(),
+        "isolatedLayers": d.isolated_layers.iter().map(|l| l.0).collect::<Vec<_>>(),
         "hasSelection": doc.selection.is_some(),
         "selectionBounds": doc.selection.as_ref().map(|s| { let r = s.content_bounds(); [r.x0, r.y0, r.width() as i32, r.height() as i32] }),
         "layers": doc.layers.iter().rev().map(|l| layer_sel(l, &selected)).collect::<Vec<_>>(),
@@ -45,6 +46,8 @@ pub fn document(d: &DocState) -> Value {
         "quickMask": doc.quick_mask.is_some(),
         "layerComps": doc.layer_comps.iter().map(|c| json!({"id": c.id, "name": c.name})).collect::<Vec<_>>(),
         "lastAppliedComp": doc.last_applied_comp,
+        "measurement": {"scale": doc.measurement.scale.describe(), "ruler": doc.measurement.ruler.map(|r| json!({"start": r.start, "end": r.end, "protractor": r.protractor})), "count": doc.measurement.count_total(), "countGroups": doc.measurement.count_groups.len()},
+        "notes": doc.notes.iter().map(|n| json!({"author": n.author, "text": n.text, "position": n.position})).collect::<Vec<_>>(),
     })
 }
 

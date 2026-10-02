@@ -85,6 +85,10 @@ pub struct CharStyle {
     pub variations: Vec<FontVariation>,
     /// BCP-47 language tag (affects shaping and line breaking).
     pub language: Option<String>,
+    /// Applied character style (id in [`crate::TextStyles`]); `None` = "None". Attributes above
+    /// stay fully resolved; differences from the style are local overrides.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub style_sheet: Option<u32>,
 }
 
 impl Default for CharStyle {
@@ -113,6 +117,7 @@ impl Default for CharStyle {
             features: Vec::new(),
             variations: Vec::new(),
             language: None,
+            style_sheet: None,
         }
     }
 }
@@ -172,6 +177,9 @@ pub struct ParagraphStyle {
     pub auto_leading: f32,
     pub direction: TextDirection,
     pub hyphenate: bool,
+    /// Applied paragraph style (id in [`crate::TextStyles`]); `None` = Basic Paragraph.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub style_sheet: Option<u32>,
 }
 
 impl Default for ParagraphStyle {
@@ -186,6 +194,7 @@ impl Default for ParagraphStyle {
             auto_leading: 1.2,
             direction: TextDirection::Auto,
             hyphenate: false,
+            style_sheet: None,
         }
     }
 }

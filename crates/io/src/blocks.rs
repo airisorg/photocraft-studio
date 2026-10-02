@@ -6,6 +6,17 @@ use photocraft_doc::{Fill, GradientStyle, LabelColor, Locks};
 use photocraft_geom::Affine;
 use photocraft_psd::descriptor::{Descriptor, Id, UnicodeString, Value, VersionedDescriptor};
 
+/// `brst` (channel blending restrictions): a list of big-endian u32 channel indices left out of
+/// blending → a bit mask (bit `i` = channel `i`; indices above 31 are ignored).
+pub fn parse_brst(data: &[u8]) -> u32 {
+    data.chunks_exact(4).map(|c| u32::from_be_bytes([c[0], c[1], c[2], c[3]])).filter(|&i| i < 32).fold(0, |m, i| m | 1 << i)
+}
+
+/// Inverse of [`parse_brst`]; `None` when every channel blends (no block).
+pub fn brst_data(mask: u32) -> Option<Vec<u8>> {
+    (mask != 0).then(|| (0..32u32).filter(|i| mask & 1 << i != 0).flat_map(u32::to_be_bytes).collect())
+}
+
 /// `lspf` bits (Adobe spec: bit 0 transparency, 1 composite, 2 position).
 /// Artboard (bit 3... here `0x10` as observed by ag-psd) and "all" (bit 31)
 /// are undocumented.
@@ -406,6 +417,14 @@ pub fn effects_enabled(lfx2: &[u8]) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn brst_round_trip() {
+        assert_eq!(super::parse_brst(&[0, 0, 0, 2]), 0b100);
+        assert_eq!(super::parse_brst(&[0, 0, 0, 0, 0, 0, 0, 1]), 0b11);
+        assert_eq!(super::brst_data(0b101).unwrap(), vec![0, 0, 0, 0, 0, 0, 0, 2]);
+        assert_eq!(super::brst_data(0), None);
+    }
+
     use super::*;
 
     #[test]

@@ -55,8 +55,10 @@ pub fn show(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let quick = doc.quick_mask.is_some();
     let ctx = ui.ctx().clone();
     let thumbs = app.channel_thumbs(&ctx);
-    let mut rows = vec![Row::Composite];
-    if colors > 1 {
+    // Multichannel images are their ink channels only (no composite or colour rows).
+    let multichannel = doc.mode == photocraft_doc::ColorMode::Multichannel;
+    let mut rows = if multichannel { Vec::new() } else { vec![Row::Composite] };
+    if colors > 1 && !multichannel {
         rows.extend((0..colors).map(Row::Color));
     }
     rows.extend((0..doc.channels.len()).map(Row::Alpha));

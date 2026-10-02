@@ -16,7 +16,7 @@ use crate::{PhotocraftApp, icons, widgets};
 /// shows the group's last-used tool.
 const TOOL_SECTIONS: &[&[&[Tool]]] = &[
     &[&[Tool::Move]],
-    &[&[Tool::RectMarquee, Tool::EllipseMarquee], &[Tool::Lasso, Tool::PolygonLasso], &[Tool::ObjectSelection, Tool::QuickSelection, Tool::MagicWand], &[Tool::Crop], &[Tool::Eyedropper]],
+    &[&[Tool::RectMarquee, Tool::EllipseMarquee], &[Tool::Lasso, Tool::PolygonLasso], &[Tool::ObjectSelection, Tool::QuickSelection, Tool::MagicWand], &[Tool::Crop, Tool::Slice, Tool::SliceSelect], &[Tool::Eyedropper, Tool::Ruler, Tool::Note, Tool::Count]],
     &[
         &[Tool::SpotHealing, Tool::Healing],
         &[Tool::Brush],
@@ -27,7 +27,7 @@ const TOOL_SECTIONS: &[&[&[Tool]]] = &[
         &[Tool::Blur, Tool::Sharpen, Tool::Smudge],
         &[Tool::Dodge, Tool::Burn, Tool::Sponge],
     ],
-    &[&[Tool::Pen], &[Tool::Type], &[Tool::PathSelection], &[Tool::Rectangle, Tool::EllipseShape, Tool::Triangle, Tool::Polygon, Tool::Line]],
+    &[&[Tool::Pen], &[Tool::Type], &[Tool::PathSelection], &[Tool::Rectangle, Tool::EllipseShape, Tool::Triangle, Tool::Polygon, Tool::Line, Tool::CustomShape]],
     &[&[Tool::Hand], &[Tool::Zoom]],
 ];
 
@@ -43,11 +43,9 @@ fn slot_tool(ui: &egui::Ui, current: Tool, slot: &[Tool], key: egui::Id) -> Tool
 pub fn toolbar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
     let (w1, bx, m) = if t.pro { (40.0, 30.0, 5i8) } else { (50.0, 36.0, 7i8) };
-    // Photoshop switches to a double-column toolbar when the window is too short.
+    // Photoshop switches to a double-column toolbar only when one column doesn't fit.
     let slots: usize = TOOL_SECTIONS.iter().map(|g| g.len()).sum();
-    let needed = slots as f32 * (bx + 3.0) + TOOL_SECTIONS.len() as f32 * 9.0 + 190.0;
-    let avail_h = ui.ctx().content_rect().height() - 130.0;
-    let double = needed > avail_h;
+    let double = toolbar_needs_double(slots, TOOL_SECTIONS.len(), bx, t.pro, ui.available_rect_before_wrap().height());
     let w = if double { w1 + bx + 2.0 } else { w1 };
     egui::Panel::left("toolbar").resizable(false).exact_size(w).frame(egui::Frame::NONE.fill(t.chrome).inner_margin(egui::Margin::symmetric(m, 8))).show(ui, |ui| {
         if t.pro {
@@ -60,7 +58,7 @@ pub fn toolbar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         }
         // Subtle violet wash at the bottom of the toolbar.
         let full = ui.max_rect();
-        if !t.bevel && t.dark() {
+        if !t.bevel && !t.pro && t.dark() {
             let mut mesh = egui::Mesh::default();
             let r = Rect::from_min_max(pos2(full.left() - 7.0, full.bottom() - 260.0), pos2(full.right() + 7.0, full.bottom() + 8.0));
             let top = Color32::TRANSPARENT;
@@ -77,7 +75,8 @@ pub fn toolbar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         let flyout_id = egui::Id::new("tool-flyout");
         let mut slot_index = 0usize;
         for (si, section) in TOOL_SECTIONS.iter().enumerate() {
-            if si > 0 {
+            // Photoshop 2026 draws one uninterrupted column (no group dividers).
+            if si > 0 && !t.pro {
                 ui.add_space(4.0);
                 let (r, _) = ui.allocate_exact_size(vec2(if double { bx * 2.0 + 2.0 } else { bx }, 1.0), Sense::hover());
                 ui.painter().line_segment([r.left_center() + vec2(8.0, 0.0), r.right_center() - vec2(8.0, 0.0)], Stroke::new(1.0, t.separator));
@@ -145,15 +144,48 @@ pub fn toolbar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                 });
             }
         }
-        ui.add_space(14.0);
+        let ctx = ui.ctx().clone();
+        if t.pro && icons::button(ui, "ellipsis", bx, false, "Edit Toolbar…").clicked() {
+            let _ = crate::menus::invoke(app, &ctx, "edit.toolbar", json!({}));
+        }
+        ui.add_space(if t.pro { 8.0 } else { 14.0 });
         color_chips(app, ui);
         if t.pro {
-            ui.add_space(10.0);
-            let _ = icons::button(ui, "square-dashed", bx, false, "Edit in Quick Mask Mode  (Q)");
-            let _ = icons::button(ui, "app-window", bx, false, "Change Screen Mode  (F)");
-            let _ = icons::button(ui, "ellipsis", bx, false, "Edit Toolbar…");
+            ui.add_space(8.0);
+            let quick_mask = app.session.active().is_some_and(|s| s.doc.quick_mask.is_some());
+            if icons::button(ui, "square-dashed", bx, quick_mask, if quick_mask { "Edit in Standard Mode  (Q)" } else { "Edit in Quick Mask Mode  (Q)" }).clicked() {
+                let _ = crate::menus::invoke(app, &ctx, "select.editInQuickMaskMode", json!({}));
+            }
+            let sm = icons::button(ui, "app-window", bx, false, "Change Screen Mode  (F)");
+            if sm.clicked() {
+                let _ = crate::menus::invoke(app, &ctx, "view.screenMode.cycle", json!({}));
+            }
+            // Right-click (or long-press) lists the modes, like Photoshop's flyout.
+            egui::Popup::context_menu(&sm).show(|ui| {
+                ui.set_min_width(220.0);
+                for (id, label) in [("view.screenMode.standard", "Standard Screen Mode"), ("view.screenMode.fullScreenWithMenuBar", "Full Screen Mode With Menu Bar"), ("view.screenMode.fullScreen", "Full Screen Mode")] {
+                    let on = crate::view_cmds::checked(app, id).unwrap_or(false);
+                    if ui.add(egui::Button::selectable(on, label)).clicked() {
+                        let _ = crate::menus::invoke(app, &ctx, id, json!({}));
+                        ui.close();
+                    }
+                }
+            });
         }
     });
+}
+
+/// Does the toolbar need two columns? Height of one column (header, tool slots, Edit Toolbar,
+/// colour chips, Quick Mask and Screen Mode) against the height the toolbar gets.
+pub fn toolbar_needs_double(slots: usize, sections: usize, bx: f32, pro: bool, avail_h: f32) -> bool {
+    let pitch = bx + 3.0;
+    let needed = if pro {
+        // margins + header + slots + "…" + gap + chips (38 + swap row) + gap + 2 buttons
+        16.0 + 21.0 + (slots + 1) as f32 * pitch + 8.0 + 59.0 + 8.0 + 2.0 * pitch
+    } else {
+        16.0 + slots as f32 * pitch + sections.saturating_sub(1) as f32 * 12.0 + 14.0 + 59.0
+    };
+    needed > avail_h
 }
 
 fn c32(c: [f32; 4]) -> Color32 {
@@ -171,10 +203,13 @@ fn color_chips(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     p.rect_filled(fg, 5.0, c32(app.session.tools.foreground));
     p.rect_stroke(fg, 5.0, Stroke::new(1.5, t.chrome), StrokeKind::Outside);
     p.rect_stroke(fg, 5.0, Stroke::new(1.0, t.field_border), StrokeKind::Inside);
+    // Photoshop: clicking a chip opens the Color Picker for that colour.
+    let bg_resp = ui.interact(bg, ui.id().with("bgchip"), Sense::click());
     let fg_resp = ui.interact(fg, ui.id().with("fgchip"), Sense::click());
-    if fg_resp.on_hover_text("Foreground colour").clicked() {
-        app.ui.panels.color = true;
-        app.ui.dock_tabs.color = 1;
+    if fg_resp.on_hover_text("Set foreground color").clicked() {
+        crate::color_picker_ui::open(app, "foreground");
+    } else if bg_resp.on_hover_text("Set background color").clicked() {
+        crate::color_picker_ui::open(app, "background");
     }
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
@@ -241,6 +276,10 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         ui.painter().line_segment([r.left_top(), r.right_top()], Stroke::new(1.0, t.separator));
         ui.painter().line_segment([r.left_bottom(), r.right_bottom()], Stroke::new(1.0, t.separator));
         ui.horizontal_centered(|ui| {
+            if t.pro {
+                crate::chrome_ui::home_button(app, ui);
+                widgets::vline(ui, 22.0);
+            }
             let _ = icons::button(ui, icons::tool_icon(app.ui.tool), if t.pro { 26.0 } else { 28.0 }, !t.pro, app.ui.tool.label());
             if t.pro {
                 let (r, _) = ui.allocate_exact_size(vec2(10.0, 20.0), Sense::hover());
@@ -259,7 +298,7 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                 brush_preset_chip(ui, &mut app.session.tools.brush);
                 widgets::vline(ui, 22.0);
             }
-            if crate::retouch_ui::options_bar(app, ui, tool) || crate::vector_ui::options_bar(app, ui, tool) {
+            if crate::retouch_ui::options_bar(app, ui, tool) || crate::vector_ui::options_bar(app, ui, tool) || crate::analysis_ui::options_bar(app, ui, tool) || crate::slice_ui::options_bar(app, ui, tool) {
                 return;
             }
             let b = &mut app.session.tools.brush;
@@ -327,15 +366,28 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                     }
                     ui.spacing_mut().item_spacing.x = 8.0;
                     widgets::vline(ui, 22.0);
+                    let o = &mut app.ui.tool_options;
                     opt_label(ui, "Feather");
-                    let mut feather = 0.0f32;
-                    widgets::value_field(ui, &mut feather, 0.0..=1000.0, "px", 62.0);
-                    let mut aa = true;
-                    widgets::checkbox(ui, &mut aa, "Anti-alias");
+                    widgets::value_field(ui, &mut o.feather, 0.0..=1000.0, "px", 62.0);
+                    // Photoshop greys Anti-alias for the Rectangular Marquee (its edges are always hard).
+                    ui.add_enabled_ui(app.ui.tool == Tool::EllipseMarquee, |ui| widgets::checkbox(ui, &mut o.anti_alias, "Anti-alias"));
                     widgets::vline(ui, 22.0);
                     opt_label(ui, "Style");
-                    let mut style = 0u8;
-                    widgets::dropdown(ui, "marquee-style", &mut style, &[(0u8, "Normal"), (1, "Fixed Ratio"), (2, "Fixed Size")], 96.0);
+                    let styles = [("normal".to_string(), "Normal"), ("fixedRatio".to_string(), "Fixed Ratio"), ("fixedSize".to_string(), "Fixed Size")];
+                    if widgets::dropdown(ui, "marquee-style", &mut o.marquee_style, &styles, 96.0) {
+                        (o.marquee_width, o.marquee_height) = if o.marquee_style == "fixedSize" { (64.0, 64.0) } else { (1.0, 1.0) };
+                    }
+                    let fixed = o.marquee_style != "normal";
+                    let (unit, range) = if o.marquee_style == "fixedSize" { ("px", 1.0..=300_000.0) } else { ("", 0.001..=999.0) };
+                    ui.add_enabled_ui(fixed, |ui| {
+                        opt_label(ui, "Width");
+                        widgets::value_field(ui, &mut o.marquee_width, range.clone(), unit, 62.0);
+                        if icons::button(ui, "arrow-left-right", 22.0, false, "Swaps height and width").clicked() {
+                            std::mem::swap(&mut o.marquee_width, &mut o.marquee_height);
+                        }
+                        opt_label(ui, "Height");
+                        widgets::value_field(ui, &mut o.marquee_height, range, unit, 62.0);
+                    });
                     widgets::vline(ui, 22.0);
                     if widgets::secondary_button(ui, "Select and Mask…", 0.0).clicked() {
                         let _ = crate::menus::invoke(app, ui.ctx(), "select.selectAndMask", json!({}));
@@ -419,13 +471,11 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                 }
                 Tool::Type if t.pro => crate::type_tool::options_bar(app, ui),
                 Tool::Move if t.pro => {
-                    let mut auto = false;
-                    widgets::checkbox(ui, &mut auto, "Auto-Select:");
-                    let mut target = 0u8;
-                    widgets::dropdown(ui, "move-target", &mut target, &[(0u8, "Layer"), (1, "Group")], 76.0);
+                    let o = &mut app.ui.tool_options;
+                    widgets::checkbox(ui, &mut o.move_auto_select, "Auto-Select:");
+                    widgets::dropdown(ui, "move-target", &mut o.move_target, &[("layer".to_string(), "Layer"), ("group".to_string(), "Group")], 76.0);
                     widgets::vline(ui, 22.0);
-                    let mut tc = false;
-                    widgets::checkbox(ui, &mut tc, "Show Transform Controls");
+                    widgets::checkbox(ui, &mut o.move_show_transform, "Show Transform Controls");
                     widgets::vline(ui, 22.0);
                     ui.spacing_mut().item_spacing.x = 0.0;
                     for (icon, tip, cmd) in [("panels-top-left", "Align left edges", "layer.align.leftEdges"), ("app-window", "Align horizontal centers", "layer.align.horizontalCenters"), ("panel-right", "Align right edges", "layer.align.rightEdges")] {
@@ -507,6 +557,10 @@ pub fn status_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         let r = ui.max_rect();
         ui.painter().line_segment([r.left_top(), r.right_top()], Stroke::new(1.0, t.separator));
         ui.horizontal_centered(|ui| {
+            if t.pro {
+                crate::chrome_ui::status_bar_pro(app, ui);
+                return;
+            }
             if let (Some(st), Some(i)) = (app.session.active(), app.session.active_index()) {
                 let (w, h, mode, bits, layers) = (st.doc.size.width, st.doc.size.height, crate::canvas::mode_label(&st.doc), st.doc.depth.bits(), st.doc.layer_count());
                 let mut pct = app.ui.views[i].zoom * 100.0;
@@ -592,9 +646,12 @@ fn dock_panels(app: &mut PhotocraftApp, ui: &mut egui::Ui, p: &crate::state::Pan
             // Photoshop Essentials order: Color, Properties, (Navigator, History), Layers last and filling.
             if p.color {
                 let mut sel = app.ui.dock_tabs.color;
-                let tabs: &[&str] = if t.pro { &["Color", "Swatches"] } else { &["Swatches", "Color"] };
+                // Photoshop Essentials: Color | Swatches | Gradients | Patterns.
+                let tabs: &[&str] = if t.pro { &["Color", "Swatches", "Gradients", "Patterns"] } else { &["Swatches", "Color", "Gradients", "Patterns"] };
                 let pro = t.pro;
                 widgets::card(ui, "color", tabs, &mut sel, |ui, tab| match (pro, tab) {
+                    (_, 2) => crate::preset_panels::gradients_panel(app, ui),
+                    (_, 3) => crate::preset_panels::patterns_panel(app, ui),
                     (true, 0) => color_field(app, ui),
                     (true, _) => swatches(app, ui),
                     (false, 0) => swatches(app, ui),
@@ -850,6 +907,7 @@ fn layers(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let active = st.active_layer;
     let active_layer = active.and_then(|id| doc.layer(id)).cloned();
     let selection = st.selected_layers();
+    let isolated = st.isolated_layers.clone();
     let mut actions: Vec<(String, Value)> = Vec::new();
 
     let t = Tokens::get(ui.ctx());
@@ -876,7 +934,10 @@ fn layers(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         ui.add_space(4.0);
     }
     if let Some(l) = &active_layer {
+        // Photoshop greys blend mode, Opacity and Fill for the Background layer.
+        let bg = crate::doc_props_ui::is_background(&doc, l);
         ui.horizontal(|ui| {
+            ui.add_enabled_ui(!bg, |ui| {
             let mut m = l.blend;
             let w = ui.available_width() - 150.0;
             if widgets::dropdown(ui, "blend", &mut m, &blend_options(l.is_group()), w.max(100.0)) {
@@ -888,6 +949,7 @@ fn layers(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                     actions.push(("layer.setProps".into(), json!({"layer": l.id.0, "opacity": o / 100.0})));
                 }
                 label(ui, if t.pro { "Opacity:" } else { "Opacity" });
+            });
             });
         });
         ui.horizontal(|ui| {
@@ -913,13 +975,13 @@ fn layers(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                     actions.push(("layer.setProps".into(), json!({"layer": l.id.0, "locks": {"all": !l.locks.all}})));
                 }
             }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.add_enabled_ui(!bg, |ui| ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let mut f = l.fill_opacity * 100.0;
                 if widgets::value_field(ui, &mut f, 0.0..=100.0, "%", 66.0).changed() {
                     actions.push(("layer.setProps".into(), json!({"layer": l.id.0, "fill": f / 100.0})));
                 }
                 label(ui, if t.pro { "Fill:" } else { "Fill" });
-            });
+            }));
         });
         ui.add_space(2.0);
     }
@@ -932,6 +994,10 @@ fn layers(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     egui::ScrollArea::vertical().id_salt("layer-rows").max_height(rows_h).min_scrolled_height(if fill { rows_h } else { 0.0 }).auto_shrink([false, !fill]).show(ui, |ui| {
         let filter = app.ui.layer_filter.clone();
         for (_, depth, l) in rows.iter().rev() {
+            // Select › Isolate Layers.
+            if !photocraft_engine::select_extra_cmds::isolation_shows(&doc, &isolated, l.id) {
+                continue;
+            }
             if !filter.is_empty() {
                 let kind = match &l.content {
                     LayerContent::Raster(_) => "pixel",
@@ -966,13 +1032,13 @@ fn layers(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             if icons::button(ui, "trash", 26.0, false, "Delete layer").clicked() {
                 actions.push(("layer.delete".into(), json!({})));
             }
-            if icons::button(ui, "plus", 26.0, false, "New layer  (⇧⌘N)").clicked() {
+            if icons::button(ui, "square-plus", 26.0, false, "Create a new layer  (⇧⌘N)").clicked() {
                 actions.push(("layer.new.layer".into(), json!({})));
             }
-            if icons::button(ui, "folder-plus", 26.0, false, "New group").clicked() {
+            if icons::button(ui, "folder", 26.0, false, "Create a new group").clicked() {
                 actions.push(("layer.new.group".into(), json!({})));
             }
-            let adj = icons::button(ui, "contrast", 26.0, false, "New fill or adjustment layer");
+            let adj = icons::button(ui, "contrast", 26.0, false, "Create new fill or adjustment layer");
             egui::Popup::menu(&adj).show(|ui| {
                 ui.set_min_width(190.0);
                 for c in photocraft_engine::command_specs().iter().filter(|c| c.id.starts_with("layer.newAdjustmentLayer.")) {
@@ -991,13 +1057,10 @@ fn layers(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                     ui.close();
                 }
             });
-            if icons::button(ui, "square-dashed", 26.0, false, "Add layer mask").clicked() {
+            if icons::button(ui, "square-dot", 26.0, false, "Add a mask").clicked() {
                 actions.push(("layer.layerMask.revealAll".into(), json!({})));
             }
-            if icons::button(ui, "copy", 26.0, false, "Duplicate layer  (⌘J)").clicked() {
-                actions.push(("layer.duplicate".into(), json!({})));
-            }
-            let fx = icons::button(ui, "sparkles", 26.0, false, "Add a layer style");
+            let fx = fx_button(ui, 26.0, "Add a layer style");
             egui::Popup::menu(&fx).show(|ui| {
                 ui.set_min_width(180.0);
                 if ui.button("Blending Options…").clicked() {
@@ -1012,8 +1075,10 @@ fn layers(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                     }
                 }
             });
-            if icons::button(ui, "link", 26.0, false, "Create clipping mask  (⌥⌘G)").clicked() {
-                actions.push(("layer.createClippingMask".into(), json!({})));
+            // Photoshop's footer starts with Link Layers (enabled with two or more layers selected).
+            let can_link = app.session.is_enabled("layer.linkLayers");
+            if ui.add_enabled_ui(can_link, |ui| icons::button(ui, "link", 26.0, false, "Link layers")).inner.clicked() {
+                actions.push(("layer.linkLayers".into(), json!({})));
             }
         });
     });
@@ -1022,8 +1087,31 @@ fn layers(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             app.ui.mask_target = p.as_bool().unwrap_or(false);
             continue;
         }
+        if p.is_null() {
+            // Context-menu items behave like their menu-bar twins (dialogs included).
+            let ctx = ui.ctx().clone();
+            if let Err(e) = crate::menus::invoke(app, &ctx, &id, json!({})) {
+                app.ui.status = e;
+                app.ui.status_error = true;
+            }
+            continue;
+        }
         let _ = app.run(&id, p);
     }
+}
+
+/// Photoshop's italic "fx" footer button (no icon-font equivalent).
+fn fx_button(ui: &mut egui::Ui, size: f32, tip: &str) -> egui::Response {
+    let t = Tokens::get(ui.ctx());
+    let (r, resp) = ui.allocate_exact_size(vec2(size, size), Sense::click());
+    if resp.hovered() {
+        ui.painter().rect_filled(r, t.radius_sm, t.hover);
+    }
+    let mut job = egui::text::LayoutJob::default();
+    job.append("fx", 0.0, egui::TextFormat { font_id: egui::FontId::proportional(15.0), color: t.icon, italics: true, ..Default::default() });
+    let g = ui.painter().layout_job(job);
+    ui.painter().galley(r.center() - g.size() / 2.0, g, t.icon);
+    resp.on_hover_text(tip)
 }
 
 /// How a Layers panel row is selected: in the (multi-)selection, the primary/active layer, and
@@ -1051,7 +1139,8 @@ fn select_mode(m: egui::Modifiers) -> &'static str {
 fn layer_row(app: &mut PhotocraftApp, ctx: &egui::Context, ui: &mut egui::Ui, doc: &photocraft_doc::Document, l: &Layer, depth: usize, row: RowSel, actions: &mut Vec<(String, Value)>) {
     let selected = row.selected;
     let t = Tokens::get(ctx);
-    let row_h = if t.pro { 36.0 } else { 46.0 };
+    // Photoshop's default (medium) thumbnails: 32 pt rows.
+    let row_h = if t.pro { 32.0 } else { 46.0 };
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), row_h), Sense::click_and_drag());
     layer_drag_and_drop(ctx, ui, l, rect, &resp, actions);
     let painter = ui.painter_at(rect.expand(1.0));
@@ -1082,7 +1171,7 @@ fn layer_row(app: &mut PhotocraftApp, ctx: &egui::Context, ui: &mut egui::Ui, do
         painter.text(pos2(x, rect.center().y), Align2::LEFT_CENTER, "↳", egui::FontId::proportional(13.0), t.text_faint);
         x += 12.0;
     }
-    let ts = if t.pro { 28.0 } else { 34.0 };
+    let ts = if t.pro { 24.0 } else { 34.0 };
     let thumb = Rect::from_min_size(pos2(x, rect.center().y - ts / 2.0), vec2(ts, ts));
     draw_layer_thumb(app, ctx, ui, doc, l, thumb, row.primary);
     x += ts + 6.0;
@@ -1110,12 +1199,13 @@ fn layer_row(app: &mut PhotocraftApp, ctx: &egui::Context, ui: &mut egui::Ui, do
     }
     let name_color = if l.visible { t.text } else { t.text_faint };
     let font = if selected && !t.pro { theme::medium(13.0) } else { egui::FontId::proportional(if t.pro { 12.0 } else { 13.0 }) };
-    // Photoshop sets the locked Background layer's name in italics.
-    let italic = l.name == "Background" && l.locks.transparency;
+    // Photoshop before 2026 set the Background layer's name in italics; 2026 sets it upright.
+    let italic = !t.pro && l.name == "Background" && l.locks.transparency;
     let mut job = egui::text::LayoutJob::default();
     job.append(&l.name, 0.0, egui::TextFormat { font_id: font, color: name_color, italics: italic, ..Default::default() });
     let galley = painter.layout_job(job);
-    let is_pixel = matches!(l.content, LayerContent::Raster(_));
+    // Photoshop rows show only the name; the kind sub-label is a Studio-theme addition.
+    let is_pixel = t.pro || matches!(l.content, LayerContent::Raster(_));
     let text_pos = pos2(x, rect.center().y - galley.size().y / 2.0 - if is_pixel { 0.0 } else { 7.0 });
     painter.galley(text_pos, galley, name_color);
     if !is_pixel {
@@ -1186,50 +1276,10 @@ fn layer_row(app: &mut PhotocraftApp, ctx: &egui::Context, ui: &mut egui::Ui, do
     }
     // Right-click context menu.
     resp.context_menu(|ui| {
-        ui.set_min_width(200.0);
-        let id = l.id.0;
         // Right-clicking inside a multi-selection keeps it and acts on every selected layer.
         let on_set = row.multi && selected;
-        let mut item = |ui: &mut egui::Ui, label: &str, cmd: &str| {
-            if ui.button(label).clicked() {
-                if on_set {
-                    actions.push((cmd.into(), json!({})));
-                } else {
-                    actions.push(("layer.select".into(), json!({"layer": id})));
-                    actions.push((cmd.into(), json!({"layer": id})));
-                }
-                ui.close();
-            }
-        };
-        item(ui, if on_set { "Duplicate Layers" } else { "Duplicate Layer" }, "layer.duplicate");
-        item(ui, if on_set { "Delete Layers" } else { "Delete Layer" }, "layer.delete");
-        ui.separator();
-        if l.clipped {
-            item(ui, "Release Clipping Mask", "layer.releaseClippingMask");
-        } else {
-            item(ui, "Create Clipping Mask", "layer.createClippingMask");
-        }
-        if l.mask.is_some() {
-            item(ui, "Delete Layer Mask", "layer.layerMask.delete");
-        } else {
-            item(ui, "Add Layer Mask", "layer.layerMask.revealAll");
-        }
-        ui.separator();
-        item(ui, "Group Layers", "layer.groupLayers");
-        if on_set {
-            item(ui, "Merge Layers", "layer.mergeLayers");
-            item(ui, "Link Layers", "layer.linkLayers");
-        } else {
-            item(ui, "Merge Down", "layer.mergeDown");
-        }
-        if ui.button("Flatten Image").clicked() {
-            actions.push(("layer.flattenImage".into(), json!({})));
-            ui.close();
-        }
-        ui.separator();
-        if ui.button("Rename Layer…").clicked() {
+        if crate::layer_menu_ui::show(app, ui, l, on_set, actions) {
             ui.ctx().data_mut(|d| d.insert_temp(rename_id, l.name.clone()));
-            ui.close();
         }
     });
 }
@@ -1566,10 +1616,12 @@ fn properties_body(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         empty(ui, "No properties");
         return;
     };
-    let Some(id) = st.active_layer else {
-        empty(ui, "No layer selected");
+    // Photoshop shows the Document properties when nothing or the Background layer is selected.
+    if crate::doc_props_ui::shows_document(&st.doc, st.active_layer) {
+        crate::doc_props_ui::properties(app, ui);
         return;
-    };
+    }
+    let Some(id) = st.active_layer else { return };
     let Some(layer) = st.doc.layer(id).cloned() else { return };
     ui.horizontal(|ui| {
         let icon = match &layer.content {
@@ -1597,7 +1649,11 @@ fn properties_body(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     } else if layer.artboard().is_some() {
         crate::artboard_ui::properties(app, ui, &layer);
     } else {
-        layer_controls(app, ui, &layer);
+        if t.pro {
+            crate::layer_props_ui::properties(app, ui, &layer);
+        } else {
+            layer_controls(app, ui, &layer);
+        }
         if matches!(layer.content, LayerContent::Text(_)) {
             crate::type_tool::type_properties(app, ui);
         }

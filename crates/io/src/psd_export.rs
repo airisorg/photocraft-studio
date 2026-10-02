@@ -28,6 +28,8 @@ struct Ex {
     fmt: PixelFormat,
     /// Document resolution (for generated type-layer data).
     dpi: f32,
+    /// Character/paragraph styles written into every type layer's engine data.
+    text_styles: photocraft_doc::TextStyles,
     mask_fmt: PixelFormat,
     cc: usize,
     cmyk: bool,
@@ -262,7 +264,10 @@ impl Ex {
             LayerContent::Text(t) => {
                 // Text layers without PSD data (created here) get a generated TySh.
                 let generated = t.psd_raw.is_none().then(|| std::sync::Arc::new(photocraft_text::psd::build_tysh(t, self.dpi, None)));
-                set_principal(&mut raw, &[b"TySh"], t.psd_raw.as_ref().or(generated.as_ref()));
+                let src = t.psd_raw.as_ref().or(generated.as_ref());
+                // Character/paragraph style sheets from the document's styles.
+                let styled = src.and_then(|d| crate::text_styles_map::export_tysh(d, t, &self.text_styles, self.dpi)).map(std::sync::Arc::new);
+                set_principal(&mut raw, &[b"TySh"], styled.as_ref().or(src));
                 if !raw.iter().any(|(k, _)| k == b"TySh") {
                     self.warnings.push(format!("layer \"{}\": text layer written as pixels (no TySh data)", l.name));
                 }
@@ -285,6 +290,14 @@ impl Ex {
                 }
             }
             None => raw.retain(|(k, _)| k != b"fxrp"),
+        }
+        // Advanced Blending channel restrictions: written from the field (in place).
+        match crate::blocks::brst_data(l.excluded_channels) {
+            Some(data) => match raw.iter_mut().find(|(k, _)| k == b"brst") {
+                Some(e) => e.1 = data,
+                None => raw.push((*b"brst", data)),
+            },
+            None => raw.retain(|(k, _)| k != b"brst"),
         }
         if !matches!(l.content, LayerContent::Shape(_)) {
             self.vector_mask_block(l, &mut raw);
@@ -439,7 +452,7 @@ fn legacy_name(s: &str) -> Vec<u8> {
     s.chars().map(|c| if c.is_ascii() && !c.is_ascii_control() { c as u8 } else { b'?' }).take(255).collect()
 }
 
-fn unicode_names_resource(names: &[&str]) -> Vec<u8> {
+pub(crate) fn unicode_names_resource(names: &[&str]) -> Vec<u8> {
     let mut v = Vec::new();
     for n in names {
         let units: Vec<u16> = n.encode_utf16().chain(std::iter::once(0)).collect();
@@ -451,7 +464,7 @@ fn unicode_names_resource(names: &[&str]) -> Vec<u8> {
     v
 }
 
-fn pascal_names_resource(names: &[&str]) -> Vec<u8> {
+pub(crate) fn pascal_names_resource(names: &[&str]) -> Vec<u8> {
     let mut v = Vec::new();
     for n in names {
         let b = legacy_name(n);
@@ -486,6 +499,9 @@ pub fn document_to_psd(doc: &Document) -> PsdFile {
 /// anything that could not be represented. The merged composite is rendered
 /// with `photocraft_compose::flatten`.
 pub fn document_to_psd_with(doc: &Document, opts: &PsdExportOptions) -> (PsdFile, Vec<String>) {
+    if doc.mode == ColorMode::Multichannel {
+        return crate::multichannel_map::document_to_psd(doc, opts.force_psb);
+    }
     let fmt = doc.pixel_format();
     let sample = fmt.sample;
     let cc = fmt.mode.color_channels();
@@ -494,6 +510,7 @@ pub fn document_to_psd_with(doc: &Document, opts: &PsdExportOptions) -> (PsdFile
     let mut ex = Ex {
         fmt,
         dpi: doc.resolution_dpi,
+        text_styles: doc.text_styles.clone(),
         mask_fmt: PixelFormat::new(ColorMode::Grayscale, sample, false),
         cc,
         cmyk: fmt.mode == ColorMode::Cmyk,
@@ -657,15 +674,24 @@ pub fn document_to_psd_with(doc: &Document, opts: &PsdExportOptions) -> (PsdFile
         resources.push(ImageResource::new(ids::EXIF, e.to_vec()));
     }
     let mut global_blocks = Vec::new();
-    for (sig, key, data) in &crate::pattern_map::export_global_blocks(doc) {
+    for (sig, key, data) in &crate::annotations_map::export_blocks(doc, crate::pattern_map::export_global_blocks(doc)) {
         let mut tb = TaggedBlock::new(*key, data.to_vec());
         tb.signature = *sig;
         global_blocks.push(tb);
     }
     let comps_resource = ex.comps.is_some().then(|| crate::comps_map::write_comps_resource(doc));
+    let slices_resource = crate::slices_map::export_resource(doc, &ex.layer_ids);
     for (id, name, data) in &doc.metadata.psd_resources {
         // Layer comps: the preserved list while unchanged, else regenerated (or dropped) below.
         if *id == crate::comps_map::LAYER_COMPS && comps_resource.is_some() {
+            continue;
+        }
+        // Slices: the preserved resource while unchanged, else regenerated (or dropped) below.
+        if *id == crate::slices_map::SLICES && slices_resource.is_some() {
+            continue;
+        }
+        // Measurement scale / count resources: only while they still describe the document.
+        if !crate::annotations_map::keep_resource(doc, *id) {
             continue;
         }
         // A preserved clipping-path resource is only valid while it names the current one.
@@ -680,8 +706,14 @@ pub fn document_to_psd_with(doc: &Document, opts: &PsdExportOptions) -> (PsdFile
         r.name = legacy_name(name);
         resources.push(r);
     }
+    if let Some(data) = crate::annotations_map::fresh_scale_resource(doc) {
+        resources.push(ImageResource::new(crate::annotations_map::MEASUREMENT_SCALE, data));
+    }
     if let Some(Some(data)) = comps_resource {
         resources.push(ImageResource::new(crate::comps_map::LAYER_COMPS, data));
+    }
+    if let Some(Some(data)) = slices_resource {
+        resources.push(ImageResource::new(crate::slices_map::SLICES, data));
     }
     resources.push(version_info_resource(true));
 

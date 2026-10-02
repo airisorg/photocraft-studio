@@ -21,10 +21,16 @@ USAGE:
       applies to the preceding --cmd. Prints each command's JSON result.
   photocraft-cli batch --actions <actions.json> --in <dir> --out <dir> [--format <ext>]
       Apply an action list ([{\"command\": id, \"params\": {…}}, …]) to every image in a directory.
+  photocraft-cli droplet <file.pcdroplet> <file-or-dir>… [--out <dir>]
+      Run a droplet (File › Automate › Create Droplet) on images and folders.
   photocraft-cli commands [--json] [--filter <text>]
       List the engine command registry.
   photocraft-cli mcp [--bridge <127.0.0.1:port>]
       Run the MCP server on stdio (headless engine, or bridge to a running `photocraft --control <port>`).
+  photocraft-cli serve [--port <port>]
+      Keep one headless session open and answer JSON lines ({\"id\",\"method\",\"params\"}) on stdio,
+      or on 127.0.0.1:<port>. Methods: engine.execute, engine.commands, doc.open/new/save/inspect/render/
+      select/close, session.list, batch, methods (docs/control-protocol.md#headless-server).
 ";
 
 struct Args {
@@ -43,6 +49,7 @@ const VALUE_FLAGS: &[&str] = &[
     "--in",
     "--filter",
     "--bridge",
+    "--port",
 ];
 
 fn parse(args: &[String]) -> Result<Args, String> {
@@ -105,13 +112,19 @@ pub fn run(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> i32 {
         "run" => run_cmds(&parsed, out, err),
         "batch" => batch(&parsed, out, err),
         "commands" => commands(&parsed, out),
+        "droplet" => droplet(&parsed, out, err),
         "mcp" => mcp(&parsed),
+        "serve" => serve(&parsed, err),
         "-h" | "--help" | "help" => {
             let _ = write!(out, "{USAGE}");
             return 0;
         }
         "--version" | "version" => {
-            let _ = writeln!(out, "photocraft-cli {}", photocraft_engine::build_info::long_version());
+            let _ = writeln!(
+                out,
+                "photocraft-cli {}",
+                photocraft_engine::build_info::long_version()
+            );
             return 0;
         }
         other => {
@@ -343,6 +356,41 @@ fn batch(a: &Args, out: &mut dyn Write, err: &mut dyn Write) -> R {
     }
 }
 
+fn droplet(a: &Args, out: &mut dyn Write, err: &mut dyn Write) -> R {
+    let (file, inputs) = a
+        .positional
+        .split_first()
+        .ok_or("droplet needs <file.pcdroplet> and inputs")?;
+    if inputs.is_empty() {
+        return Err("droplet needs at least one input file or folder".into());
+    }
+    let mut p = json!({"droplet": file, "input": inputs});
+    if let Some(o) = a.get("--out") {
+        p["output"] = json!(o);
+    }
+    let mut s = photocraft_engine::Session::new();
+    let r = s
+        .execute("file.automate.runDroplet", p)
+        .map_err(|e| e.to_string())?;
+    for f in r["files"].as_array().into_iter().flatten() {
+        let _ = writeln!(out, "ok    {}", f.as_str().unwrap_or_default());
+    }
+    let errors = r["errors"].as_array().cloned().unwrap_or_default();
+    for e in &errors {
+        let _ = writeln!(
+            err,
+            "FAIL  {}: {}",
+            e["file"].as_str().unwrap_or_default(),
+            e["error"].as_str().unwrap_or_default()
+        );
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("{} file(s) failed", errors.len()))
+    }
+}
+
 fn commands(a: &Args, out: &mut dyn Write) -> R {
     let h = Headless::new();
     let list = h.command_list();
@@ -391,6 +439,26 @@ fn commands(a: &Args, out: &mut dyn Write) -> R {
         .map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+fn serve(a: &Args, err: &mut dyn Write) -> R {
+    use std::sync::{Arc, Mutex};
+    let h = Arc::new(Mutex::new(Headless::new()));
+    match a.get("--port") {
+        Some(port) => {
+            let port: u16 = port.parse().map_err(|_| format!("bad --port `{port}`"))?;
+            let addr = format!("127.0.0.1:{port}");
+            photocraft_automation::rpc::serve_tcp(&addr, h, |local| {
+                let _ = writeln!(err, "photocraft-cli serving on {local}");
+            })
+            .map_err(|e| e.to_string())
+        }
+        None => {
+            let stdin = std::io::stdin();
+            photocraft_automation::rpc::serve_lines(&h, stdin.lock(), std::io::stdout())
+                .map_err(|e| e.to_string())
+        }
+    }
 }
 
 fn mcp(a: &Args) -> R {

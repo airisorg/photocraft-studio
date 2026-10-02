@@ -8,18 +8,39 @@
 //! cargo run --release -p photocraft-io --example oracle_diff -- file.psd 0 worst [n]   # n worst pixels
 //! cargo run --release -p photocraft-io --example oracle_diff -- file.psd 0 grid x0 y0 x1 y1 [ch] # value grids
 //! cargo run --release -p photocraft-io --example oracle_diff -- file.psd 0 layerpx x y  # each layer's pixel
+//! cargo run --release -p photocraft-io --example oracle_diff -- corpus/psd             # every file: max err, bad %, PASS/DIFF
+//! cargo run --release -p photocraft-io --example oracle_diff -- file.psd 0 dump prefix # raw f32 planes for offline fitting
+//! HIDE_ADJ=1 …                                                                        # adjustment layers hidden
 //! DUMP_FX=1 …                                                                          # raw effects descriptors
 //! ```
 fn main() {
     let path = std::env::args().nth(1).expect("path");
+    if std::path::Path::new(&path).is_dir() {
+        corpus_summary(std::path::Path::new(&path));
+        return;
+    }
     let bytes = std::fs::read(&path).unwrap();
     let file = photocraft_psd::PsdFile::from_bytes(&bytes).unwrap();
-    let imp = photocraft_io::import(&path, &bytes).unwrap();
+    let mut imp = photocraft_io::import(&path, &bytes).unwrap();
+    if std::env::var_os("HIDE_ADJ").is_some() {
+        // Composite without adjustment layers (their input, for fitting transfer curves).
+        fn hide(ls: &mut [photocraft_doc::Layer]) {
+            for l in ls {
+                if matches!(l.content, photocraft_doc::LayerContent::Adjustment(_)) {
+                    l.visible = false;
+                }
+                if let photocraft_doc::LayerContent::Group(g) = &mut l.content {
+                    hide(&mut g.children);
+                }
+            }
+        }
+        hide(&mut imp.document.layers);
+    }
     let doc = &imp.document;
-    println!("mode {:?} depth {:?} layers {} warnings {:?}", doc.mode, doc.depth, doc.layer_count(), imp.warnings);
+    println!("mode {:?} depth {:?} layers {} warnings {:?} light {:?}", doc.mode, doc.depth, doc.layer_count(), imp.warnings, doc.global_light);
     for l in doc.walk() {
         let l = l.2;
-        println!("  layer {:?} {:?} blend {:?} op {} fill {} fill_cache {}", l.name, l.content.kind_name(), l.blend, l.opacity, l.fill_opacity, l.fill_cache.is_some());
+        println!("  layer {:?} {:?} blend {:?} op {} fill {} fill_cache {} visible {}", l.name, l.content.kind_name(), l.blend, l.opacity, l.fill_opacity, l.fill_cache.is_some(), l.visible);
         if let photocraft_doc::LayerContent::Adjustment(a) = &l.content {
             println!("    {}", format!("{a:?}").chars().take(800).collect::<String>());
         }
@@ -62,7 +83,7 @@ fn main() {
                 let g = format!("{gradient:?}");
                 println!("    gradient overlay: {g}");
             } else if format!("{e:?}").contains("enabled: true") {
-                println!("    fx {}", format!("{e:?}").chars().take(200).collect::<String>());
+                println!("    fx {}", format!("{e:?}").chars().take(if std::env::var_os("FULL").is_some() { 100_000 } else { 200 }).collect::<String>());
             }
         }
         println!("    blocks {:?}", l.psd_blocks.iter().map(|(k, v)| format!("{}({})", String::from_utf8_lossy(k), v.len())).collect::<Vec<_>>());
@@ -155,6 +176,26 @@ fn main() {
         println!("wrote {out}");
         return;
     }
+    if std::env::args().nth(3).as_deref() == Some("dump") {
+        // dump prefix: raw little-endian f32 RGBA (straight) planes for offline fitting:
+        // prefix_ours.f32, prefix_ps.f32, prefix_L<i>.f32 (each top-level layer's own pixels,
+        // masks not applied) and prefix.txt (width, height, layer names).
+        let out = std::env::args().nth(4).expect("prefix");
+        let wr = |name: String, px: &[[f32; 4]]| {
+            let bytes: Vec<u8> = px.iter().flat_map(|p| p.iter().flat_map(|v| v.to_le_bytes())).collect();
+            std::fs::write(name, bytes).unwrap();
+        };
+        wr(format!("{out}_ours.f32"), &ours);
+        wr(format!("{out}_ps.f32"), &merged);
+        let mut meta = format!("{} {}\n", doc.size.width, doc.size.height);
+        for (i, l) in doc.layers.iter().enumerate() {
+            let b = photocraft_compose::surface_to_buffer(l.surface().unwrap_or(&photocraft_raster::Surface::new(photocraft_color::PixelFormat::RGBA8)), doc.bounds());
+            wr(format!("{out}_L{i}.f32"), &b.px);
+            meta += &format!("{i} {}\n", l.name);
+        }
+        std::fs::write(format!("{out}.txt"), meta).unwrap();
+        return;
+    }
     if std::env::args().nth(3).as_deref() == Some("layerpx") {
         // layerpx x y: each layer's own pixel (0-255).
         let x: i32 = std::env::args().nth(4).and_then(|s| s.parse().ok()).unwrap_or(0);
@@ -227,4 +268,79 @@ fn main() {
     for (i, (a, b)) in ours.iter().zip(&merged).enumerate().take(n) {
         println!("{i:4}: ours {:?}\n      ps   {:?}", a.map(|v| (v * 1000.0).round() / 1000.0), b.map(|v| (v * 1000.0).round() / 1000.0));
     }
+}
+
+/// The corpus oracle table (as `tests/corpus.rs`), files in parallel, without a test build.
+fn corpus_summary(root: &std::path::Path) {
+    fn collect(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        let Ok(rd) = std::fs::read_dir(dir) else { return };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                collect(&p, out);
+            } else if p.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("psd") || e.eq_ignore_ascii_case("psb")) {
+                out.push(p);
+            }
+        }
+    }
+    let mut files = Vec::new();
+    collect(root, &mut files);
+    files.sort();
+    const TOL: f32 = 2.0 / 255.0;
+    let row = |p: &std::path::PathBuf| -> (String, Option<(f32, f32)>) {
+            let name = p.strip_prefix(root).unwrap_or(p).display().to_string();
+            let Ok(bytes) = std::fs::read(p) else { return (name, None) };
+            let Ok(file) = photocraft_psd::PsdFile::from_bytes(&bytes) else { return (name, None) };
+            let Ok(imp) = photocraft_io::import(&name, &bytes) else { return (name, None) };
+            if file.has_real_merged_data() == Some(false) || file.layers().is_empty() {
+                return (name, None);
+            }
+            let Ok(merged) = photocraft_io::merged_composite(&file) else { return (name, None) };
+            let ours = photocraft_compose::flatten(&imp.document).px;
+            let mut m = 0.0f32;
+            let mut bad = 0usize;
+            for (a, b) in ours.iter().zip(&merged) {
+                let d = (0..4).map(|c| (a[c] * a[3] - b[c] * b[3]).abs()).fold((a[3] - b[3]).abs(), f32::max);
+                m = m.max(d);
+                if (0..4).any(|c| (a[c] * a[3] - b[c] * b[3]).abs() > TOL) {
+                    bad += 1;
+                }
+            }
+            (name, Some((m, 100.0 * bad as f32 / ours.len().max(1) as f32)))
+    };
+    // Files in parallel (a few threads; flatten itself is tile-parallel).
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let mut rows: Vec<(usize, (String, Option<(f32, f32)>))> = std::thread::scope(|sc| {
+        let hs: Vec<_> = (0..4)
+            .map(|_| {
+                sc.spawn(|| {
+                    let mut out = Vec::new();
+                    loop {
+                        let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some(p) = files.get(i) else { break };
+                        out.push((i, row(p)));
+                    }
+                    out
+                })
+            })
+            .collect();
+        hs.into_iter().flat_map(|h| h.join().unwrap()).collect()
+    });
+    rows.sort_by_key(|r| r.0);
+    let rows: Vec<(String, Option<(f32, f32)>)> = rows.into_iter().map(|r| r.1).collect();
+    let (mut pass, mut diff, mut skip) = (0, 0, 0);
+    for (name, r) in &rows {
+        match r {
+            Some((m, pct)) if *m <= TOL => {
+                pass += 1;
+                println!("{name:<60} {m:>9.4} {pct:>7.2}%  PASS");
+            }
+            Some((m, pct)) => {
+                diff += 1;
+                println!("{name:<60} {m:>9.4} {pct:>7.2}%  DIFF");
+            }
+            None => skip += 1,
+        }
+    }
+    println!("{} files: {pass} pass, {diff} differ, {skip} skipped/errors", rows.len());
 }

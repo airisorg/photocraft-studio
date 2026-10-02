@@ -103,6 +103,22 @@ pub fn invoke(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, params: Va
     if id == "view.proofSetup.custom" {
         return Ok(json!({"dialog": crate::filter_dialog::open(app, "view.proofSetup")}));
     }
+    // Image › Analysis tools/dialogs, Measurement Log and Notes panels, File › Import › Notes.
+    if let Some(r) = crate::analysis_ui::menu(app, id, &params) {
+        return r;
+    }
+    // Workspace New/Delete/Lock, Modifier Keys, custom pixel aspect, Extras/32-bit options.
+    if let Some(r) = crate::workspace_ui::menu(app, id, &params) {
+        return r;
+    }
+    // Window › Gradients, Patterns, Styles, Shapes, Tool Presets, Clone Source.
+    if let Some(r) = crate::preset_panels::menu(app, id, &params) {
+        return r;
+    }
+    // Character/Paragraph Styles, Glyphs, Edit › Check Spelling dialog.
+    if let Some(r) = crate::type_panels_ui::menu(app, id, &params) {
+        return r;
+    }
     if id == "window.panel.brushes" {
         // Window › Brushes opens the Brush Settings window on its presets tab.
         app.ui.panels.brush_settings = true;
@@ -117,11 +133,22 @@ pub fn invoke(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, params: Va
     if let Some(r) = crate::prefs_ui::invoke(app, ctx, id, &params) {
         return r;
     }
+    // Save for Web, Print and the other File-menu dialogs added with slices.
+    if let Some(r) = crate::file_ui::invoke(app, ctx, id, &params) {
+        return r;
+    }
     if let Some(r) = crate::view_cmds::invoke(app, ctx, id, &params) {
         return r;
     }
     // Liquify dialog, Puppet Warp and Perspective Warp modes (and their control params).
     if let Some(r) = crate::distort_ui::menu(app, ctx, id, &params) {
+        return r;
+    }
+    // Camera Raw Filter dialog (and its control params).
+    if let Some(r) = crate::camera_raw_ui::menu(app, ctx, id, &params) {
+        return r;
+    }
+    if let Some(r) = crate::wide_angle_ui::menu(app, ctx, id, &params) {
         return r;
     }
     if let Some(profile) = proof_preset(id) {
@@ -220,6 +247,10 @@ pub fn invoke(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, params: Va
         }
         // Photoshop's "Select and Mask…" is the engine's select.refineEdge.
         "select.selectAndMask" => Ok(json!({"dialog": crate::filter_dialog::open(app, "select.refineEdge")})),
+        // Select › Transform Selection from the menu: the interactive box (with params: the engine).
+        "select.transformSelection" if params.as_object().is_none_or(|o| o.is_empty()) => {
+            crate::transform_tool::begin_selection(app, ctx).map(|_| json!({"transform": app.ui.transform}))
+        }
         "edit.paste" if params.as_object().is_none_or(|o| o.is_empty()) => {
             // Photoshop: paste in place when the copied area is visible, else centred in the view;
             // images from other apps are always centred.
@@ -319,6 +350,19 @@ fn open_path(_app: &mut PhotocraftApp, path: &str) -> Result<Value, String> {
 }
 
 pub fn is_enabled(app: &PhotocraftApp, id: &str) -> bool {
+    // Photoshop greys these for the Background layer, other layer kinds or single-layer documents.
+    if crate::enable_rules::disabled(app, id) {
+        return false;
+    }
+    if let Some(e) = crate::workspace_ui::is_enabled(app, id) {
+        return e;
+    }
+    if crate::analysis_ui::handles(id) {
+        return true;
+    }
+    if crate::preset_panels::handles(id) || crate::type_panels_ui::handles(id) {
+        return true;
+    }
     if let Some(e) = crate::view_cmds::is_enabled(app, id) {
         return e;
     }
@@ -334,6 +378,7 @@ pub fn is_enabled(app: &PhotocraftApp, id: &str) -> bool {
         "view.proofSetup.custom" => app.session.active().is_some(),
         "view.rulers" | "view.show.grid" | "view.show.guides" | "view.snap" | "view.lockGuides" => true,
         "select.selectAndMask" => app.session.is_enabled("select.refineEdge"),
+        "select.transformSelection" => app.ui.transform.is_none() && app.session.is_enabled("select.transformSelection"),
         i if (i.starts_with("view.zoom") || i == "view.fitOnScreen" || i == "view.actualPixels") || i == "window.newWindowForDocument" => app.session.active().is_some(),
         "edit.freeTransform" | "edit.transform.scale" | "edit.transform.rotate" | "edit.transform.skew" | "edit.transform.distort" | "edit.transform.perspective" => {
             app.ui.transform.is_none() && app.session.active().and_then(|s| s.active_layer).is_some()
@@ -348,8 +393,20 @@ fn checked(app: &PhotocraftApp, id: &str) -> Option<bool> {
     if let Some(c) = crate::view_cmds::checked(app, id) {
         return Some(c);
     }
+    if let Some(c) = crate::analysis_ui::checked(app, id).or_else(|| crate::workspace_ui::checked(app, id)).or_else(|| crate::file_ui::checked(app, id)) {
+        return Some(c);
+    }
+    if let Some(c) = crate::preset_panels::checked(app, id) {
+        return Some(c);
+    }
+    if let Some(c) = crate::type_panels_ui::checked(app, id) {
+        return Some(c);
+    }
     if let Some(alias) = panel_alias(id) {
         return checked(app, alias);
+    }
+    if id == "select.isolateLayers" {
+        return Some(!app.session.active()?.isolated_layers.is_empty());
     }
     if id == "view.proofColors" || id == "view.gamutWarning" {
         let d = app.session.active()?;
@@ -367,6 +424,10 @@ fn checked(app: &PhotocraftApp, id: &str) -> Option<bool> {
             "grayscale" => Some(d.mode == ColorMode::Grayscale),
             "cmyk" => Some(d.mode == ColorMode::Cmyk),
             "lab" => Some(d.mode == ColorMode::Lab),
+            "multichannel" => Some(d.mode == ColorMode::Multichannel),
+            "indexedColor" => Some(d.mode == ColorMode::Indexed),
+            "bitmap" => Some(d.mode == ColorMode::Bitmap),
+            "duotone" => Some(d.mode == ColorMode::Duotone),
             "bits8" => Some(d.depth == SampleType::U8),
             "bits16" => Some(d.depth == SampleType::U16),
             "bits32" => Some(d.depth == SampleType::F32),
@@ -413,7 +474,7 @@ pub struct MenuItem {
 /// Is `id` implemented by the engine or the shell (a live menu item)? Shared by the menus and
 /// the parity report ([`crate::parity`]).
 pub fn is_live(id: &str) -> bool {
-    photocraft_engine::commands::find(id).is_some() || UI_COMMANDS.iter().any(|c| c.0 == id) || panel_alias(id).is_some() || workspace_name(id).is_some() || proof_preset(id).is_some() || id == "view.proofSetup.custom" || crate::view_cmds::handles(id)
+    photocraft_engine::commands::find(id).is_some() || UI_COMMANDS.iter().any(|c| c.0 == id) || panel_alias(id).is_some() || workspace_name(id).is_some() || proof_preset(id).is_some() || id == "view.proofSetup.custom" || crate::view_cmds::handles(id) || crate::analysis_ui::handles(id) || crate::workspace_ui::handles(id) || crate::preset_panels::handles(id) || crate::type_panels_ui::handles(id)
 }
 
 pub fn menu_items(app: &PhotocraftApp) -> Vec<MenuItem> {
@@ -575,6 +636,10 @@ fn render_level(ui: &mut egui::Ui, items: &[&MenuItem], depth: usize, clicked: &
 
 /// Workspace presets (Window → Workspace): which panels are visible.
 pub fn apply_workspace(app: &mut PhotocraftApp) {
+    // Saved workspaces (Window › Workspace › New Workspace…) restore their own layout.
+    if crate::workspace_ui::apply_custom(app) {
+        return;
+    }
     let p = &mut app.ui.panels;
     let (nav, color, layers, history, props) = match app.ui.workspace.as_str() {
         "Photography" => (true, false, true, true, true),

@@ -3366,8 +3366,10 @@ name = "photocraft-engine"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "flate2",
  "photocraft-algo",
  "photocraft-cms",
+ "photocraft-codecs",
  "photocraft-color",
  "photocraft-compose",
  "photocraft-doc",
@@ -3379,6 +3381,7 @@ dependencies = [
  "photocraft-raster",
  "photocraft-text",
  "photocraft-vector",
+ "rayon",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -3496,6 +3499,7 @@ dependencies = [
 name = "photocraft-text"
 version = "0.1.0"
 dependencies = [
+ "flate2",
  "parley",
  "photocraft-color",
  "photocraft-doc",

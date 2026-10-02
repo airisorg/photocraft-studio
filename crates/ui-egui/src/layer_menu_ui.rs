@@ -1,0 +1,132 @@
+//! Layers panel right-click menu in Photoshop's order. Items are command ids from the menu catalog;
+//! unavailable ones are greyed using the same enablement as the main menus. Items marked as menu
+//! invocations (`Value::Null` params) go through `menus::invoke`, so dialogs open like in the menu bar.
+
+use photocraft_doc::{Layer, LayerContent};
+use serde_json::{Value, json};
+
+/// One entry: label, command id. `None` = separator.
+pub type Entry = Option<(&'static str, &'static str)>;
+
+/// The context menu entries for a layer (Photoshop 2026 order, trimmed to the layer kind).
+pub fn entries(l: &Layer, multi: bool) -> Vec<Entry> {
+    let mut v: Vec<Entry> = vec![Some(("Blending Options…", "layer.layerStyle.blendingOptions"))];
+    v.push(None);
+    v.push(Some((if multi { "Duplicate Layers…" } else { "Duplicate Layer…" }, "layer.duplicate")));
+    v.push(Some((if multi { "Delete Layers" } else { "Delete Layer" }, "layer.delete")));
+    if !multi {
+        v.push(Some(("Group from Layers…", "layer.groupLayers")));
+    }
+    v.push(None);
+    v.push(Some(("Quick Export As PNG", "layer.quickExportAsPng")));
+    v.push(Some(("Export As…", "layer.exportAs")));
+    v.push(None);
+    v.push(Some(("Artboard from Layers…", "layer.new.artboardFromLayers")));
+    v.push(Some(("Frame from Layers…", "layer.new.frameFromLayers")));
+    v.push(None);
+    v.push(Some(("Convert to Smart Object", "layer.smartObjects.convertToSmartObject")));
+    match &l.content {
+        LayerContent::Text(_) => v.push(Some(("Rasterize Type", "layer.rasterize.type"))),
+        LayerContent::Shape(_) => v.push(Some(("Rasterize Layer", "layer.rasterize.shape"))),
+        LayerContent::Smart(_) => v.push(Some(("Rasterize Layer", "layer.rasterize.smartObject"))),
+        LayerContent::Fill(_) => v.push(Some(("Rasterize Layer", "layer.rasterize.fillContent"))),
+        _ => v.push(Some(("Rasterize Layer", "layer.rasterize.layer"))),
+    }
+    v.push(None);
+    if l.mask.is_some() {
+        v.push(Some(("Disable Layer Mask", "layer.layerMask.enabled")));
+        v.push(Some(("Apply Layer Mask", "layer.layerMask.apply")));
+        v.push(Some(("Delete Layer Mask", "layer.layerMask.delete")));
+    } else {
+        v.push(Some(("Add Layer Mask", "layer.layerMask.revealAll")));
+    }
+    v.push(Some((if l.clipped { "Release Clipping Mask" } else { "Create Clipping Mask" }, if l.clipped { "layer.releaseClippingMask" } else { "layer.createClippingMask" })));
+    v.push(None);
+    v.push(Some(("Link Layers", "layer.linkLayers")));
+    v.push(Some(("Select Linked Layers", "layer.selectLinkedLayers")));
+    v.push(None);
+    v.push(Some(("Copy Layer Style", "layer.layerStyle.copyLayerStyle")));
+    v.push(Some(("Paste Layer Style", "layer.layerStyle.pasteLayerStyle")));
+    v.push(Some(("Clear Layer Style", "layer.layerStyle.clear")));
+    v.push(None);
+    if multi {
+        v.push(Some(("Merge Layers", "layer.mergeLayers")));
+    } else {
+        v.push(Some(("Merge Down", "layer.mergeDown")));
+    }
+    v.push(Some(("Merge Visible", "layer.mergeVisible")));
+    v.push(Some(("Flatten Image", "layer.flattenImage")));
+    v
+}
+
+/// Render the menu. Pushes `(command, params)` actions; `Value::Null` params mean "invoke like the
+/// menu item" (opens the command's dialog when it has one).
+pub fn show(app: &crate::PhotocraftApp, ui: &mut egui::Ui, l: &Layer, on_set: bool, actions: &mut Vec<(String, Value)>) -> bool {
+    ui.set_min_width(220.0);
+    let mut rename = false;
+    let mut last_sep = true;
+    for e in entries(l, on_set) {
+        match e {
+            None => {
+                if !last_sep {
+                    ui.separator();
+                }
+                last_sep = true;
+            }
+            Some((label, id)) => {
+                // Skip commands this build doesn't have rather than showing dead items.
+                if photocraft_engine::commands::find(id).is_none() && !crate::menu_catalog::CATALOG.iter().any(|m| m.3 == id) {
+                    continue;
+                }
+                last_sep = false;
+                // Enablement is exact for the active layer (or the selection); another row is
+                // selected first when clicked, so its items stay available.
+                let is_active = app.session.active().is_some_and(|s| s.active_layer == Some(l.id));
+                let enabled = if on_set || is_active { crate::menus::is_enabled(app, id) } else { true };
+                if ui.add_enabled(enabled, egui::Button::new(label)).clicked() {
+                    if !on_set {
+                        actions.push(("layer.select".into(), json!({"layer": l.id.0})));
+                    }
+                    actions.push((id.into(), Value::Null));
+                    ui.close();
+                }
+            }
+        }
+    }
+    ui.separator();
+    if ui.button("Rename Layer…").clicked() {
+        rename = true;
+        ui.close();
+    }
+    rename
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn entries_follow_layer_state() {
+        let mut s = photocraft_engine::Session::new();
+        s.execute("file.new", json!({"width": 10, "height": 10})).unwrap();
+        s.execute("layer.new.layer", json!({})).unwrap();
+        let st = s.active().unwrap();
+        let l = st.doc.layer(st.active_layer.unwrap()).unwrap().clone();
+        let ids: Vec<&str> = entries(&l, false).into_iter().flatten().map(|e| e.1).collect();
+        assert_eq!(ids.first(), Some(&"layer.layerStyle.blendingOptions"));
+        assert!(ids.contains(&"layer.mergeDown") && !ids.contains(&"layer.mergeLayers"));
+        assert!(ids.contains(&"layer.layerMask.revealAll"));
+        let ids: Vec<&str> = entries(&l, true).into_iter().flatten().map(|e| e.1).collect();
+        assert!(ids.contains(&"layer.mergeLayers"));
+    }
+
+    #[test]
+    fn every_entry_is_a_known_command() {
+        let mut s = photocraft_engine::Session::new();
+        s.execute("file.new", json!({"width": 10, "height": 10})).unwrap();
+        let l = s.active().unwrap().doc.layers[0].clone();
+        for (_, id) in entries(&l, false).into_iter().flatten() {
+            assert!(crate::menu_catalog::CATALOG.iter().any(|m| m.3 == id) || photocraft_engine::commands::find(id).is_some(), "{id}");
+        }
+    }
+}

@@ -163,14 +163,24 @@ fn sample(pre: &Document, id: LayerId, surf: &Surface, which: SampleLayers, rect
     }
 }
 
-/// Integer clone offset from `offset` or `source` (source − first point).
-fn clone_offset(p: &Value, stroke: &Stroke, cmd: &str) -> Result<(i32, i32)> {
-    if let Some((dx, dy)) = point(p, "offset") {
-        return Ok((dx.round() as i32, dy.round() as i32));
-    }
-    let (sx, sy) = point(p, "source").ok_or_else(|| bad(cmd, "missing `source` ([x,y]) or `offset` ([dx,dy])"))?;
+/// Where a clone stroke samples: `offset` / `source` params, else the active Clone Source slot,
+/// with the slot's (or the call's) scale, rotation and flips (see `presets::clone_source`).
+fn clone_mapping(s: &mut Session, p: &Value, stroke: &Stroke, cmd: &str) -> Result<crate::presets::clone_source::Mapping> {
     let f = stroke.points[0];
-    Ok(((sx - f.x).round() as i32, (sy - f.y).round() as i32))
+    crate::presets::clone_source::mapping(s, p, (f.x, f.y), cmd)
+}
+
+/// Source pixels for destination `rect`: a translated read, or a bilinear resample when the
+/// clone source is scaled, rotated or flipped.
+fn clone_sample(pre: &Document, id: LayerId, surf: &Surface, which: SampleLayers, rect: Rect, map: &crate::presets::clone_source::Mapping) -> Region {
+    if map.is_translation() {
+        let off = map.offset();
+        let mut r = sample(pre, id, surf, which, rect.translate(off.0, off.1));
+        r.rect = rect;
+        return r;
+    }
+    let src = sample(pre, id, surf, which, map.source_rect(rect));
+    crate::presets::clone_source::resample(&src, rect, map, alpha_index(&surf.format()))
 }
 
 /// Result JSON shared by Clone Stamp and Healing Brush: the offset used and where the next stroke
@@ -210,15 +220,15 @@ fn clamp_samples(fmt: &PixelFormat, data: &mut [f32]) {
 fn clone_stamp(s: &mut Session, p: &Value) -> Result<Value> {
     const CMD: &str = "paint.cloneStamp";
     let (stroke, id) = parse_brush(s, p, CMD)?;
-    let off = clone_offset(p, &stroke, CMD)?;
     let which = sample_layers(p, CMD)?;
     let mode = blend_param(p, CMD)?;
     let aligned = flag(p, "aligned", true);
+    let map = clone_mapping(s, p, &stroke, CMD)?;
+    let off = map.offset();
     let dmg = run_stroke(s, "Clone Stamp", id, |pre, surf, sel, lock| {
         let (bounds, cov) = stroke_coverage(&stroke);
         // Samples come from the pre-stroke state, so pixels painted earlier in the stroke are never re-cloned.
-        let mut paint = sample(pre, id, surf, which, bounds.translate(off.0, off.1));
-        paint.rect = bounds;
+        let paint = clone_sample(pre, id, surf, which, bounds, &map);
         Ok(apply_coverage(surf, bounds, &cov, stroke.brush.opacity, sel, lock, &paint, mode))
     })?;
     Ok(clone_result(dmg, off, aligned, p, &stroke))
@@ -265,16 +275,16 @@ fn heal_region(fmt: &PixelFormat, src: &Region, dst: &Region, mask: &[bool]) -> 
 fn healing_brush(s: &mut Session, p: &Value) -> Result<Value> {
     const CMD: &str = "paint.healingBrush";
     let (stroke, id) = parse_brush(s, p, CMD)?;
-    let off = clone_offset(p, &stroke, CMD)?;
     let which = sample_layers(p, CMD)?;
     let mode = blend_param(p, CMD)?;
     let aligned = flag(p, "aligned", true);
+    let map = clone_mapping(s, p, &stroke, CMD)?;
+    let off = map.offset();
     let dmg = run_stroke(s, "Healing Brush", id, |pre, surf, sel, lock| {
         let (bounds, cov) = stroke_coverage(&stroke);
         let (g, cov) = pad_coverage(bounds, &cov, 2);
         let fmt = surf.format();
-        let mut src = sample(pre, id, surf, which, g.translate(off.0, off.1));
-        src.rect = g;
+        let src = clone_sample(pre, id, surf, which, g, &map);
         // The destination the texture is fitted to: the layer itself, or what the user sees when
         // sampling several layers (so healing onto an empty layer matches the composite).
         let dst = if which == SampleLayers::Current { Region::read(surf, g) } else { composite_region(pre, id, which, g, fmt) };

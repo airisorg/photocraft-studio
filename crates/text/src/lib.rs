@@ -15,10 +15,13 @@
 
 pub mod engine_data;
 pub mod fonts;
+pub mod glyphs;
 pub mod layout;
 pub mod psd;
+pub mod psd_styles;
 pub mod raster;
 pub mod render;
+pub mod spell;
 pub mod warp;
 
 use photocraft_color::PixelFormat;

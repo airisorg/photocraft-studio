@@ -18,6 +18,7 @@ mod fidelity;
 mod format;
 mod image;
 mod options;
+pub mod web;
 
 pub use crate::error::CodecError;
 pub use crate::fidelity::{FidelityWarning, fidelity_warnings, fidelity_warnings_with};

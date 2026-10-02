@@ -24,16 +24,41 @@ fn vivid_light_ps(cb: f32, cs: f32) -> f32 {
     }
 }
 
+/// Backdrop values within `EDGE` of 0 / 1 count as exact in the modes whose result jumps there
+/// (Color Burn / Dodge, Hard Mix): a composited value that should be 1 can come out a rounding
+/// step below it (and differently on the GPU), flipping the corner case by up to 255 levels.
+pub const EDGE: f32 = 1e-4;
+
+fn color_burn(cb: f32, cs: f32) -> f32 {
+    if cb >= 1.0 - EDGE {
+        1.0
+    } else if cs <= 0.0 {
+        0.0
+    } else {
+        1.0 - ((1.0 - cb) / cs).min(1.0)
+    }
+}
+
+fn color_dodge(cb: f32, cs: f32) -> f32 {
+    if cb <= EDGE {
+        0.0
+    } else if cs >= 1.0 {
+        1.0
+    } else {
+        (cb / (1.0 - cs)).min(1.0)
+    }
+}
+
 fn vivid_light_generic(cb: f32, cs: f32) -> f32 {
     if cs <= 0.5 {
-        if cb >= 1.0 {
+        if cb >= 1.0 - EDGE {
             1.0
         } else if cs <= 0.0 {
             0.0
         } else {
             1.0 - ((1.0 - cb) / (2.0 * cs)).min(1.0)
         }
-    } else if cb <= 0.0 {
+    } else if cb <= EDGE {
         0.0
     } else if cs >= 1.0 {
         1.0
@@ -51,6 +76,8 @@ pub fn blend_rgb(mode: BlendMode, cb: [f32; 3], cs: [f32; 3]) -> [f32; 3] {
     match mode {
         BlendMode::VividLight => std::array::from_fn(|i| vivid_light_ps(cb[i], cs[i])),
         BlendMode::HardMix => std::array::from_fn(|i| hard_mix_ps(cb[i], cs[i])),
+        BlendMode::ColorBurn => std::array::from_fn(|i| color_burn(cb[i], cs[i])),
+        BlendMode::ColorDodge => std::array::from_fn(|i| color_dodge(cb[i], cs[i])),
         m => generic::blend_rgb(m, cb, cs),
     }
 }
@@ -92,8 +119,50 @@ pub fn composite(mode: BlendMode, backdrop: [f32; 4], source: [f32; 4], opacity:
     out
 }
 
+/// Photoshop's "Blend Text Colors Using Gamma" (Color Settings › Advanced, on at 1.45 by
+/// default): type layers mix their colour with the backdrop in a gamma-1.45 space, so
+/// anti-aliased glyph edges come out lighter over dark backdrops than a linear mix (fitted on
+/// psd-tools layer_effects.psd: a 69 % edge pixel of a blue overlay over grey is 57/255 in red,
+/// a linear mix gives 40).
+pub const TEXT_GAMMA: f32 = 1.45;
+
+/// [`composite`] with the coverage mix done in a `gamma` space (`gamma == 1` is [`composite`]).
+pub fn composite_gamma(mode: BlendMode, backdrop: [f32; 4], source: [f32; 4], opacity: f32, gamma: f32) -> [f32; 4] {
+    if gamma == 1.0 {
+        return composite(mode, backdrop, source, opacity);
+    }
+    let ab = backdrop[3];
+    let as_ = source[3] * opacity;
+    if as_ <= 0.0 {
+        return backdrop;
+    }
+    let ao = as_ + ab * (1.0 - as_);
+    if ao <= 0.0 {
+        return [0.0; 4];
+    }
+    let cb = [backdrop[0], backdrop[1], backdrop[2]];
+    let cs = [source[0], source[1], source[2]];
+    let b = blend_rgb(mode, cb, cs);
+    let (wb, ws, wbs) = ((1.0 - as_) * ab / ao, (1.0 - ab) * as_ / ao, as_ * ab / ao);
+    let g = |v: f32| v.max(0.0).powf(gamma);
+    let mut out = [0.0f32; 4];
+    for i in 0..3 {
+        out[i] = (wb * g(cb[i]) + ws * g(cs[i]) + wbs * g(b[i])).powf(1.0 / gamma);
+    }
+    out[3] = ao;
+    out
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn text_gamma_lightens_dark_edges() {
+        // 69 % blue (0, 51, 153) over grey 129: Photoshop shows (57, 80, 146).
+        let r = composite_gamma(BlendMode::Normal, [129.0 / 255.0, 129.0 / 255.0, 129.0 / 255.0, 1.0], [0.0, 0.2, 0.6, 0.686], 1.0, TEXT_GAMMA);
+        assert!((r[0] * 255.0 - 57.0).abs() < 2.0 && (r[1] * 255.0 - 80.0).abs() < 2.0 && (r[2] * 255.0 - 146.0).abs() < 2.0, "{r:?}");
+        assert_eq!(composite_gamma(BlendMode::Multiply, [0.2, 0.4, 0.6, 0.7], [0.5, 0.1, 0.9, 0.5], 0.8, 1.0), composite(BlendMode::Multiply, [0.2, 0.4, 0.6, 0.7], [0.5, 0.1, 0.9, 0.5], 0.8));
+    }
+
     use super::*;
 
     #[test]
@@ -113,9 +182,17 @@ mod tests {
     }
 
     #[test]
+    fn burn_and_dodge_treat_near_extremes_as_exact() {
+        assert_eq!(color_burn(1.0 - 1e-6, 0.0), 1.0);
+        assert_eq!(color_dodge(1e-6, 1.0), 0.0);
+        assert!((color_burn(0.5, 0.5) - 0.0).abs() < 1e-6);
+        assert!((color_dodge(0.25, 0.5) - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
     fn other_modes_delegate() {
         for m in BlendMode::LAYER_MODES {
-            if matches!(m, BlendMode::VividLight | BlendMode::HardMix) {
+            if matches!(m, BlendMode::VividLight | BlendMode::HardMix | BlendMode::ColorBurn | BlendMode::ColorDodge) {
                 continue;
             }
             let (cb, cs) = ([0.2, 0.5, 0.9], [0.7, 0.1, 0.4]);

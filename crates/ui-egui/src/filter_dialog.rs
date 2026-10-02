@@ -123,6 +123,10 @@ pub const PREVIEWED: &[&str] = &[
 ];
 
 pub fn has_dialog(command: &str) -> bool {
+    // The Filter Gallery has its own full-window dialog (gallery_ui).
+    if command == "filter.filterGallery" {
+        return false;
+    }
     (command.starts_with("filter.") || command.starts_with("select.modify.") || PREVIEWED.contains(&command) || matches!(command, "image.trim" | "view.newGuide" | "select.refineEdge" | "edit.assignProfile" | "edit.convertToProfile" | "view.proofSetup" | "layer.layerStyle.globalLight" | "image.mode.colorTable")) && photocraft_engine::commands::find(command).is_some_and(|c| !parse_spec(c.params).is_empty())
 }
 
@@ -161,7 +165,7 @@ pub fn open(app: &mut PhotocraftApp, command: &str) -> Option<u64> {
     Some(id)
 }
 
-fn label(key: &str) -> String {
+pub(crate) fn label(key: &str) -> String {
     // camelCase → "Camel Case"
     let mut s = String::new();
     for (i, ch) in key.chars().enumerate() {

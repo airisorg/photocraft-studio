@@ -50,10 +50,15 @@ pub fn tool_icon(t: Tool) -> &'static str {
         Tool::Brush => "brush",
         Tool::Eraser => "eraser",
         Tool::Eyedropper => "pipette",
+        Tool::Ruler => "ruler",
+        Tool::Note => "message-square",
+        Tool::Count => "circle-dot",
         Tool::Lasso => "lasso",
         Tool::PolygonLasso => "pentagon",
         Tool::MagicWand => "wand-sparkles",
         Tool::Crop => "crop",
+        Tool::Slice => "slice-knife",
+        Tool::SliceSelect => "square-dashed-mouse-pointer",
         Tool::Gradient => "blend",
         Tool::PaintBucket => "paint-bucket",
         Tool::Type => "type",
@@ -77,6 +82,7 @@ pub fn tool_icon(t: Tool) -> &'static str {
         Tool::Triangle => "triangle",
         Tool::Polygon => "pentagon",
         Tool::Line => "slash",
+        Tool::CustomShape => "cloud",
     }
 }
 

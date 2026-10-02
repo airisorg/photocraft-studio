@@ -22,7 +22,7 @@ The transport is `apps/photocraft/src/control_server.rs`, and the handlers are i
 - `ui.inspect`: full UI state (tool, panels, views, dialogs, windows, menu tree, window size). `view` holds the View/Window/Type preferences: `screen_mode`, `extras`, `show` and `snap_to` flags, `flip_horizontal`, `arrange` (Window › Arrange layout), pixel aspect, font preview size, language options
 - `ui.set {tool?, panels?, dockTabs?, maskTarget?, zoom?, center?, fit?, theme?, brushSize?, brushSection?, brushTab?}`: change UI state (`brushSection` indexes the Brush Settings sections, `brushTab` 0 = Brush Settings, 1 = Brushes)
 - `ui.menu.invoke {id}` / `ui.menu.list`: activate a menu item by id; list the menu tree
-- `ui.dialog.open {kind, fields?}` / `ui.dialog.set {dialog, field, value}` / `ui.dialog.confirm {dialog}` / `ui.dialog.cancel {dialog}`
+- `ui.dialog.open {kind, fields?}` (kinds `newDocument`, `about`, `layerStyle {effect?}`, `colorPicker {target: foreground|background}`, `command {command}`) / `ui.dialog.set {dialog, field, value}` / `ui.dialog.confirm {dialog}` / `ui.dialog.cancel {dialog}`
 - `ui.window.open {document?}` / `ui.window.close {window}`: extra document windows
 - `ui.pointer {events: [{kind: down|move|up, x, y, pressure?}], modifiers?}`: drive the active tool in document coordinates
 - `ui.key {key, command?, shift?, alt?, ctrl?}` (flags may also be grouped under `modifiers`): press and release a key, e.g. `{"key": "ArrowLeft", "shift": true}`

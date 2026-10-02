@@ -18,7 +18,11 @@ pub fn finish_stroke(app: &mut PhotocraftApp, tool: Tool, points: &[[f64; 3]], m
         Tool::SpotHealing => ("paint.spotHealing", json!({"type": o.spot_type})),
         Tool::Healing | Tool::CloneStamp => {
             let mut p = json!({"aligned": o.clone_aligned, "sampleLayer": o.clone_sample});
-            match (app.ui.clone_offset.filter(|_| o.clone_aligned), app.ui.clone_source) {
+            // The Clone Source panel's active slot (set by ⌥-click) drives the stroke: the engine
+            // keeps the aligned pairing and applies the slot's scale/rotation/flip.
+            let slot = app.session.presets.clone.active().source.is_some();
+            match (app.ui.clone_offset.filter(|_| o.clone_aligned && !slot), app.ui.clone_source.filter(|_| !slot)) {
+                _ if slot => {}
                 (Some(off), _) => p["offset"] = json!(off),
                 (None, Some(src)) => p["source"] = json!(src),
                 (None, None) => {
@@ -74,6 +78,7 @@ pub fn finish_object_selection(app: &mut PhotocraftApp, start: [f64; 2], end: [f
 pub fn set_source(app: &mut PhotocraftApp, x: f64, y: f64) {
     app.ui.clone_source = Some([x.round(), y.round()]);
     app.ui.clone_offset = None;
+    let _ = app.run("cloneSource.set", json!({"source": [x.round(), y.round()]}));
     app.ui.status = format!("Clone source set at {:.0}, {:.0}", x, y);
     app.ui.status_error = false;
 }
@@ -83,9 +88,10 @@ pub fn draw_source_marker(app: &PhotocraftApp, painter: &egui::Painter, xf: &Vie
     if !matches!(app.ui.tool, Tool::CloneStamp | Tool::Healing) {
         return;
     }
-    let src = match (app.ui.clone_offset, app.hover_doc, app.ui.clone_source) {
-        (Some(off), Some(h), _) => Some([h[0] + off[0], h[1] + off[1]]),
-        (None, _, Some(s)) => Some(s),
+    let src = match (crate::preset_panels::clone_sample_point(app, app.hover_doc), app.ui.clone_offset, app.hover_doc, app.ui.clone_source) {
+        (Some(p), ..) => Some(p),
+        (None, Some(off), Some(h), _) => Some([h[0] + off[0], h[1] + off[1]]),
+        (None, None, _, Some(s)) => Some(s),
         _ => None,
     };
     let Some(s) = src else { return };

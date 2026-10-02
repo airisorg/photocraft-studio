@@ -642,7 +642,7 @@ fn effect_maps_are_cached_and_invalidated_by_pixel_changes() {
     let mut l = solid_layer("fx", Rect::new(16, 16, 48, 48), [1.0, 0.0, 0.0, 1.0]);
     l.effects.items.push(photocraft_doc::Effect::default_drop_shadow());
     doc.layers.push(l);
-    let cx = Ctx { canvas: doc.bounds(), transfer: adjust::Transfer::Srgb, light: doc.global_light, patterns: &doc.patterns };
+    let cx = Ctx { canvas: doc.bounds(), transfer: adjust::Transfer::Srgb, light: doc.global_light, patterns: &doc.patterns, mode: doc.mode };
     let a = effect_maps(&doc.layers[1], &cx);
     let b = effect_maps(&doc.layers[1], &cx);
     assert!(std::sync::Arc::ptr_eq(&a, &b), "second request hits the cache");
@@ -755,4 +755,22 @@ fn linked_pattern_overlay_anchors_at_the_effects_reference_point() {
     d.layers[1].effects.reference = Some((11.0, 0.0));
     assert!(close4(px(&d, 11, 20), [1.0, 0.0, 0.0, 1.0]), "{:?}", px(&d, 11, 20));
     assert!(close4(px(&d, 12, 20), [0.0, 0.0, 1.0, 1.0]), "{:?}", px(&d, 12, 20));
+}
+
+#[test]
+fn channel_restrictions_keep_the_backdrop() {
+    // Blue left out (Photoshop's Advanced Blending › Channels: R, G only).
+    let mut d = doc_white(8, 8);
+    let mut l = solid_layer("dark", Rect::new(0, 0, 8, 8), [0.2, 0.3, 0.4, 1.0]);
+    l.excluded_channels = 0b100;
+    d.layers.push(l);
+    assert!(close4(px(&d, 1, 1), [0.2, 0.3, 1.0, 1.0]));
+    // Adjustment layers honour it too.
+    let mut inv = Layer::new("inv", LayerContent::Adjustment(Adjustment::Invert));
+    inv.excluded_channels = 0b001;
+    d.layers.push(inv);
+    assert!(close4(px(&d, 1, 1), [0.2, 0.7, 0.0, 1.0]));
+    // CMYK documents composite in display RGB: no exact equivalent, ignored.
+    assert_eq!(channel_weights(&d.layers[1], ColorMode::Cmyk), None);
+    assert_eq!(channel_weights(&d.layers[1], ColorMode::Rgb), Some([1.0, 1.0, 0.0]));
 }

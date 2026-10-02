@@ -17,10 +17,11 @@
 //!   each finished chunk is handed to a caller-supplied sink, e.g. to encode it straight into a
 //!   display texture — no readback.
 //!
-//! Anything the planner can't express (vector masks, layers clipped to pass-through groups, stroked
-//! shapes with clipped layers, uncached pattern fills, artboards, documents or effect regions
-//! larger than the device's texture limit) returns [`Unsupported`]; callers fall back to the CPU
-//! compositor.
+//! Vector masks (rasterised once per mask state into a combined mask texture), layers clipped to
+//! pass-through groups, stroked shapes with clipped layers (fill and stroke split once per shape
+//! state), pattern fills and artboards are planned like everything else. What remains
+//! (Multichannel documents, documents or effect regions larger than the device's texture limit)
+//! returns [`Unsupported`]; callers fall back to the CPU compositor.
 #![forbid(unsafe_code)]
 
 pub mod bounds;
@@ -96,9 +97,9 @@ enum TexKind {
 impl TexKind {
     fn for_surface(role: Role, f: PixelFormat) -> Self {
         match role {
-            Role::Content if f == PixelFormat::RGBA8 => TexKind::Rgba8Direct,
-            Role::Content if f.sample == SampleType::U8 => TexKind::Rgba8,
-            Role::Content => TexKind::Rgba16F,
+            Role::Content | Role::Stroke if f == PixelFormat::RGBA8 => TexKind::Rgba8Direct,
+            Role::Content | Role::Stroke if f.sample == SampleType::U8 => TexKind::Rgba8,
+            Role::Content | Role::Stroke => TexKind::Rgba16F,
             Role::Mask if f == PixelFormat::GRAY8 => TexKind::R8Direct,
             Role::Mask => TexKind::R32F,
         }
@@ -498,11 +499,11 @@ impl Compositor {
         let mut maps = Vec::with_capacity(plan.passes.len());
         let mut patterns = Vec::with_capacity(plan.passes.len());
         for p in &plan.passes {
-            let tex = p.tex.and_then(|t| self.sync(device, queue, doc, t.layer, t.role, t.surface, tile_grid(canvas), stats)).map(|(k, r)| {
+            let tex = p.tex.as_ref().and_then(|t| self.sync(device, queue, doc, t.layer, t.role, t.surface.get(), tile_grid(canvas), stats)).map(|(k, r)| {
                 keys.push(k);
                 (keys.len() - 1, r)
             });
-            let mask = p.mask.and_then(|m| self.sync(device, queue, doc, m.layer, Role::Mask, m.surface, tile_grid(canvas), stats)).map(|(k, r)| {
+            let mask = p.mask.as_ref().and_then(|m| self.sync(device, queue, doc, m.layer, Role::Mask, m.surface.get(), tile_grid(canvas), stats)).map(|(k, r)| {
                 keys.push(k);
                 (keys.len() - 1, r)
             });

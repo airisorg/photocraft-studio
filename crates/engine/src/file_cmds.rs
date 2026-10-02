@@ -75,11 +75,11 @@ fn is_file(_path: &str) -> bool {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn read_file(path: &str) -> Result<Vec<u8>> {
+pub(crate) fn read_file(path: &str) -> Result<Vec<u8>> {
     std::fs::read(path).map_err(|e| EngineError::Other(format!("{path}: {e}")))
 }
 #[cfg(target_arch = "wasm32")]
-fn read_file(path: &str) -> Result<Vec<u8>> {
+pub(crate) fn read_file(path: &str) -> Result<Vec<u8>> {
     Err(EngineError::Other(format!("cannot read {path}: no file system on the web")))
 }
 
@@ -97,7 +97,7 @@ pub(crate) fn write_file(path: &str, _bytes: &[u8]) -> Result<()> {
 
 /// Files of a folder that look like images we can open, sorted by name.
 #[cfg(not(target_arch = "wasm32"))]
-fn list_images(dir: &str) -> Result<Vec<String>> {
+pub(crate) fn list_images(dir: &str) -> Result<Vec<String>> {
     let rd = std::fs::read_dir(dir).map_err(|e| EngineError::Other(format!("{dir}: {e}")))?;
     let mut out: Vec<String> = rd
         .filter_map(|e| e.ok())
@@ -109,14 +109,14 @@ fn list_images(dir: &str) -> Result<Vec<String>> {
     Ok(out)
 }
 #[cfg(target_arch = "wasm32")]
-fn list_images(dir: &str) -> Result<Vec<String>> {
+pub(crate) fn list_images(dir: &str) -> Result<Vec<String>> {
     Err(EngineError::Other(format!("cannot list {dir}: no file system on the web")))
 }
 
 /// Extensions the batch commands pick up from a folder.
 const OPENABLE: &[&str] = &["psd", "psb", "pcraft", "png", "jpg", "jpeg", "tif", "tiff", "webp", "gif", "bmp", "tga", "exr", "hdr", "qoi", "ico", "pnm", "ppm", "pgm"];
 
-fn file_name(path: &str) -> String {
+pub(crate) fn file_name(path: &str) -> String {
     path.rsplit(['/', '\\']).next().unwrap_or(path).to_string()
 }
 
@@ -145,7 +145,7 @@ pub(crate) fn sanitize(name: &str) -> String {
     if s.is_empty() { "layer".into() } else { s }
 }
 
-fn import(name: &str, bytes: &[u8]) -> Result<Document> {
+pub(crate) fn import(name: &str, bytes: &[u8]) -> Result<Document> {
     photocraft_io::import(name, bytes).map(|r| r.document).map_err(|e| EngineError::Other(format!("{name}: {e}")))
 }
 
@@ -180,7 +180,7 @@ fn size_param(p: &Value, key: &str) -> Option<f64> {
 // ---------- pixels ----------
 
 /// A composite buffer as a surface in `fmt` (straight RGBA → the format's model and depth).
-fn buffer_surface(buf: &photocraft_compose::Buffer, fmt: PixelFormat) -> Surface {
+pub(crate) fn buffer_surface(buf: &photocraft_compose::Buffer, fmt: PixelFormat) -> Surface {
     let n = fmt.channels();
     let mut data = vec![0.0f32; buf.px.len() * n];
     for (p, out) in buf.px.iter().zip(data.chunks_exact_mut(n)) {
@@ -195,7 +195,7 @@ fn buffer_surface(buf: &photocraft_compose::Buffer, fmt: PixelFormat) -> Surface
 }
 
 /// The flattened image of `doc` as a surface in `fmt`, placed at the origin.
-fn flattened(doc: &Document, fmt: PixelFormat) -> Surface {
+pub(crate) fn flattened(doc: &Document, fmt: PixelFormat) -> Surface {
     buffer_surface(&photocraft_compose::flatten(doc), fmt)
 }
 
@@ -566,7 +566,7 @@ fn parse_steps(v: &Value) -> Result<Vec<(String, Value)>> {
 }
 
 /// Inputs of a batch command: `"input"` is a folder or an array of files.
-fn batch_inputs(p: &Value, cmd: &str) -> Result<Vec<String>> {
+pub(crate) fn batch_inputs(p: &Value, cmd: &str) -> Result<Vec<String>> {
     match p.get("input").or_else(|| p.get("files")) {
         Some(Value::Array(a)) => Ok(a.iter().filter_map(Value::as_str).map(str::to_string).collect()),
         Some(Value::String(dir)) => list_images(dir),
@@ -576,7 +576,7 @@ fn batch_inputs(p: &Value, cmd: &str) -> Result<Vec<String>> {
 
 /// Opens each input in a scratch session, runs `f` on it and saves it to `output` as `format`
 /// (`"same"` keeps the input's extension). Errors per file are collected, not fatal.
-fn process_files(inputs: &[String], output: &str, format: &str, quality: Option<f64>, suffix: &str, f: &dyn Fn(&mut Session) -> Result<()>) -> Value {
+pub(crate) fn process_files(inputs: &[String], output: &str, format: &str, quality: Option<f64>, suffix: &str, f: &dyn Fn(&mut Session) -> Result<()>) -> Value {
     let mut files = Vec::new();
     let mut errors = Vec::new();
     for path in inputs {

@@ -372,7 +372,7 @@ pub fn document_area(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         let live: Vec<u64> = app.session.documents().iter().flat_map(|st| [st.doc.id.0, st.doc.id.0 ^ (1u64 << 61), st.doc.id.0 ^ (1u64 << 62)]).collect();
         gpu.retain(&live);
     }
-    if app.session.documents().is_empty() {
+    if app.ui.chrome.shows_home(app.session.documents().len()) {
         start_screen(app, ui);
         return;
     }
@@ -885,6 +885,7 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
             crate::rulers::draw_guides(app, &painter, &xf, &doc);
         }
         draw_drag_preview(app, &painter, &xf);
+        draw_transform_controls(app, &painter, &xf);
         crate::snap_ui::draw(app, &painter, &xf);
         if border == photocraft_engine::prefs::CanvasBorder::Line {
             painter.rect_stroke(img_rect, 0.0, Stroke::new(1.0, Color32::from_gray(20)), egui::StrokeKind::Outside);
@@ -894,6 +895,8 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
         crate::distort_ui::draw_overlay(app, &painter, &xf);
         crate::retouch_ui::draw_source_marker(app, &painter, &xf);
         crate::vector_ui::draw_overlay(app, &painter, &xf, &doc);
+        crate::analysis_ui::draw_overlay(app, &painter, &xf);
+        crate::slice_ui::draw_overlay(app, &painter, &xf);
         // Tool cursors (Photoshop-style).
         let guide_hover = response.hover_pos().filter(|_| tool == Tool::Move).and_then(|p| {
             let d = xf.to_doc(p);
@@ -1082,10 +1085,39 @@ fn draw_tool_state(app: &PhotocraftApp, painter: &egui::Painter, xf: &ViewXform,
     }
 }
 
+/// Move tool › Show Transform Controls: the active layer's bounding box with its eight handles.
+fn draw_transform_controls(app: &mut PhotocraftApp, painter: &egui::Painter, xf: &ViewXform) {
+    if app.ui.tool != Tool::Move || !app.ui.tool_options.move_show_transform || app.ui.transform.is_some() || app.drag.is_some() {
+        return;
+    }
+    let Some(st) = app.session.active() else { return };
+    let Some(l) = st.active_layer.and_then(|id| st.doc.layer(id)) else { return };
+    if crate::doc_props_ui::is_background(&st.doc, l) {
+        return;
+    }
+    let (id, Some(surf)) = (l.id.0, l.surface().cloned()) else { return };
+    let b = app.cached_bounds(id, &surf);
+    if b.is_empty() {
+        return;
+    }
+    let r = Rect::from_two_pos(xf.to_screen(b.x0 as f32, b.y0 as f32), xf.to_screen(b.x1 as f32, b.y1 as f32));
+    let accent = crate::theme::Tokens::get(painter.ctx()).accent;
+    painter.rect_stroke(r, 0.0, Stroke::new(1.0, accent), egui::StrokeKind::Middle);
+    for p in [r.left_top(), r.center_top(), r.right_top(), r.right_center(), r.right_bottom(), r.center_bottom(), r.left_bottom(), r.left_center()] {
+        let h = Rect::from_center_size(p, vec2(7.0, 7.0));
+        painter.rect_filled(h, 0.0, Color32::WHITE);
+        painter.rect_stroke(h, 0.0, Stroke::new(1.0, accent), egui::StrokeKind::Inside);
+    }
+}
+
 fn draw_drag_preview(app: &PhotocraftApp, painter: &egui::Painter, xf: &ViewXform) {
     draw_tool_state(app, painter, xf, painter.ctx().input(|i| i.pointer.hover_pos()));
     let Some(d) = &app.drag else { return };
-    let last = d.points.last().map(|p| [p[0], p[1]]).unwrap_or(d.start);
+    let mut last = d.points.last().map(|p| [p[0], p[1]]).unwrap_or(d.start);
+    if matches!(d.tool, Tool::RectMarquee | Tool::EllipseMarquee) {
+        let o = &app.ui.tool_options;
+        last = crate::chrome_ui::marquee_end(&o.marquee_style, o.marquee_width as f64, o.marquee_height as f64, false, d.start, last);
+    }
     match d.tool {
         Tool::Brush | Tool::Eraser => {
             let c = if d.tool == Tool::Eraser { [1.0, 1.0, 1.0, 0.6] } else { app.session.tools.foreground };
@@ -1112,7 +1144,7 @@ fn draw_drag_preview(app: &PhotocraftApp, painter: &egui::Painter, xf: &ViewXfor
         Tool::Line => {
             painter.line_segment([xf.to_screen(d.start[0] as f32, d.start[1] as f32), xf.to_screen(last[0] as f32, last[1] as f32)], Stroke::new(1.0, crate::theme::Tokens::get(painter.ctx()).accent));
         }
-        Tool::RectMarquee | Tool::EllipseMarquee | Tool::ObjectSelection | Tool::Rectangle | Tool::EllipseShape | Tool::Triangle | Tool::Polygon => {
+        Tool::RectMarquee | Tool::EllipseMarquee | Tool::ObjectSelection | Tool::Rectangle | Tool::EllipseShape | Tool::Triangle | Tool::Polygon | Tool::CustomShape => {
             let r = Rect::from_two_pos(xf.to_screen(d.start[0] as f32, d.start[1] as f32), xf.to_screen(last[0] as f32, last[1] as f32));
             if matches!(d.tool, Tool::EllipseMarquee | Tool::EllipseShape) {
                 painter.add(egui::Shape::ellipse_stroke(r.center(), r.size() / 2.0, Stroke::new(1.0, Color32::WHITE)));
@@ -1163,6 +1195,16 @@ pub fn tool_event(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers)
     if crate::distort_ui::pointer(app, ev, mods) {
         return;
     }
+    // Window › Modifier Keys: sticky Shift/⌘/⌥ act as held keys.
+    let mods = crate::workspace_ui::sticky_mods(app, mods);
+    // Ruler, Count and Note tools.
+    if crate::analysis_ui::pointer(app, ev, mods) {
+        return;
+    }
+    // Slice and Slice Select tools.
+    if crate::slice_ui::pointer(app, ev, mods) {
+        return;
+    }
     let tool = app.ui.tool;
     // Move tool over a guide drags the guide (off the canvas deletes it).
     match ev {
@@ -1170,6 +1212,12 @@ pub fn tool_event(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers)
             if let Some((vertical, i)) = crate::rulers::guide_at(app, x, y) {
                 app.guide_drag = Some(crate::rulers::GuideDrag { vertical, index: Some(i), pos: if vertical { x } else { y } });
                 return;
+            }
+            // Auto-Select (or ⌘-click while it is off) picks the layer under the pointer first.
+            if app.ui.tool_options.move_auto_select != mods.command {
+                let target = app.ui.tool_options.move_target.clone();
+                let mode = if mods.shift { "add" } else { "replace" };
+                let _ = app.run("layer.pickAt", json!({"x": x, "y": y, "target": target, "mode": mode}));
             }
         }
         ToolEvent::Move { x, y, .. } => {
@@ -1281,6 +1329,9 @@ fn finish_gesture(app: &mut PhotocraftApp, d: Drag) {
             let _ = app.run("paint.stroke", json!({ "points": pts, "erase": d.tool == Tool::Eraser, "smoothing": 0.3, "target": paint_target(app) }));
         }
         Tool::RectMarquee | Tool::EllipseMarquee => {
+            let o = &app.ui.tool_options;
+            let e = crate::chrome_ui::marquee_end(&o.marquee_style, o.marquee_width as f64, o.marquee_height as f64, false, d.start, [end[0], end[1]]);
+            let end = [e[0], e[1], 1.0];
             let (x0, y0) = (d.start[0].min(end[0]).floor(), d.start[1].min(end[1]).floor());
             let (x1, y1) = (d.start[0].max(end[0]).ceil(), d.start[1].max(end[1]).ceil());
             if x1 - x0 < 2.0 || y1 - y0 < 2.0 {
@@ -1301,7 +1352,8 @@ fn finish_gesture(app: &mut PhotocraftApp, d: Drag) {
             } else {
                 "replace"
             };
-            let _ = app.run("select.rect", json!({"x": x0, "y": y0, "width": x1 - x0, "height": y1 - y0, "mode": mode, "ellipse": d.tool == Tool::EllipseMarquee}));
+            let (aa, feather) = (app.ui.tool_options.anti_alias, app.ui.tool_options.feather);
+            let _ = app.run("select.rect", json!({"x": x0, "y": y0, "width": x1 - x0, "height": y1 - y0, "mode": mode, "ellipse": d.tool == Tool::EllipseMarquee, "antiAlias": aa, "feather": feather}));
         }
         Tool::Lasso => {
             let pts: Vec<[f64; 2]> = d.points.iter().map(|p| [p[0], p[1]]).collect();

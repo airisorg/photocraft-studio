@@ -78,6 +78,13 @@ pub struct Duotone {
     pub psd_raw: Option<Vec<u8>>,
 }
 
+impl DuotoneInk {
+    /// Ink density for a gray density (0 = paper, 1 = solid) through the ink's curve.
+    pub fn density(&self, gray_density: f32) -> f32 {
+        curve_eval(&self.curve, gray_density.clamp(0.0, 1.0)).clamp(0.0, 1.0)
+    }
+}
+
 impl Duotone {
     /// Simulated print colour of a gray value (0 = black, 1 = white): inks multiply over white paper.
     pub fn render(&self, gray: f32) -> [f32; 3] {

@@ -435,3 +435,50 @@ fn moving_a_layer_moves_its_effects_reference_point() {
     let l = d.doc.layer(d.active_layer.unwrap()).unwrap();
     assert_eq!(l.effects.reference, Some((-191.0, 14.0)));
 }
+
+#[test]
+fn marquee_feather_and_anti_aliased_ellipse() {
+    let sel_at = |s: &Session, x: i32, y: i32| {
+        let mut v = [0.0f32];
+        if let Some(m) = s.active().unwrap().doc.selection.as_ref() {
+            m.read_pixel(x, y, &mut v);
+        }
+        v[0]
+    };
+    // Hard rectangle: fully in or out.
+    let mut s = session_with_doc();
+    s.execute("select.rect", json!({"x": 10, "y": 10, "width": 20, "height": 20})).unwrap();
+    assert_eq!(sel_at(&s, 10, 20), 1.0);
+    assert_eq!(sel_at(&s, 9, 20), 0.0);
+    // Feather softens only the new shape's edge: partial coverage across the boundary.
+    s.execute("select.rect", json!({"x": 10, "y": 10, "width": 20, "height": 20, "feather": 3})).unwrap();
+    let (inside, edge, outside) = (sel_at(&s, 20, 20), sel_at(&s, 10, 20), sel_at(&s, 8, 20));
+    assert!(inside > 0.95 && edge > 0.2 && edge < 0.8 && outside > 0.0 && outside < edge, "{inside} {edge} {outside}");
+    // Anti-aliased ellipse edges have partial coverage; aliased ones don't.
+    let partial = |s: &Session| (0..48).flat_map(|y| (0..64).map(move |x| (x, y))).filter(|&(x, y)| (0.01..0.99).contains(&sel_at(s, x, y))).count();
+    s.execute("select.rect", json!({"x": 5, "y": 5, "width": 40, "height": 30, "ellipse": true})).unwrap();
+    assert!(partial(&s) > 20);
+    s.execute("select.rect", json!({"x": 5, "y": 5, "width": 40, "height": 30, "ellipse": true, "antiAlias": false})).unwrap();
+    assert_eq!(partial(&s), 0);
+}
+
+#[test]
+fn file_new_resolution_and_background_color() {
+    let mut s = Session::new();
+    s.tools.background = [1.0, 0.0, 0.0, 1.0];
+    s.execute("file.new", json!({"width": 8, "height": 8, "resolution": 300, "background": "backgroundColor"})).unwrap();
+    assert_eq!(s.active().unwrap().doc.resolution_dpi, 300.0);
+    let p = px(&mut s, 2, 2);
+    assert!(p[0] > 0.99 && p[1] < 0.01, "{p:?}");
+}
+
+#[test]
+fn duplicating_the_background_unlocks_the_copy() {
+    let mut s = session_with_doc();
+    s.execute("layer.duplicate", json!({})).unwrap();
+    let st = s.active().unwrap();
+    let copy = st.doc.layer(st.active_layer.unwrap()).unwrap();
+    assert_eq!(copy.name, "Background copy");
+    assert_eq!(copy.locks, photocraft_doc::Locks::default());
+    assert!(st.doc.layers[0].locks.transparency);
+}

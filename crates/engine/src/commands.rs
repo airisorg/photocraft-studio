@@ -252,7 +252,7 @@ pub fn adjustment_from_params(kind: &str, p: &Value) -> Adjustment {
 fn build() -> Vec<CommandSpec> {
     let mut v = vec![
         // File
-        cmd!("file.new", "New…", ["File"], Some("Cmd+N"), r##"{"width":u32=1920,"height":u32=1080,"mode":"rgb|gray|cmyk|lab"="rgb","depth":8|16|32=8,"background":"white|black|transparent|#rrggbb"="white","name":str}"##, always, |s, p| {
+        cmd!("file.new", "New…", ["File"], Some("Cmd+N"), r##"{"width":u32=1920,"height":u32=1080,"mode":"rgb|gray|cmyk|lab"="rgb","depth":8|16|32=8,"background":"white|black|backgroundColor|transparent|#rrggbb"="white","resolution":ppi=72,"name":str}"##, always, |s, p| {
             let w = p.get("width").and_then(Value::as_u64).unwrap_or(1920).clamp(1, 300_000) as u32;
             let h = p.get("height").and_then(Value::as_u64).unwrap_or(1080).clamp(1, 300_000) as u32;
             let mode = match p.get("mode").and_then(Value::as_str).unwrap_or("rgb") {
@@ -267,7 +267,10 @@ fn build() -> Vec<CommandSpec> {
                 _ => SampleType::U8,
             };
             let name = p.get("name").and_then(Value::as_str).unwrap_or("Untitled").to_string();
-            let doc = match p.get("background").and_then(Value::as_str).unwrap_or("white") {
+            let res = p.get("resolution").and_then(Value::as_f64).unwrap_or(72.0).clamp(1.0, 30_000.0) as f32;
+            let bgc = s.tools.background;
+            let mut doc = match p.get("background").and_then(Value::as_str).unwrap_or("white") {
+                "backgroundColor" => Document::with_background(name, Size::new(w, h), mode, depth, Color::rgba(bgc[0], bgc[1], bgc[2], 1.0)),
                 "transparent" => {
                     let mut d = Document::new(name, Size::new(w, h), mode, depth);
                     d.layers.push(Layer::raster("Layer 1", d.pixel_format()));
@@ -279,6 +282,7 @@ fn build() -> Vec<CommandSpec> {
                     Document::with_background(name, Size::new(w, h), mode, depth, Color::rgba(c[0], c[1], c[2], c[3]))
                 }
             };
+            doc.resolution_dpi = res;
             let i = s.add_document(doc, None);
             Ok(json!({ "document": i }))
         }),
@@ -346,22 +350,37 @@ fn build() -> Vec<CommandSpec> {
             })?;
             Ok(Value::Null)
         }),
-        cmd!("select.rect", "Rectangular Selection", [], None, r##"{"x":i32,"y":i32,"width":u32,"height":u32,"mode":"replace|add|subtract|intersect"="replace","ellipse":bool=false}"##, has_doc, |s, p| {
+        cmd!("select.rect", "Rectangular Selection", [], None, r##"{"x":i32,"y":i32,"width":u32,"height":u32,"mode":"replace|add|subtract|intersect"="replace","ellipse":bool=false,"antiAlias":bool=true,"feather":px=0}"##, has_doc, |s, p| {
             let get = |k: &str| int(p, k).ok_or_else(|| bad("select.rect", format!("missing `{k}`")));
             let r = Rect::from_xywh(get("x")? as i32, get("y")? as i32, get("width")?.max(0) as u32, get("height")?.max(0) as u32);
             let mode = p.get("mode").and_then(Value::as_str).unwrap_or("replace").to_string();
             let ellipse = p.get("ellipse").and_then(Value::as_bool).unwrap_or(false);
+            // Options bar: anti-aliased ellipse edges (4x4 supersampled) and Feather (applied to the new shape only).
+            let aa = p.get("antiAlias").and_then(Value::as_bool).unwrap_or(true);
+            let feather = p.get("feather").and_then(Value::as_f64).unwrap_or(0.0).clamp(0.0, 1000.0) as f32;
             s.edit("Rectangular Marquee", |doc, _| {
                 let mut shape = Surface::new(photocraft_color::PixelFormat::GRAY8);
                 if ellipse {
                     let (cx, cy) = ((r.x0 + r.x1) as f32 / 2.0, (r.y0 + r.y1) as f32 / 2.0);
                     let (rx, ry) = (r.width() as f32 / 2.0, r.height() as f32 / 2.0);
+                    let inside = |x: f32, y: f32| {
+                        let (dx, dy) = ((x - cx) / rx, (y - cy) / ry);
+                        dx * dx + dy * dy <= 1.0
+                    };
                     for y in r.y0..r.y1 {
                         for x in r.x0..r.x1 {
-                            let dx = (x as f32 + 0.5 - cx) / rx;
-                            let dy = (y as f32 + 0.5 - cy) / ry;
-                            if dx * dx + dy * dy <= 1.0 {
-                                shape.write_pixel(x, y, &[1.0]);
+                            let (fx, fy) = (x as f32, y as f32);
+                            let corners = [(fx, fy), (fx + 1.0, fy), (fx, fy + 1.0), (fx + 1.0, fy + 1.0)].iter().filter(|(a, b)| inside(*a, *b)).count();
+                            let cov = if !aa {
+                                if inside(fx + 0.5, fy + 0.5) { 1.0 } else { 0.0 }
+                            } else if corners == 4 {
+                                1.0
+                            } else {
+                                let n = (0..16).filter(|i| inside(fx + ((i % 4) as f32 + 0.5) / 4.0, fy + ((i / 4) as f32 + 0.5) / 4.0)).count();
+                                n as f32 / 16.0
+                            };
+                            if cov > 0.0 {
+                                shape.write_pixel(x, y, &[cov]);
                             }
                         }
                     }
@@ -369,6 +388,12 @@ fn build() -> Vec<CommandSpec> {
                     shape.fill_rect(r, &[1.0]);
                 }
                 let area = doc.bounds();
+                if feather > 0.0 {
+                    use photocraft_algo::selection as sel;
+                    let m = sel::feather(&sel::mask_from_surface(Some(&shape), area), area.width() as usize, area.height() as usize, feather);
+                    doc.selection = sel::combine(doc.selection.as_ref(), &m, area, sel::SelectionMode::parse(&mode));
+                    return Ok(());
+                }
                 let old = doc.selection.take();
                 let combined = match (mode.as_str(), old) {
                     ("add", Some(o)) => combine(&o, &shape, area, |a, b| a.max(b)),
@@ -407,8 +432,14 @@ fn build() -> Vec<CommandSpec> {
             }
             let id = layer_param(s, p)?;
             let nid = s.edit("Duplicate Layer", |doc, active| {
-                let mut dup = doc.layer(id).ok_or(EngineError::NoLayer(id))?.duplicate();
+                let src = doc.layer(id).ok_or(EngineError::NoLayer(id))?;
+                // A copy of the Background layer is an ordinary, unlocked layer (Photoshop).
+                let from_background = src.name == "Background" && src.locks.transparency && doc.layers.first().is_some_and(|b| b.id == id);
+                let mut dup = src.duplicate();
                 dup.name = format!("{} copy", dup.name);
+                if from_background {
+                    dup.locks = Default::default();
+                }
                 let nid = doc.insert_above(Some(id), dup);
                 *active = Some(nid);
                 Ok(nid)
@@ -755,6 +786,7 @@ fn build() -> Vec<CommandSpec> {
     v.extend(crate::layer_style::specs());
     v.extend(crate::filters::specs());
     v.extend(crate::filters_ext::specs());
+    v.extend(crate::gallery_cmds::specs());
     v.extend(crate::type_cmds::specs());
     v.extend(crate::transform_cmds::specs());
     v.extend(crate::vector_cmds::specs());
@@ -765,24 +797,41 @@ fn build() -> Vec<CommandSpec> {
     v.extend(crate::retouch_cmds::specs());
     v.extend(crate::image_cmds::specs());
     v.extend(crate::selection_cmds::specs());
+    v.extend(crate::select_extra_cmds::specs());
     v.extend(crate::paint_cmds::specs());
     v.extend(crate::extra_cmds::specs());
     v.extend(crate::file_cmds::specs());
     v.extend(crate::type_extra_cmds::specs());
+    v.extend(crate::type_styles_cmds::specs());
+    v.extend(crate::type_spell_cmds::specs());
     v.extend(crate::smart_cmds::specs());
     v.extend(crate::layer_multi_cmds::specs());
     v.extend(crate::prefs::specs());
     v.extend(crate::edit_menu_cmds::specs());
     v.extend(crate::align_cmds::specs());
+    v.extend(crate::photo_cmds::specs());
+    v.extend(crate::lens_cmds::specs());
+    v.extend(crate::vp_cmds::specs());
     v.extend(crate::channel_cmds::specs());
     v.extend(crate::adjust_cmds::specs());
     v.extend(crate::layer_menu_cmds::specs());
     v.extend(crate::mode_cmds::specs());
+    v.extend(crate::multichannel_cmds::specs());
     v.extend(crate::pattern_cmds::specs());
     v.extend(crate::warp_cmds::specs());
     v.extend(crate::comps_cmds::specs());
     v.extend(crate::artboard_cmds::specs());
     v.extend(crate::distort_cmds::specs());
+    v.extend(crate::analysis_cmds::specs());
+    v.extend(crate::notes_cmds::specs());
+    v.extend(crate::proof_sim::specs());
+    v.extend(crate::presets::specs());
+    v.extend(crate::render_cmds::specs());
+    v.extend(crate::slice_cmds::specs());
+    v.extend(crate::web_cmds::specs());
+    v.extend(crate::automate_cmds::specs());
+    v.extend(crate::print_cmds::specs());
+    v.extend(crate::pick_cmds::specs());
     v
 }
 

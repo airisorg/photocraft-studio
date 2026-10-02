@@ -170,7 +170,7 @@ pub fn text_layer_from_tysh(data: &[u8], dpi: f32) -> Option<TextLayer> {
     Some(layer)
 }
 
-fn arr_f(v: Option<&E>) -> Vec<f64> {
+pub(crate) fn arr_f(v: Option<&E>) -> Vec<f64> {
     v.and_then(E::as_array)
         .map(|a| a.iter().filter_map(E::as_f64).collect())
         .unwrap_or_default()
@@ -303,7 +303,7 @@ fn lookup<'a>(run: &'a E, base: Option<&'a E>, key: &str) -> Option<&'a E> {
     run.get(key).or_else(|| base.and_then(|b| b.get(key)))
 }
 
-fn char_style(base: Option<&E>, d: &E, fonts: &[String], k: f32) -> CharStyle {
+pub(crate) fn char_style(base: Option<&E>, d: &E, fonts: &[String], k: f32) -> CharStyle {
     let g = |key: &str| lookup(d, base, key);
     let num = |key: &str| g(key).and_then(E::as_f64);
     let flag = |key: &str| g(key).and_then(E::as_bool);
@@ -375,7 +375,7 @@ fn char_style(base: Option<&E>, d: &E, fonts: &[String], k: f32) -> CharStyle {
     s
 }
 
-fn para_style(base: Option<&E>, d: &E, k: f32) -> ParagraphStyle {
+pub(crate) fn para_style(base: Option<&E>, d: &E, k: f32) -> ParagraphStyle {
     let num = |key: &str| lookup(d, base, key).and_then(E::as_f64);
     ParagraphStyle {
         align: match num("Justification").map(|v| v as i64) {
@@ -407,7 +407,7 @@ fn real(v: f32) -> E {
 }
 
 /// PostScript name for a style (the PSD `FontSet` stores these).
-fn postscript_for(s: &CharStyle) -> String {
+pub(crate) fn postscript_for(s: &CharStyle) -> String {
     if let Some(ps) = &s.postscript_name {
         return ps.clone();
     }
@@ -448,7 +448,7 @@ pub const OPENTYPE_KEYS: [(&str, &str); 8] = [
     ("Fractions", "frac"),
 ];
 
-fn style_sheet_data(s: &CharStyle, font: usize, k: f32) -> E {
+pub(crate) fn style_sheet_data(s: &CharStyle, font: usize, k: f32) -> E {
     let c = &s.color;
     let values = match c.mode {
         ColorMode::Cmyk => vec![
@@ -511,7 +511,7 @@ fn style_sheet_data(s: &CharStyle, font: usize, k: f32) -> E {
     E::Dict(dict)
 }
 
-fn paragraph_properties(p: &ParagraphStyle, k: f32) -> E {
+pub(crate) fn paragraph_properties(p: &ParagraphStyle, k: f32) -> E {
     let j = match p.align {
         TextAlign::Left => 0,
         TextAlign::Right => 1,
@@ -538,7 +538,7 @@ fn utf16_len(s: &str) -> i64 {
     s.encode_utf16().count() as i64
 }
 
-fn font_entry(name: &str) -> E {
+pub(crate) fn font_entry(name: &str) -> E {
     E::Dict(vec![
         ("Name".into(), E::String(name.into())),
         ("Script".into(), E::Int(0)),

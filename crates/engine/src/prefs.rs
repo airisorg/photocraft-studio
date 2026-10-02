@@ -632,6 +632,14 @@ pub struct Preferences {
     pub shortcuts: BTreeMap<String, String>,
     pub menus: MenuCustomization,
     pub toolbar: ToolbarCustomization,
+    /// Edit › Check Spelling: words added to the dictionary ("Add").
+    pub user_dictionary: Vec<String>,
+    /// Window › Workspace › New Workspace…: saved layouts by name (JSON owned by the shell).
+    pub workspaces: BTreeMap<String, Value>,
+    /// Window › Workspace › Lock Workspace: panels can't be moved.
+    pub workspace_locked: bool,
+    /// File › Scripts › Script Events Manager: event → script bindings.
+    pub script_events: crate::automate_cmds::ScriptEvents,
 }
 
 /// Preferences dialog sections in Photoshop's order: (id, title).
@@ -993,6 +1001,7 @@ impl Session {
         if let Value::Object(m) = &mut v {
             m.insert("colorSettings".into(), serde_json::to_value(&self.color.settings).unwrap_or(Value::Null));
             m.insert("version".into(), json!(1));
+            m.insert("presets".into(), self.presets.to_json(self));
         }
         serde_json::to_string_pretty(&v).unwrap_or_default()
     }
@@ -1002,11 +1011,15 @@ impl Session {
     pub fn load_prefs_json(&mut self, s: &str) -> std::result::Result<(), String> {
         let mut v: Value = serde_json::from_str(s).map_err(|e| format!("preferences: {e}"))?;
         let color = v.as_object_mut().and_then(|m| m.remove("colorSettings"));
+        let presets = v.as_object_mut().and_then(|m| m.remove("presets"));
         let prefs: Preferences = serde_json::from_value(v).map_err(|e| format!("preferences: {e}"))?;
         if let Some(c) = color {
             self.color.settings = serde_json::from_value(c).unwrap_or_default();
         }
         self.prefs.edit(|p| *p = prefs);
+        if let Some(v) = presets {
+            self.load_presets_json(v);
+        }
         self.apply_prefs();
         Ok(())
     }

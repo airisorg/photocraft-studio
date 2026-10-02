@@ -23,6 +23,8 @@ pub struct Distort {
     pub liquify: Option<crate::liquify_ui::LiquifyDialog>,
     pub puppet: Option<crate::puppet_ui::PuppetSession>,
     pub perspective: Option<crate::perspective_ui::PerspSession>,
+    /// Filter Gallery dialog (gallery_ui).
+    pub gallery: Option<crate::gallery_ui::GalleryDialog>,
 }
 
 impl Distort {
@@ -36,6 +38,7 @@ impl Distort {
             "liquify": self.liquify.as_ref().map(|d| d.describe()),
             "puppet": self.puppet.as_ref().map(|p| p.describe()),
             "perspective": self.perspective.as_ref().map(|p| p.describe()),
+            "gallery": self.gallery.as_ref().map(|g| g.describe()),
         })
     }
 }
@@ -99,6 +102,8 @@ pub fn menu(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, params: &Val
     let empty = params.as_object().is_none_or(|o| o.is_empty());
     let ui = params.get("ui");
     match id {
+        "filter.filterGallery" if empty => Some(crate::gallery_ui::open(app).map(|_| json!({"gallery": app.distort.describe()["gallery"]}))),
+        "filter.filterGallery" if ui.is_some() && app.distort.gallery.is_some() => Some(crate::gallery_ui::control(app, ui.unwrap_or(&Value::Null))),
         "filter.liquify" if empty => Some(crate::liquify_ui::open(app, ctx).map(|_| json!({"liquify": app.distort.describe()["liquify"]}))),
         "filter.liquify" if ui.is_some() && app.distort.liquify.is_some() => Some(crate::liquify_ui::control(app, ui.unwrap_or(&Value::Null))),
         "edit.puppetWarp" | "layer.smartObjects.puppetWarp" if empty => Some(crate::puppet_ui::begin(app, ctx, id).map(|_| json!({"puppet": app.distort.describe()["puppet"]}))),
@@ -132,6 +137,14 @@ pub fn keys(app: &mut PhotocraftApp, ctx: &egui::Context) -> bool {
     use egui::{Key, Modifiers};
     let enter = |ctx: &egui::Context| ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter));
     let esc = |ctx: &egui::Context| ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape));
+    if app.distort.gallery.is_some() {
+        if enter(ctx) {
+            let _ = crate::gallery_ui::commit(app);
+        } else if esc(ctx) {
+            app.distort.gallery = None;
+        }
+        return true;
+    }
     if app.distort.liquify.is_some() {
         if enter(ctx) {
             crate::liquify_ui::commit(app);
@@ -184,8 +197,11 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) -> bool {
     false
 }
 
-/// Full-window dialogs (Liquify).
+/// Full-window dialogs (Liquify, Filter Gallery).
 pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
+    if app.distort.gallery.is_some() {
+        crate::gallery_ui::show(app, ctx);
+    }
     if app.distort.liquify.is_some() {
         crate::liquify_ui::show(app, ctx);
     }

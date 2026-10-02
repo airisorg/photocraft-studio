@@ -496,7 +496,7 @@ fn define_brush_preset(s: &mut Session, p: &Value) -> Result<Value> {
 
 /// The path Define Custom Shape uses: `"work"`, a saved path name, else the work path, the
 /// active shape layer, the active layer's vector mask, or the last saved path.
-fn current_path(doc: &Document, active: Option<LayerId>, spec: Option<&str>) -> Option<Path> {
+pub(crate) fn current_path(doc: &Document, active: Option<LayerId>, spec: Option<&str>) -> Option<Path> {
     let ok = |p: &Path| !p.subpaths.is_empty();
     match spec {
         Some("work") => return doc.work_path.clone().filter(ok),

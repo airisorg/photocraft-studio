@@ -72,6 +72,48 @@ pub fn begin(app: &mut PhotocraftApp, ctx: &egui::Context) -> Result<(), String>
         pivot: [(rect[0] + rect[2]) / 2.0, (rect[1] + rect[3]) / 2.0],
         interpolation: "bicubic".into(),
         warp: None,
+        selection: false,
+    });
+    Ok(())
+}
+
+/// Start Select › Transform Selection: the same box over the selection's bounds, previewing the
+/// selection mask (the marching ants are hidden meanwhile); commits `select.transformSelection`.
+pub fn begin_selection(app: &mut PhotocraftApp, ctx: &egui::Context) -> Result<(), String> {
+    let st = app.session.active().ok_or("no document")?;
+    let doc = st.doc.clone();
+    let sel = doc.selection.clone().ok_or("no selection")?;
+    let b = sel.content_bounds();
+    if b.is_empty() {
+        return Err("no selection".into());
+    }
+    let layer = st.active_layer.or_else(|| doc.layers.first().map(|l| l.id)).ok_or("no layer")?;
+    crate::type_tool::commit(app);
+    let rect = [b.x0 as f64, b.y0 as f64, b.x1 as f64, b.y1 as f64];
+    let session = app.ui.alloc_id();
+    let (w, h) = (b.width() as usize, b.height() as usize);
+    let k = w.max(h).div_ceil(2048).max(1);
+    let (tw, th) = (w.div_ceil(k), h.div_ceil(k));
+    let mut px = vec![Color32::TRANSPARENT; tw * th];
+    for ty in 0..th {
+        for tx in 0..tw {
+            let m = sel.sample_channel(b.x0 + (tx * k) as i32, b.y0 + (ty * k) as i32, 0).clamp(0.0, 1.0);
+            px[ty * tw + tx] = Color32::from_rgba_unmultiplied(120, 170, 255, (m * 110.0) as u8);
+        }
+    }
+    let texture = ctx.load_texture(format!("transform-{session}"), egui::ColorImage::new([tw, th], px), egui::TextureOptions::LINEAR);
+    let mut pd = (*doc).clone();
+    pd.selection = None;
+    app.transform_preview = Some(TransformPreview { session, doc: Arc::new(pd), texture, opacity: 1.0, gesture: None, warp_drag: None });
+    app.ui.transform = Some(TransformSession {
+        session,
+        layer: layer.0,
+        rect,
+        quad: corners(rect),
+        pivot: [(rect[0] + rect[2]) / 2.0, (rect[1] + rect[3]) / 2.0],
+        interpolation: "bilinear".into(),
+        warp: None,
+        selection: true,
     });
     Ok(())
 }
@@ -94,6 +136,7 @@ pub fn enter_warp(app: &mut PhotocraftApp) {
         return;
     }
     if t.quad == corners(t.rect)
+        && !t.selection
         && let Some(w) = existing
     {
         t.rect = w.bounds;
@@ -164,6 +207,19 @@ fn contains(l: &photocraft_doc::Layer, id: LayerId) -> bool {
 pub fn commit(app: &mut PhotocraftApp) {
     let Some(t) = app.ui.transform.take() else { return };
     app.transform_preview = None;
+    if t.selection {
+        let mut p = json!({"rect": t.rect, "interpolation": t.interpolation});
+        match &t.warp {
+            Some(w) if !w.is_identity() => p["warp"] = json!(w),
+            Some(_) => return,
+            None if t.quad == corners(t.rect) => return,
+            None => p["quad"] = json!(t.quad),
+        }
+        if let Err(e) = app.run("select.transformSelection", p) {
+            app.ui.status = e;
+        }
+        return;
+    }
     if let Some(w) = &t.warp {
         if w.is_identity() {
             return;
@@ -757,7 +813,7 @@ mod tests {
     use super::*;
 
     fn session() -> TransformSession {
-        TransformSession { session: 1, layer: 1, rect: [0.0, 0.0, 100.0, 50.0], quad: corners([0.0, 0.0, 100.0, 50.0]), pivot: [50.0, 25.0], interpolation: "bicubic".into(), warp: None }
+        TransformSession { session: 1, layer: 1, rect: [0.0, 0.0, 100.0, 50.0], quad: corners([0.0, 0.0, 100.0, 50.0]), pivot: [50.0, 25.0], interpolation: "bicubic".into(), warp: None, selection: false }
     }
 
     fn drag(s: &mut TransformSession, from: [f64; 2], to: [f64; 2], mods: egui::Modifiers) {
@@ -833,6 +889,26 @@ mod tests {
         let b = st.doc.layer(st.active_layer.unwrap()).unwrap().surface().unwrap().content_bounds();
         assert!(b.width().abs_diff(32) <= 2 && b.x0.abs_diff(0) <= 1, "{b:?}");
         assert!(app.ui.transform.is_none() && app.transform_preview.is_none());
+    }
+
+    #[test]
+    fn transform_selection_moves_only_the_outline() {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        app.session.execute("file.new", json!({"width": 64, "height": 64})).unwrap();
+        app.sync_views();
+        app.session.execute("select.rect", json!({"x": 8, "y": 8, "width": 16, "height": 16})).unwrap();
+        let px0 = app.session.active().unwrap().doc.layers[0].surface().unwrap().read_region(photocraft_geom::Rect::new(0, 0, 64, 64));
+        let ctx = egui::Context::default();
+        crate::menus::invoke(&mut app, &ctx, "select.transformSelection", json!({})).unwrap();
+        let t = app.ui.transform.as_ref().unwrap();
+        assert!(t.selection && t.rect == [8.0, 8.0, 24.0, 24.0]);
+        assert!(app.transform_preview.as_ref().unwrap().doc.selection.is_none(), "ants hidden while transforming");
+        scale_about_pivot(&mut app, 2.0, 2.0);
+        commit(&mut app);
+        let st = app.session.active().unwrap();
+        let b = st.doc.selection.as_ref().unwrap().content_bounds();
+        assert!(b.width().abs_diff(32) <= 2 && b.x0.abs_diff(0) <= 1, "{b:?}");
+        assert_eq!(st.doc.layers[0].surface().unwrap().read_region(photocraft_geom::Rect::new(0, 0, 64, 64)), px0);
     }
 
     #[test]

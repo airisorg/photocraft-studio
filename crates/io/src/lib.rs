@@ -18,17 +18,21 @@
 #![forbid(unsafe_code)]
 
 mod adjust_map;
+pub mod annotations_map;
 mod channel_map;
 pub mod comps_map;
 pub mod effects_map;
 pub mod blocks;
 mod gradient_bake;
 mod flat;
+mod multichannel_map;
 pub mod linked;
 pub mod pattern_map;
 mod pixels;
 mod psd_export;
 mod psd_import;
+pub mod slices_map;
+pub mod text_styles_map;
 pub mod vector_map;
 
 use photocraft_codecs::{CodecError, EncodeOptions};

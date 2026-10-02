@@ -13,6 +13,9 @@ pub enum Tool {
     MagicWand,
     Crop,
     Eyedropper,
+    Ruler,
+    Note,
+    Count,
     Brush,
     Eraser,
     Gradient,
@@ -39,10 +42,13 @@ pub enum Tool {
     Triangle,
     Polygon,
     Line,
+    CustomShape,
+    Slice,
+    SliceSelect,
 }
 
 impl Tool {
-    pub const ALL: [Tool; 34] = [
+    pub const ALL: [Tool; 40] = [
         Tool::Move,
         Tool::RectMarquee,
         Tool::EllipseMarquee,
@@ -51,6 +57,9 @@ impl Tool {
         Tool::MagicWand,
         Tool::Crop,
         Tool::Eyedropper,
+        Tool::Ruler,
+        Tool::Note,
+        Tool::Count,
         Tool::Brush,
         Tool::Eraser,
         Tool::Gradient,
@@ -77,6 +86,9 @@ impl Tool {
         Tool::Triangle,
         Tool::Polygon,
         Tool::Line,
+        Tool::CustomShape,
+        Tool::Slice,
+        Tool::SliceSelect,
     ];
 
     pub fn label(self) -> &'static str {
@@ -87,10 +99,15 @@ impl Tool {
             Tool::Brush => "Brush Tool",
             Tool::Eraser => "Eraser Tool",
             Tool::Eyedropper => "Eyedropper Tool",
+            Tool::Ruler => "Ruler Tool",
+            Tool::Note => "Note Tool",
+            Tool::Count => "Count Tool",
             Tool::Lasso => "Lasso Tool",
             Tool::PolygonLasso => "Polygonal Lasso Tool",
             Tool::MagicWand => "Magic Wand Tool",
             Tool::Crop => "Crop Tool",
+            Tool::Slice => "Slice Tool",
+            Tool::SliceSelect => "Slice Select Tool",
             Tool::Gradient => "Gradient Tool",
             Tool::PaintBucket => "Paint Bucket Tool",
             Tool::Type => "Horizontal Type Tool",
@@ -115,6 +132,7 @@ impl Tool {
             Tool::Triangle => "Triangle Tool",
             Tool::Polygon => "Polygon Tool",
             Tool::Line => "Line Tool",
+            Tool::CustomShape => "Custom Shape Tool",
         }
     }
     /// Retouching and painting tools that stroke with the brush (share the brush cursor and chip).
@@ -128,10 +146,10 @@ impl Tool {
             Tool::RectMarquee | Tool::EllipseMarquee => 'M',
             Tool::Brush => 'B',
             Tool::Eraser => 'E',
-            Tool::Eyedropper => 'I',
+            Tool::Eyedropper | Tool::Ruler | Tool::Note | Tool::Count => 'I',
             Tool::Lasso | Tool::PolygonLasso => 'L',
             Tool::MagicWand => 'W',
-            Tool::Crop => 'C',
+            Tool::Crop | Tool::Slice | Tool::SliceSelect => 'C',
             Tool::Gradient | Tool::PaintBucket => 'G',
             Tool::Type => 'T',
             Tool::Hand => 'H',
@@ -144,7 +162,7 @@ impl Tool {
             Tool::QuickSelection | Tool::ObjectSelection => 'W',
             Tool::Pen => 'P',
             Tool::PathSelection => 'A',
-            Tool::Rectangle | Tool::EllipseShape | Tool::Triangle | Tool::Polygon | Tool::Line => 'U',
+            Tool::Rectangle | Tool::EllipseShape | Tool::Triangle | Tool::Polygon | Tool::Line | Tool::CustomShape => 'U',
         }
     }
     /// Glyph drawn in the toolbar (vector icons come later).
@@ -292,6 +310,32 @@ pub struct ToolOptions {
     pub corner_radius: f32,
     pub polygon_sides: u32,
     pub line_weight: f32,
+    /// Marquee options bar: "normal" | "fixedRatio" | "fixedSize", with the ratio or size.
+    #[serde(default = "default_marquee_style")]
+    pub marquee_style: String,
+    #[serde(default = "one")]
+    pub marquee_width: f32,
+    #[serde(default = "one")]
+    pub marquee_height: f32,
+    /// Move tool: Auto-Select (with "layer" or "group" target) and Show Transform Controls.
+    #[serde(default)]
+    pub move_auto_select: bool,
+    #[serde(default = "default_move_target")]
+    pub move_target: String,
+    #[serde(default)]
+    pub move_show_transform: bool,
+}
+
+fn default_move_target() -> String {
+    "layer".into()
+}
+
+fn default_marquee_style() -> String {
+    "normal".into()
+}
+
+fn one() -> f32 {
+    1.0
 }
 
 impl Default for ToolOptions {
@@ -328,6 +372,12 @@ impl Default for ToolOptions {
             corner_radius: 0.0,
             polygon_sides: 5,
             line_weight: 3.0,
+            marquee_style: default_marquee_style(),
+            marquee_width: 1.0,
+            marquee_height: 1.0,
+            move_auto_select: false,
+            move_target: default_move_target(),
+            move_show_transform: false,
         }
     }
 }
@@ -346,6 +396,9 @@ pub struct TransformSession {
     /// Warp mode (Edit › Transform › Warp): the warp being edited over `rect`, in document px.
     #[serde(default)]
     pub warp: Option<photocraft_geom::warp::Warp>,
+    /// Select › Transform Selection: the box transforms the selection outline, not pixels.
+    #[serde(default)]
+    pub selection: bool,
 }
 
 /// In-progress inline type editing (Type tool). Offsets are character indices.
@@ -424,6 +477,21 @@ pub struct UiState {
     /// Layer Comps panel: the selected comp (by comp id).
     #[serde(default)]
     pub layer_comp_selected: Option<u32>,
+    /// Preset panels (Gradients, Patterns, Styles, Shapes, Tool Presets, Clone Source).
+    #[serde(default)]
+    pub presets_ui: crate::preset_panels::PresetUi,
+    /// Character/Paragraph Styles, Glyphs and Check Spelling (see `type_panels_ui`).
+    #[serde(default)]
+    pub type_panels: crate::type_panels_ui::TypePanelsUi,
+    /// Ruler/Count/Note tools, Measurement Log and Notes panels (see `analysis_ui`).
+    #[serde(default)]
+    pub analysis: crate::analysis_ui::AnalysisUi,
+    /// Slice and Slice Select tools (see `slice_ui`).
+    #[serde(default)]
+    pub slices: crate::slice_ui::SliceUi,
+    /// Modifier Keys panel, custom pixel aspect ratios, workspace dialogs (see `workspace_ui`).
+    #[serde(default)]
+    pub shell: crate::workspace_ui::ShellUi,
     /// View extras: rulers (⌘R), grid (⌘'), guides (⌘;), snapping (⇧⌘;), locked guides (⌥⌘;).
     #[serde(default)]
     pub extras: Extras,
@@ -461,6 +529,9 @@ pub struct UiState {
     /// The status message is an error (shown in the warning colour).
     #[serde(default)]
     pub status_error: bool,
+    /// Status bar info field, Home screen (see `chrome_ui`).
+    #[serde(default)]
+    pub chrome: crate::chrome_ui::ChromeState,
 }
 
 impl Default for UiState {
@@ -476,6 +547,11 @@ impl Default for UiState {
             view: Default::default(),
             actions: Default::default(),
             layer_comp_selected: None,
+            presets_ui: Default::default(),
+            type_panels: Default::default(),
+            analysis: Default::default(),
+            slices: Default::default(),
+            shell: Default::default(),
             layer_filter: Vec::new(),
             pen: None,
             selected_path: None,
@@ -496,6 +572,7 @@ impl Default for UiState {
             next_id: 1,
             status: String::new(),
             status_error: false,
+            chrome: Default::default(),
         }
     }
 }

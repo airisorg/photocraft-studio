@@ -9,7 +9,7 @@
 //! - `ui.inspect`: full UI state (tool, panels, views, dialogs, windows, menu tree, window size)
 //! - `ui.set {tool?, panels?, zoom?, center?, dark?}`: change UI state
 //! - `ui.menu.invoke {id}` / `ui.menu.list`: activate a menu item by id; list the menu tree
-//! - `ui.dialog.open {kind, fields?}` / `ui.dialog.set {dialog, field, value}` / `ui.dialog.confirm {dialog}` / `ui.dialog.cancel {dialog}`
+//! - `ui.dialog.open {kind, fields?}` (kinds: newDocument, about, layerStyle {effect?}, colorPicker {target: foreground|background}, command {command}) / `ui.dialog.set {dialog, field, value}` / `ui.dialog.confirm {dialog}` / `ui.dialog.cancel {dialog}`
 //! - `ui.window.open {document?}` / `ui.window.close {window}`: extra document windows
 //! - `ui.pointer {events: [{kind: down|move|up, x, y, pressure?}], modifiers?}`: drive the active tool in document coordinates
 //! - `ui.click {x, y, button?, count?}` / `ui.move {x, y}`: synthetic pointer input in screen points
@@ -159,6 +159,10 @@ pub fn handle(app: &mut PhotocraftApp, ctx: &egui::Context, req: &ControlRequest
                         Some(id) => ok(json!({"dialog": id})),
                         None => err("no active layer"),
                     };
+                }
+                "colorPicker" | "ColorPicker" => {
+                    let target = if s("target") == Some("background") { "background" } else { "foreground" };
+                    return ok(json!({"dialog": crate::color_picker_ui::open(app, target)}));
                 }
                 "command" | "Command" => {
                     let Some(cmd) = s("command") else { return err("command dialogs need `command`") };

@@ -1,29 +1,29 @@
 //! Edit › Auto-Align Layers and Auto-Blend Layers, on the selected pixel layers.
 //!
-//! Auto-Align registers every selected layer onto a reference layer with Harris corners,
-//! steered-BRIEF descriptors and RANSAC ([`photocraft_algo::features`]) and warps it with the
-//! Free Transform resampler. Projections: Reposition (translation), Collage (rotation, uniform
-//! scale, translation), Perspective (homography) and Auto (perspective when it is well
-//! supported, otherwise collage). Cylindrical and spherical projections are not implemented.
+//! Both share Photomerge's registration and blending ([`photocraft_algo::panorama`] via
+//! `photo_cmds`). Auto-Align matches Harris / steered-BRIEF features between every pair of
+//! layers, chains the verified pairs from the reference layer (maximum spanning tree) and
+//! bundle-adjusts all of them, then warps each layer. Projections: Auto, Perspective
+//! (homography), Cylindrical and Spherical (rigid motion on the cylinder / sphere, focal length
+//! from the homographies or EXIF), Collage (similarity) and Reposition (translation). The
+//! reference stays put in the planar projections.
 //!
 //! Auto-Blend gives each selected layer a mask so the composite shows, per pixel, the sharpest
-//! layer (Stack Images, for focus stacking) or the layer whose content the pixel lies deepest in
-//! (Panorama). With Seamless Tones and Colors it also adds a merged layer blended with Laplacian
-//! pyramids ([`photocraft_algo::pyramid`]) so transitions are invisible.
+//! layer (Stack Images, for focus stacking) or one layer per region with seams routed where the
+//! layers agree (Panorama). With Seamless Tones and Colors it also adds a merged layer blended
+//! with Laplacian pyramids so transitions are invisible.
 
-use photocraft_algo::features::{Model, register};
+use photocraft_algo::panorama::Layout;
 use photocraft_algo::pyramid;
-use photocraft_algo::transform::{Homography, Interp, warp_surface};
+use photocraft_algo::transform::Interp;
 use photocraft_doc::{Document, Layer, LayerContent, LayerId, LayerMask};
 use photocraft_geom::Rect;
 use photocraft_raster::{Surface, to_rgba};
 use serde_json::{Value, json};
 
 use crate::commands::CommandSpec;
+use crate::photo_cmds::{plane_matrix, register, seam_blend, seam_order, warp_placed};
 use crate::{EngineError, Result, Session};
-
-/// Longest side images are registered at (larger layers are downsampled for detection).
-const REGISTER_SIDE: usize = 1024;
 
 fn bad(cmd: &str, msg: impl Into<String>) -> EngineError {
     EngineError::BadParams { cmd: cmd.into(), msg: msg.into() }
@@ -40,30 +40,6 @@ fn two_layers(s: &Session) -> std::result::Result<(), String> {
     if selected_pixel_layers(s).len() < 2 { Err("select two or more pixel layers in the Layers panel".into()) } else { Ok(()) }
 }
 
-/// Luminance and opacity of a surface over `area`, downsampled by the integer factor `k`.
-fn luma_alpha(surf: &Surface, area: Rect, k: usize) -> (usize, usize, Vec<f32>, Vec<f32>) {
-    let fmt = surf.format();
-    let n = fmt.channels();
-    let raw = surf.read_region(area);
-    let (w, h) = (area.width() as usize, area.height() as usize);
-    let (sw, sh) = (w.div_ceil(k), h.div_ceil(k));
-    let (mut l, mut a, mut cnt) = (vec![0.0f32; sw * sh], vec![0.0f32; sw * sh], vec![0.0f32; sw * sh]);
-    for y in 0..h {
-        for x in 0..w {
-            let p = to_rgba(&fmt, &raw[(y * w + x) * n..(y * w + x + 1) * n]);
-            let i = (y / k) * sw + x / k;
-            l[i] += 0.2126 * p[0] + 0.7152 * p[1] + 0.0722 * p[2];
-            a[i] += p[3];
-            cnt[i] += 1.0;
-        }
-    }
-    for i in 0..sw * sh {
-        l[i] /= cnt[i].max(1.0);
-        a[i] /= cnt[i].max(1.0);
-    }
-    (sw, sh, l, a)
-}
-
 fn auto_align(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "edit.autoAlignLayers";
     let ids = selected_pixel_layers(s);
@@ -71,14 +47,7 @@ fn auto_align(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad(cmd, "select two or more pixel layers"));
     }
     let projection = p.get("projection").and_then(Value::as_str).unwrap_or("auto");
-    let models: Vec<Model> = match projection {
-        "auto" => vec![Model::Homography, Model::Similarity, Model::Translation],
-        "perspective" => vec![Model::Homography],
-        "collage" => vec![Model::Similarity],
-        "reposition" => vec![Model::Translation],
-        "cylindrical" | "spherical" => return Err(bad(cmd, format!("the {projection} projection is not supported (auto|perspective|collage|reposition)"))),
-        other => return Err(bad(cmd, format!("unknown projection `{other}` (auto|perspective|collage|reposition)"))),
-    };
+    let layout = Layout::parse(projection).ok_or_else(|| bad(cmd, format!("unknown projection `{projection}` (auto|perspective|cylindrical|spherical|collage|reposition)")))?;
     let st = s.active().ok_or(EngineError::NoDocument)?;
     let doc = st.doc.clone();
     let reference = match p.get("reference").and_then(Value::as_u64) {
@@ -86,71 +55,68 @@ fn auto_align(s: &mut Session, p: &Value) -> Result<Value> {
         Some(r) => return Err(bad(cmd, format!("reference {r} is not a selected pixel layer"))),
         None => ids[0],
     };
+    let ref_idx = ids.iter().position(|i| *i == reference).unwrap_or(0);
     let area = doc.bounds();
-    let k = (area.width().max(area.height()) as usize).div_ceil(REGISTER_SIDE).max(1);
-    let prep = |id: LayerId| -> Option<(usize, usize, Vec<f32>, Vec<bool>)> {
-        let surf = doc.layer(id)?.surface()?;
-        let (w, h, l, a) = luma_alpha(surf, area, k);
-        Some((w, h, l, a.iter().map(|v| *v > 0.5).collect()))
-    };
-    let (w, h, ref_l, ref_ok) = prep(reference).ok_or(EngineError::NoLayer(reference))?;
-    let scale = k as f64;
-    let mut moves: Vec<(LayerId, Homography, &'static str, usize)> = Vec::new();
-    let mut failed: Vec<u64> = Vec::new();
-    for &id in ids.iter().filter(|id| **id != reference) {
-        let Some((_, _, l, ok)) = prep(id) else { continue };
-        let mut found = None;
-        for &m in &models {
-            if let Some((hm, n)) = register(w, h, &ref_l, &l, Some(&ref_ok), Some(&ok), m) {
-                // Auto: a perspective fit must be well supported and not wildly projective.
-                let wild = m == Model::Homography && (hm.0[6].abs() + hm.0[7].abs()) * (w.max(h) as f64) > 0.5;
-                if projection == "auto" && m == Model::Homography && (n < 20 || wild) {
-                    continue;
-                }
-                found = Some((hm, m, n));
-                break;
-            }
-        }
-        match found {
-            Some((hm, m, n)) => {
-                // Registration ran on a k× downsampled grid: conjugate by the scale.
-                let up = Homography([scale, 0.0, 0.0, 0.0, scale, 0.0, 0.0, 0.0, 1.0]);
-                let down = Homography([1.0 / scale, 0.0, 0.0, 0.0, 1.0 / scale, 0.0, 0.0, 0.0, 1.0]);
-                let full = up.mul(&hm).mul(&down);
-                let name = match m {
-                    Model::Translation => "reposition",
-                    Model::Similarity => "collage",
-                    Model::Homography => "perspective",
-                };
-                moves.push((id, full, name, n));
-            }
-            None => failed.push(id.0),
-        }
+    let surfs: Vec<&Surface> = ids.iter().map(|id| doc.layer(*id).and_then(|l| l.surface()).ok_or(EngineError::NoLayer(*id))).collect::<Result<_>>()?;
+    let images: Vec<(&Surface, Rect)> = surfs.iter().map(|s| (*s, area)).collect();
+    let focal35 = doc.metadata.exif.as_ref().and_then(|e| photocraft_algo::exif::read(e).focal_length_35mm);
+    let geometric = p.get("geometricCorrection").and_then(Value::as_bool).unwrap_or(false);
+    let al = register(&images, layout, Some(ref_idx), geometric, focal35).ok_or_else(|| EngineError::Other("Auto-Align couldn't find enough matching detail between the layers".into()))?;
+    let interp = Interp::parse(p.get("interpolation").and_then(Value::as_str).unwrap_or("bicubic"));
+    let planar = matches!(al.layout, Layout::Perspective | Layout::Collage | Layout::Reposition);
+    let mut inliers = vec![0usize; ids.len()];
+    for &(a, b, n) in &al.pairs {
+        inliers[a] += n;
+        inliers[b] += n;
     }
+    // Everything but the reference moves in planar layouts; every layer is reprojected otherwise.
+    let moves: Vec<usize> = (0..ids.len()).filter(|&i| al.placements[i].is_some() && (i != ref_idx || !planar)).collect();
+    let failed: Vec<u64> = (0..ids.len()).filter(|&i| al.placements[i].is_none()).map(|i| ids[i].0).collect();
     if moves.is_empty() {
         return Err(EngineError::Other("Auto-Align couldn't find enough matching detail between the layers".into()));
     }
-    let interp = Interp::parse(p.get("interpolation").and_then(Value::as_str).unwrap_or("bicubic"));
-    s.edit("Auto-Align Layers", |doc, _| {
-        for (id, hm, _, _) in &moves {
-            let l = doc.layer_mut(*id).ok_or(EngineError::NoLayer(*id))?;
-            let surf = l.surface_mut().ok_or(EngineError::NoLayer(*id))?;
+    let warped: Vec<(LayerId, Surface, Option<Surface>)> = moves
+        .iter()
+        .map(|&i| {
+            let pl = al.placements[i].as_ref().expect("placed");
+            let l = doc.layer(ids[i]).expect("exists");
+            let surf = l.surface().expect("raster");
             let b = surf.content_bounds();
-            if b.is_empty() {
-                continue;
-            }
-            *surf = warp_surface(surf, b, hm, interp);
-            if let Some(m) = &mut l.mask {
+            let px = if b.is_empty() { surf.clone() } else { warp_placed(surf, b, (0.0, 0.0), pl, (0.0, 0.0), interp) };
+            let mask = l.mask.as_ref().map(|m| {
                 let mb = m.surface.content_bounds();
-                if !mb.is_empty() {
-                    m.surface = warp_surface(&m.surface, mb, hm, Interp::Bilinear);
-                }
+                if mb.is_empty() { m.surface.clone() } else { warp_placed(&m.surface, mb, (0.0, 0.0), pl, (0.0, 0.0), Interp::Bilinear) }
+            });
+            (ids[i], px, mask)
+        })
+        .collect();
+    s.edit("Auto-Align Layers", |doc, _| {
+        for (id, px, mask) in &warped {
+            let l = doc.layer_mut(*id).ok_or(EngineError::NoLayer(*id))?;
+            if let Some(surf) = l.surface_mut() {
+                *surf = px.clone();
+            }
+            if let (Some(m), Some(ms)) = (&mut l.mask, mask) {
+                m.surface = ms.clone();
             }
         }
         Ok(())
     })?;
-    let aligned: Vec<Value> = moves.iter().map(|(id, hm, model, n)| json!({"layer": id.0, "model": model, "matches": n, "matrix": hm.0})).collect();
-    Ok(json!({"reference": reference.0, "aligned": aligned, "failed": failed}))
+    let model = match al.layout {
+        Layout::Reposition => "reposition",
+        Layout::Collage => "collage",
+        Layout::Perspective | Layout::Auto => "perspective",
+        Layout::Cylindrical => "cylindrical",
+        Layout::Spherical => "spherical",
+    };
+    let aligned: Vec<Value> = moves
+        .iter()
+        .map(|&i| {
+            let pl = al.placements[i].as_ref().expect("placed");
+            json!({"layer": ids[i].0, "model": model, "matches": inliers[i], "matrix": plane_matrix(pl, (0.0, 0.0)).map(|h| h.0.to_vec())})
+        })
+        .collect();
+    Ok(json!({"reference": reference.0, "layout": al.layout.name(), "focal": al.focal, "rms": al.rms, "aligned": aligned, "failed": failed}))
 }
 
 /// Native-channel pixels of a layer over `area` (transparent outside its content).
@@ -206,11 +172,22 @@ fn auto_blend(s: &mut Session, p: &Value) -> Result<Value> {
         alpha.push(av);
     }
     let fmt = fmt.ok_or(EngineError::NoDocument)?;
-    let weights = if method == "stack" { pyramid::stack_weights(w, h, &luma, &alpha) } else { pyramid::panorama_weights(w, h, &alpha) };
-    let blended = seamless.then(|| {
-        let refs: Vec<&[f32]> = imgs.iter().map(Vec::as_slice).collect();
-        pyramid::blend(w, h, fmt.channels(), &refs, &weights, pyramid::auto_levels(w, h))
-    });
+    let (weights, blended) = if method == "stack" {
+        let weights = pyramid::stack_weights(w, h, &luma, &alpha);
+        let blended = seamless.then(|| {
+            let refs: Vec<&[f32]> = imgs.iter().map(Vec::as_slice).collect();
+            pyramid::blend(w, h, fmt.channels(), &refs, &weights, pyramid::auto_levels(w, h))
+        });
+        (weights, blended)
+    } else {
+        // Panorama: seams routed through agreement, multi-band blended (photo_cmds).
+        let surfs: Vec<Surface> = ids.iter().map(|id| doc.layer(*id).and_then(|l| l.surface()).cloned().ok_or(EngineError::NoLayer(*id))).collect::<Result<_>>()?;
+        let order = seam_order(&surfs, 0);
+        let b = seam_blend(&surfs, area, &order, seamless, false, None);
+        let weights: Vec<Vec<f32>> = b.layers.iter().map(|(_, m)| m.read_region(area)).collect();
+        let blended = seamless.then(|| b.composite.read_region(area));
+        (weights, blended)
+    };
     let top = *ids.last().expect("two or more");
     let label = "Auto-Blend Layers";
     let new_layer = s.edit(label, |doc, active| {
@@ -242,7 +219,7 @@ macro_rules! spec {
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
-        spec!("edit.autoAlignLayers", "Auto-Align Layers…", r##"{"projection":"auto|perspective|collage|reposition","reference":layer id?=bottom selected layer,"interpolation":"bicubic|bilinear|nearest"}"##, auto_align),
+        spec!("edit.autoAlignLayers", "Auto-Align Layers…", r##"{"projection":"auto|perspective|cylindrical|spherical|collage|reposition","reference":layer id?=bottom selected layer,"geometricCorrection":bool=false,"interpolation":"bicubic|bilinear|nearest"}"##, auto_align),
         spec!("edit.autoBlendLayers", "Auto-Blend Layers…", r##"{"method":"panorama|stack","seamlessTones":bool=true}"##, auto_blend),
     ]
 }
@@ -311,7 +288,7 @@ mod tests {
         let r = s.execute("edit.autoAlignLayers", json!({})).unwrap();
         let m = r["aligned"][0]["matrix"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect::<Vec<_>>();
         assert!((m[2] + 6.0).abs() < 1.0 && (m[5] + 5.0).abs() < 1.0, "{r}");
-        assert!(s.execute("edit.autoAlignLayers", json!({"projection": "cylindrical"})).is_err());
+        assert!(s.execute("edit.autoAlignLayers", json!({"projection": "sideways"})).is_err());
         assert!(s.execute("edit.autoAlignLayers", json!({"reference": 9999})).is_err());
     }
 

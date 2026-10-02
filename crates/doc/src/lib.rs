@@ -8,17 +8,21 @@
 #![forbid(unsafe_code)]
 
 pub mod adjust;
+pub mod analysis;
 pub mod comps;
 pub mod effects;
 pub mod mode;
 pub mod pattern;
+pub mod slices;
 pub mod text;
+pub mod text_styles;
 pub mod vector;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub use adjust::Adjustment;
+pub use analysis::{CountGroup, Measurement, MeasurementScale, Note, Ruler};
 pub use comps::{Artboard, ArtboardBackground, CompAppearance, CompLayerState, LayerComp};
 pub use effects::{
     Bevel, BevelStyle, BevelTechnique, Contour, Effect, FxCommon, FxPaint, GlobalLight, Glow, GlowSource, GlowTechnique, Gradient,
@@ -29,6 +33,8 @@ pub use photocraft_geom::{Affine, Rect, Size};
 pub use photocraft_raster::Surface;
 pub use mode::{ColorTable, Duotone, DuotoneInk, StackMode};
 pub use pattern::Pattern;
+pub use slices::{Slice, SliceKind, SliceOrigin, Slices};
+pub use text_styles::TextStyles;
 pub use vector::{
     ClippingPath, FillRule, Knot, LineCap, LineJoin, LiveShape, NamedPath, Path, PathOp, ShapeLayer, ShapeStroke, StrokeAlign, Subpath,
     VectorMask,
@@ -408,6 +414,10 @@ pub struct Layer {
     pub fill_cache: Option<FillCache>,
     /// Layer › Link Layers: layers sharing a link group move together. `None` = not linked.
     pub link_group: Option<u64>,
+    /// Blending Options › Advanced Blending › Channels: bit `i` set = colour channel `i` of the
+    /// document's mode (R, G, B / C, M, Y, K / L, a, b / Gray) is left out of blending, so the
+    /// backdrop's value is kept there. 0 = every channel blends (the default). PSD `brst`.
+    pub excluded_channels: u32,
 }
 
 impl Layer {
@@ -430,6 +440,7 @@ impl Layer {
             psd_id: None,
             fill_cache: None,
             link_group: None,
+            excluded_channels: 0,
         }
     }
     pub fn raster(name: impl Into<String>, format: PixelFormat) -> Self {
@@ -590,6 +601,14 @@ pub struct Document {
     /// "Last Document State": layer state saved when a comp is applied over the document's own
     /// state, restored by `layerComp.restoreLastDocumentState`. Its id is 0.
     pub last_document_state: Option<LayerComp>,
+    /// Image › Analysis: measurement scale, Count tool groups and the Ruler line.
+    pub measurement: Measurement,
+    /// Note tool annotations (PSD `Anno`).
+    pub notes: Vec<Note>,
+    /// Character and paragraph styles (Window › Character Styles / Paragraph Styles).
+    pub text_styles: TextStyles,
+    /// Web slices (Slice tool, layer-based slices; PSD resource 1050). Auto slices are derived.
+    pub slices: Slices,
 }
 
 /// Where a layer lives in the tree: indices from the root down.
@@ -621,6 +640,10 @@ impl Document {
             layer_comps: Vec::new(),
             last_applied_comp: None,
             last_document_state: None,
+            measurement: Measurement::default(),
+            notes: Vec::new(),
+            text_styles: TextStyles::default(),
+            slices: Slices::default(),
         }
     }
 

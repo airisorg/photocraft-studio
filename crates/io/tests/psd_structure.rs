@@ -172,7 +172,7 @@ fn testgen_import_details() {
 
 #[test]
 fn fallback_modes_import_flattened() {
-    for mode in [ColorMode::Indexed, ColorMode::Bitmap, ColorMode::Duotone, ColorMode::Multichannel] {
+    for mode in [ColorMode::Indexed, ColorMode::Bitmap, ColorMode::Duotone] {
         let depth = testgen::mode_depths(mode)[0];
         let f = testgen::merged_only(Version::Psd, mode, depth, Compression::Rle, 9, 5);
         let (d, w) = psd_to_document(&f);
@@ -182,6 +182,27 @@ fn fallback_modes_import_flattened() {
         // Re-export produces a valid PSD.
         let out = export(&d, "x.psd", &ExportOptions::default()).unwrap();
         assert!(PsdFile::from_bytes(&out.bytes).is_ok());
+    }
+}
+
+#[test]
+fn multichannel_imports_ink_channels() {
+    for depth in testgen::mode_depths(ColorMode::Multichannel) {
+        let f = testgen::merged_only(Version::Psd, ColorMode::Multichannel, *depth, Compression::Rle, 9, 5);
+        let (d, _) = psd_to_document(&f);
+        assert_eq!(d.mode, photocraft_color::ColorMode::Multichannel);
+        assert!(d.layers.is_empty());
+        assert_eq!(d.channels.len(), usize::from(f.header.channels));
+        assert!(d.channels.iter().all(|c| c.spot.is_some()));
+        // Stored dark = ink: the channel value is 1 − the stored sample.
+        let merged = f.decode_merged().unwrap();
+        let first = if *depth == 8 { f32::from(merged[0]) / 255.0 } else { f32::from(u16::from_be_bytes([merged[0], merged[1]])) / 65535.0 };
+        assert!((d.channels[0].surface.pixel(0, 0)[0] - (1.0 - first)).abs() < 1e-3);
+        // Re-export writes the same planes.
+        let out = export(&d, "x.psd", &ExportOptions::default()).unwrap();
+        let back = PsdFile::from_bytes(&out.bytes).unwrap();
+        assert_eq!(back.header.color_mode, ColorMode::Multichannel);
+        assert_eq!(back.decode_merged().unwrap(), merged, "{depth}");
     }
 }
 

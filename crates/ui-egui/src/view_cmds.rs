@@ -124,6 +124,10 @@ const LAYOUTS: [&str; 10] = ["tileAllVertically", "tileAllHorizontally", "twoUpV
 
 /// Pixel aspect ratio (width / height of a pixel) of a preset id.
 pub fn pixel_aspect_ratio(id: &str) -> f32 {
+    // View › Pixel Aspect Ratio › Custom: `custom:<ratio>:<name>` (see `workspace_ui`).
+    if let Some(r) = id.strip_prefix("custom:").and_then(|r| r.split(':').next()?.parse::<f32>().ok()) {
+        return r;
+    }
     match id {
         "d1DvNtsc" => 0.91,
         "d1DvPal" => 1.09,
@@ -366,6 +370,9 @@ fn wraps(id: &str) -> bool {
             | "file.automate.batch"
             | "file.scripts.imageProcessor"
             | "file.scripts.loadFilesIntoStack"
+            | "file.automate.photomerge"
+            | "file.automate.mergeToHdrPro"
+            | "file.automate.lensCorrection"
             | "file.export.layersToFiles"
             | "file.export.layerCompsToFiles"
             | "file.export.artboardsToFiles"
@@ -794,6 +801,22 @@ fn front(app: &mut PhotocraftApp, id: &str, params: &Value) -> Option<Result<Val
             dialog(app, json!({"path": format!("{dir}/{stem}.cube"), "size": 33, "title": stem}), json!({}))
         }
         "file.scripts.loadFilesIntoStack" => dialog(app, json!({"paths": dir}), json!({})),
+        // Photography automation (photo_cmds / lens_cmds): a folder (or the open documents).
+        "file.automate.photomerge" => dialog(
+            app,
+            json!({"paths": dir, "useOpenDocuments": false, "layout": "auto", "blend": true, "vignetteRemoval": false, "geometricCorrection": false, "contentAwareFill": false}),
+            json!({"layout": ["auto", "perspective", "cylindrical", "spherical", "collage", "reposition"]}),
+        ),
+        "file.automate.mergeToHdrPro" => dialog(
+            app,
+            json!({"paths": dir, "useOpenDocuments": false, "align": true, "removeGhosts": false, "mode": "32", "method": "localAdaptation", "radius": 7.0, "strength": 0.52, "gamma": 1.0, "exposure": 0.0, "detail": 30.0, "saturation": 20.0}),
+            json!({"mode": ["32", "16", "8"], "method": ["localAdaptation", "exposureGamma", "highlightCompression", "equalizeHistogram"]}),
+        ),
+        "file.automate.lensCorrection" => dialog(
+            app,
+            json!({"input": dir, "output": format!("{dir}/corrected"), "format": "same", "profile": "auto", "correctDistortion": true, "correctVignette": true, "correctCA": true, "autoScale": true, "edge": "transparency"}),
+            json!({"format": ["same", "png", "jpg", "psd", "tiff"], "profile": ["auto", "generic", "none"], "edge": ["transparency", "edgeExtension", "black", "white"]}),
+        ),
         "file.scripts.imageProcessor" => dialog(app, json!({"input": dir, "output": format!("{dir}/processed"), "format": "jpg", "quality": 8, "width": 0, "height": 0, "convertToSrgb": true}), json!({"format": ["jpg", "png", "psd", "tiff"]})),
         "file.automate.batch" => {
             let a = &app.ui.actions;
