@@ -127,6 +127,8 @@ fn image_from_files(paths: &[PathBuf]) -> Option<(u32, u32, Vec<u8>)> {
 }
 
 pub fn native(automation: Option<photocraft_automation::AuthorizedWorkspace>) -> Services {
+    let savers: Rc<RefCell<HashMap<u64, Autosaver>>> = Rc::default();
+    let savers2 = savers.clone();
     let clip: Rc<RefCell<Option<arboard::Clipboard>>> = Rc::default();
     let automation_read = automation.clone().map(|workspace| {
         Box::new(move |path: &str| {
@@ -200,11 +202,6 @@ pub fn native(automation: Option<photocraft_automation::AuthorizedWorkspace>) ->
                     Some(c) => c,
                     None => slot.insert(arboard::Clipboard::new().ok()?),
                 };
-                // Copied files first: Finder also puts the file's icon on the clipboard as an
-                // image, which would otherwise paste instead of the file.
-                if let Some(img) = cb.get().file_list().ok().and_then(|paths| image_from_files(&paths)) {
-                    return Some(img);
-                }
                 let img = cb.get_image().ok()?;
                 Some((img.width as u32, img.height as u32, img.bytes.into_owned()))
             })
