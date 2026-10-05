@@ -97,15 +97,6 @@ pub fn transform_bounds(doc: &Document, layer: &Layer) -> Rect {
         LayerContent::Group(g) => g.children.iter().map(|l| transform_bounds(doc, l)).fold(Rect::EMPTY, |a, b| a.union(&b)),
         _ => layer.surface().map_or(Rect::EMPTY, photocraft_compose::bounds::content_bounds),
     };
-    let content = if let LayerContent::Shape(shape) = &layer.content
-        && !shape.path.inverted
-        && !content.is_empty()
-        && (content.x0 <= 0 || content.y0 <= 0 || content.x1 >= doc.bounds().x1 || content.y1 >= doc.bounds().y1)
-    {
-        unclipped_shape_bounds(shape).map_or(content, |bounds| content.union(&bounds))
-    } else {
-        content
-    };
     let content =
         if content.is_empty() { layer.mask.as_ref().map_or(Rect::EMPTY, |m| photocraft_compose::bounds::content_bounds(&m.surface)) } else { content };
     match &doc.selection {

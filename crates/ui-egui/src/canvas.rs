@@ -336,16 +336,8 @@ fn display_doc(app: &mut PhotocraftApp, idx: usize) -> (std::sync::Arc<Document>
     if let Some(shown) = crate::adjust_preview::display_doc(app, idx) {
         return shown;
     }
-    // Gradient tool (live) drag, or a stop dragged in the Properties panel.
-    if let Some(shown) = crate::gradient_ui::display_doc(app, idx) {
-        return shown;
-    }
     // Move tool drag: the moving layers at the pointer.
     if let Some(shown) = crate::move_ui::display_doc(app, idx) {
-        return shown;
-    }
-    // Patch Tool drag: the selection healed from where the pointer is.
-    if let Some(shown) = crate::patch_preview::display_doc(app, idx) {
         return shown;
     }
     let st = &app.session.documents()[idx];
@@ -424,9 +416,9 @@ pub fn navigator_texture(app: &mut PhotocraftApp, ctx: &egui::Context, idx: usiz
     {
         return Some(t.id());
     }
-    // While a Move or Patch drag is under way the navigator keeps its image and catches up on release.
+    // While a Move drag is under way the navigator keeps its image and catches up on release.
     if let Some((_, _, t)) = &cached
-        && (crate::move_ui::showing(app) || crate::patch_preview::showing(app))
+        && crate::move_ui::showing(app)
     {
         return Some(t.id());
     }
@@ -540,19 +532,6 @@ fn damage_since(app: &PhotocraftApp, idx: usize, seen: (u64, u64), now: (u64, u6
     {
         return Some(if r.is_empty() { r } else { r.inflate(effect_reach(&st.doc.layers)) });
     }
-    // Between a Patch drag's previews: the areas they healed.
-    if seen.0 == now.0
-        && let Some(st) = app.session.documents().get(idx)
-        && let Some(r) = crate::patch_preview::damage(app, st.doc.id, now.0, seen.1 ^ display_key, now.1)
-    {
-        return Some(if r.is_empty() { r } else { r.inflate(effect_reach(&st.doc.layers)) });
-    }
-    if seen.0 == now.0
-        && let Some(st) = app.session.documents().get(idx)
-        && let Some(r) = crate::collaboration::damage(app, st.doc.id, now.0, seen.1 ^ display_key, now.1)
-    {
-        return Some(if r.is_empty() { r } else { r.inflate(effect_reach(&st.doc.layers)) });
-    }
     let l = live_stroke(app, idx).filter(|l| seen.0 == now.0 && l.display_key() == now.1)?;
     let r = l.since(seen.1 ^ display_key)?;
     Some(if r.is_empty() { r } else { r.inflate(effect_reach(&l.stroke.doc.layers)) })
@@ -562,19 +541,13 @@ fn damage_since(app: &PhotocraftApp, idx: usize, seen: (u64, u64), now: (u64, u6
 /// (`was_preview` tells its keys): count it as the document itself, so the commit's damage rect
 /// refreshes only that area instead of everything.
 pub(crate) fn shown_as_document(app: &mut PhotocraftApp, doc: photocraft_doc::DocId, was_preview: impl Fn(u64) -> bool) {
-    let Some(d) = app.session.documents().iter().find(|st| st.doc.id == doc).map(|st| st.doc.clone()) else { return };
-    // Every display's cache of the document: the GPU state folds in the texture key, CPU
-    // textures their display's key.
-    let outputs: Vec<u32> = app.canvases.keys().filter(|k| k.0 == doc).map(|k| k.1).collect();
-    for out in outputs {
-        let (display, key) = canvas_display(app, &d, (out != 0 && out != GPU_OUTPUT).then_some(out));
-        let gpu_key = texture_key(display.as_deref());
-        let Some(c) = app.canvases.get_mut(&(doc, out)) else { continue };
-        if was_preview(c.preview_key ^ gpu_key) {
-            c.preview_key = gpu_key;
+    let display_key = app.session.active().map_or(0, |st| canvas_display(app, &st.doc).1);
+    if let Some(c) = app.canvases.get_mut(&doc) {
+        if was_preview(c.preview_key ^ display_key) {
+            c.preview_key = display_key;
         }
-        if was_preview(c.tex_preview_key ^ key) {
-            c.tex_preview_key = key;
+        if was_preview(c.tex_preview_key ^ display_key) {
+            c.tex_preview_key = display_key;
         }
     }
 }
@@ -2244,6 +2217,13 @@ pub fn tool_event(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers)
             let Some(mut d) = app.drag.take() else { return };
             let last = d.points.last().map_or(d.start, |p| [p[0], p[1]]);
             let [x, y] = crate::stroke_constraint::constrain(d.tool, &mut d.constrain, d.start, last, [x, y], mods.shift, zoom);
+            // A Move-tool click (released where it was pressed) selects, it never moves: snapping
+            // the release point would otherwise nudge the layer onto a nearby edge.
+            if d.tool == Tool::Move && d.points.len() < 2 && matches!(raw, ToolEvent::Up { x, y } if [x, y] == d.start) {
+                app.move_preview = None;
+                crate::move_mods::finish(app);
+                return;
+            }
             if d.points.last().is_none_or(|p| p[0] != x || p[1] != y) {
                 d.points.push([x, y, d.points.last().map_or(1.0, |p| p[2])]);
                 app.stylus.record_point();

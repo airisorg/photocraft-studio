@@ -722,16 +722,6 @@ impl<'a> Planner<'a> {
         dst
     }
 
-    /// A stroked shape's fill or vector stroke alone (`compose::shape_split`), unmasked.
-    fn shape_part(&mut self, layer: &'a Layer, role: Role, surface: Surface) -> Slot {
-        let mut p = Pass::new(Kernel::Content, 0);
-        p.color = photocraft_raster::to_rgba(&surface.format(), &surface.default_pixel());
-        if surface.tile_count() > 0 {
-            p.tex = Some(TexUse { layer: layer.id, role, surface: SurfaceRef::Derived(std::sync::Arc::new(surface)) });
-        }
-        self.emit(p)
-    }
-
     /// render_content for non-adjustment layers.
     fn content(&mut self, layer: &'a Layer) -> Result<Slot, Unsupported> {
         match &layer.content {
