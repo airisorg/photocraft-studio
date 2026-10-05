@@ -346,9 +346,6 @@ enum Cov {
 pub const F_KNOCKOUT: u32 = 16;
 /// Effect merge: A already holds the layer; only mix with the backdrop by the layer's opacity.
 pub const F_NO_LAYER: u32 = 32;
-/// Outside strokes along a filled shape's outline (`effects::outline_share`; the coverage slot
-/// carries the layer's alpha in `.g`).
-pub const F_OUTLINE: u32 = 131072;
 /// Shape layer (outside strokes never show inside it).
 pub const F_VECTOR: u32 = 64;
 /// Merge onto an opaque clipping base, keeping its alpha.

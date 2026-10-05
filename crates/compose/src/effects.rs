@@ -445,8 +445,15 @@ pub fn gradient_t(style: GradientStyle, angle: f32, scale: f32, reverse: bool, o
     // Distance along the gradient direction (y axis points down).
     let along = dx * c - dy * s;
     let across = dx * s + dy * c;
-    let (chord, len) = gradient_units(angle, w, h);
-    let (chord, len) = (chord * scale.max(1e-3), len * scale.max(1e-3));
+    // Gradient length: the bounds' extent along the angle as an ellipse
+    // norm (a unit gradient scaled to the bounds); fitted on psd-tools
+    // gradient-styles.psd (cached Photoshop renderings of every style).
+    let len = ((c * w).powi(2) + (s * h).powi(2)).sqrt().max(1.0) * scale.max(1e-3);
+    // Linear / Reflected span the chord of the bounds through their centre along the angle:
+    // min(w / |cos|, h / |sin|). A 45° gradient on a 29 px square runs 41 px (psd-tools
+    // shape-fx2), an 87° one on a 600 × 60 text line 60 px (layer_effects); axis-aligned angles
+    // span the width / height.
+    let chord = (w / c.abs().max(1e-6)).min(h / s.abs().max(1e-6)).max(1.0) * scale.max(1e-3);
     // Linear / Reflected sample the pixel's top-left corner, half a pixel before its centre
     // (with the whole-pixel end points of `fill_layout`: layer_effects' overlay 5.8 → 1.8/255,
     // shape-fx2 2.8 → 1.1/255, gradient-fill.psd 1.9 → 0.5/255).
