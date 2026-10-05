@@ -248,16 +248,8 @@ The desktop and headless TCP listeners currently enforce:
 
 An oversized line, excess connection, unauthenticated request, or unauthorized filesystem path is
 rejected before command dispatch or file effects. The headless JSON-lines stdio server also
-enforces the request and reply byte ceilings; MCP over stdio (`photocraft-cli mcp`) does not
-cap request bytes, because the MCP SDK reads its own request lines (only MCP tool results are
-checked). A TCP connection is closed after an oversized
-line; on stdio an oversized or non-UTF-8 line gets one error reply (`id: null`), the rest of that
-line is skipped without being dispatched, and the session and its open documents keep serving. MCP tool results are checked as encoded JSON,
+enforces the request and reply byte ceilings. MCP tool results are checked as encoded JSON,
 including the text/image content envelope, and the MCP bridge bounds incoming desktop replies.
-A `batch` or `command_batch` stops at the first step whose result no longer fits the reply budget
-(that step may have run; later ones do not). MCP charges each result at its size escaped inside
-the text content, so the reply still lists `completed`, `failed` and every result so far, ending
-with the budget error.
 
 Headless automation previews (`doc.render` / MCP `doc_render_preview`) allow a maximum requested
 edge of 2048 pixels and a source document of at most 67,108,864 pixels. `maxSide: 0` (MCP
@@ -278,63 +270,3 @@ accounting, compositor scratch-space accounting, command cancellation/duration l
 general per-method capabilities. Desktop screenshot capture/encoding and document import/export
 still need their own operation budgets; the desktop reply ceiling applies after the UI creates
 its response. A bounded output does not imply bounded command cost.
-
-### Rendering modes
-
-`performance.renderingMode` accepts `auto`, `gpu`, or `cpu`. Automatic is the default for new
-settings; older `useGpu: false` or `gpuBackend: cpu` preferences continue to select CPU mode
-until an explicit mode is saved. Changes apply at the next launch. Automatic and GPU both
-fall back on graphics errors rather than risk documents. CPU compatibility composites images
-on the CPU and prefers software window adapters, when available. macOS still uses Metal for
-the window. A failed window renderer initialization retries once in CPU compatibility mode;
-a driver process crash is detected by the startup marker on the next launch.
-
-### Camera Raw dialog
-
-`ui.menu.invoke {"id":"filter.cameraRaw","params":{}}` opens Camera Raw on the active
-RGB/Grayscale layer. `params: {"smartFilter": {"layer": id, "index": i}}` opens it on an existing
-Camera Raw smart filter instead (as double-clicking the filter in the Layers panel does): the
-stored settings over the pixels below that filter, previewed through the filter mask; commit
-then runs `layer.smartFilter.setParams` with every setting. `params.ui` accepts `set` (filter settings), `before`, `scope`, `commit` and
-`cancel`. All parts of one request are validated before any is applied; a rejected request
-leaves the settings, view state, preferences and document unchanged (and closes a dialog it
-opened). Unknown `ui` or settings properties, non-boolean `before` / `commit` / `cancel`, and
-`commit` together with `cancel` are errors. Point curves (`pointCurve`, `pointCurveRed`,
-`pointCurveGreen`, `pointCurveBlue`) are empty or 2–16 finite points in 0–255 with inputs at
-least one level apart. Commit dispatches one `filter.cameraRaw` engine command; a failed commit
-keeps the dialog open for correction. Nothing else writes document history.
-
-The response and `ui.inspect.cameraRaw` contain:
-
-- `histogram`: `source` (`before` | `after`), `size`, `approximate`, 256-bin `red` / `green` /
-  `blue`, `samples`, `transparent`, `invalid`, per-channel `underflow` / `overflow`, and exact
-  endpoint counters `shadows` (≤0) / `highlights` (≥1). Counts describe the bounded preview
-  proxy in its RGB sample domain, not full-resolution or ICC display-gamut statistics.
-- `previewRevision` (advances only when the proxy is re-developed), `renderMs`, `histogramMs`
-  (CPU only; zero on WebAssembly).
-- `curveState` (`selected`, `drag`) and `curveRect: [left, top, right, bottom] | null` (null while
-  the Curve section is closed). Changing `set.pointCurve` cancels a stale gesture.
-- `scope` (the view state below), `hasScopeSelection`, `vectorscope` (`bins`, `samples`,
-  `before`, `selectedRegion`) or null, `scopeMs`, `scopeRevision`, `overlayRevision`.
-- `pointerReadout` and `samplerReadouts`: `position`, `space` (`rgb` 0–255 in the preview sample
-  space, or `lab` through the document ICC profile → D50), `values`, `alpha`; null on invisible
-  pixels.
-- `hoverSample`: `position`, `rgb` (histogram domain) and `hueSaturation` (turns, 0–1; only
-  while the vectorscope is shown), or null.
-- `hoveredZone`, `previewRect`, `scopeRect`, `vectorscopeRect`.
-
-`params.ui.scope` changes presentation only: `shadows` / `highlights` (clipping warnings, U / O),
-`lab`, `samplerTool` (S), `vectorscope`, `selectedRegion` (requires a document selection),
-`redRight`, `hideSkinLine`, `floating`, `floatingRect: [left, top, right, bottom]` (200×150 to
-4096×4096 points), `sample: [u,v] | null`, and the probe list: `samplers: [[u,v], …]` replaces it,
-or `clearSamplers: true`, `removeSampler: index` and `addSampler: [u,v]` edit it, applied in that
-order (the two forms can't be combined). Coordinates are normalized to the displayed proxy; at
-most nine probes. `tone: {zone: "blacks|shadows|exposure|highlights|whites", delta}` adjusts the
-same parameter as a histogram drag (`reset: true` sets it to 0); Exposure clamps to ±5 stops, the
-others to ±100.
-
-Hover, probe movement, theme changes and panel resizing never re-develop the image; Before/After
-and region changes rebuild only the dependent analysis. Display options and the floating panel
-geometry persist in preferences `dialogs["filter.cameraRaw.scope"]`; probes and vectorscope
-visibility reset when the dialog opens. HDR scopes are not implemented. See
-[camera-raw-histogram.md](camera-raw-histogram.md).
