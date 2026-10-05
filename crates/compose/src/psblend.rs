@@ -140,8 +140,8 @@ pub const TEXT_GAMMA: f32 = 1.45;
 static TEXT_GAMMA_SETTING: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x3fb9_999a); // 1.45f32
 
 /// Sets Color Settings › "Blend Text Colors Using Gamma" (1 = off). It is an application
-/// setting, not stored in documents (1 here means switched off: a plain mix of the encoded
-/// values). Values are clamped to Photoshop's 1.00–2.20.
+/// setting, not stored in documents: files saved with it off (ag-psd float-color) mix type
+/// linearly. Values are clamped to Photoshop's 1.00–2.20.
 ///
 /// The value is process-wide: a test that changes it races every concurrently running test
 /// that composites a type layer, so such tests belong in their own test binary (see
