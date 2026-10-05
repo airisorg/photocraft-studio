@@ -1667,12 +1667,23 @@ fn layer_row(
     let thumb = Rect::from_min_size(pos2(x, rect.center().y - ts / 2.0), vec2(ts, ts));
     draw_layer_thumb(app, ctx, ui, doc, l, thumb, row.primary);
     x += ts + 6.0;
-    // Link chains and pixel / vector mask thumbnails (#153).
-    let masks = crate::mask_thumbs_ui::paint(app, ctx, ui, &painter, doc, l, &mut x, rect.center().y, ts, actions);
-    let mask_rect = masks.thumb(crate::mask_thumbs_ui::MaskKind::Pixel);
-    let vector_rect = masks.thumb(crate::mask_thumbs_ui::MaskKind::Vector);
-    // Photoshop frames the targeted thumbnail (pixels, mask or vector mask) of the active layer
-    // with corner brackets.
+    let mut mask_rect = None;
+    if let Some(m) = &l.mask {
+        let mr = Rect::from_min_size(pos2(x, rect.center().y - ts / 2.0), vec2(ts, ts));
+        if ui.is_rect_visible(mr) {
+            let tex = app.mask_thumb(ctx, doc, l.id, m);
+            painter.image(tex, mr, Rect::from_min_max(egui::Pos2::ZERO, pos2(1.0, 1.0)), Color32::WHITE);
+        }
+        painter.rect_stroke(
+            mr,
+            if t.pro { 0.0 } else { 4.0 },
+            Stroke::new(1.0, if t.pro { Color32::from_gray(20) } else { t.field_border }),
+            StrokeKind::Outside,
+        );
+        mask_rect = Some(mr);
+        x += ts + 6.0;
+    }
+    // Photoshop frames the targeted thumbnail (pixels or mask) of the active layer with corner brackets.
     if row.primary {
         let target = if app.ui.vector_mask_target && vector_rect.is_some() {
             vector_rect
