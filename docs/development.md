@@ -201,7 +201,7 @@ translations do not affect the denominator. Unregistered locale TSV files are ig
   - byte-exact round trips
   - malformed-input sweeps (truncate at every offset)
   - fuzz targets (`crates/*/fuzz`)
-- **Real-file corpora** in `corpus/` (gitignored, fetched at pinned commits, sha256-verified): opt-in locally through the `corpus` cargo feature, always run in CI. See [Test corpora](#test-corpora).
+- **Real-file corpus** in `corpus/` (gitignored). `corpus/psd` holds MIT-licensed test PSDs, listed with their sources in `corpus/psd/SOURCES.md`, `cargo xtask corpus --download` fetches PngSuite, and `cargo xtask corpus --psd-tools` fetches the complete psd-tools test set (MIT, 309 PSD/PSB files at a pinned commit, sha256-verified) into `corpus/psd-tools`. Tests skip silently when a corpus is absent.
 - **Composite oracle:** a PSD's embedded merged image is compared with our compositor's output. The pass rate is tracked in the roadmap.
 - **UI:** unit tests for widgets and state, plus screenshot checks through the control channel.
 
@@ -376,14 +376,12 @@ scripts/fetch-corpus.sh            # the same as cargo xtask corpus --all
 
 ## Rendering fidelity (PSD oracle)
 
-`cargo xtask test-corpus -p io -- --nocapture` compares our composite of every corpus PSD with
-Photoshop's own merged image (PASS ≤ 2/255) and checks that export → re-import renders the same,
-per source with its own floors: `corpus/psd`, the psd-tools set (also a truncation/corruption sweep
-over every file that must never panic) and our Photoshop set `corpus/photoshop` (per-feature-group
-totals: `smart-filters`, `effects`, `text`, `adjustments/<mode><bits>`). Smart objects and type
-layers composite Photoshop's cached pixels there; `cargo xtask test-corpus -p engine -- --nocapture`
-(`crates/engine/tests/photoshop_oracles.rs`) re-renders them with our smart-filter stack and text
-engine and is the failure map for both. A panic is reported as `CRASH` and fails the run. Files without a real merged image (Maximize Compatibility off)
+`cargo test --release -p photocraft-io --test corpus -- --nocapture` compares our composite of every
+corpus PSD with Photoshop's own merged image (PASS ≤ 2/255) and checks that export → re-import renders
+the same, per source with its own floors: `corpus/psd` (enforced with `PHOTOCRAFT_CORPUS=1`) and the
+psd-tools set (`cargo xtask corpus --psd-tools`, enforced with `PHOTOCRAFT_PSDTOOLS_CORPUS=1`, which
+also runs a truncation/corruption sweep over every file that must never panic). A panic is reported
+as `CRASH` and fails an enforced run. Files without a real merged image (Maximize Compatibility off)
 are judged against their embedded thumbnail instead (`PASS (thumbnail)`, a strict low-resolution
 check); a file only SKIPs when it has no oracle at all. Raise the floors in `crates/io/tests/corpus.rs` when they
 improve; never lower them. Synthetic reproductions of corpus findings live in

@@ -104,18 +104,11 @@ The presentation uses plain text to identify Tofu as the hosting platform. It do
 
 ## Test data (not committed, not shipped)
 
-`corpus/` is gitignored; these fetched corpus fixtures are not committed or shipped.
-`cargo xtask corpus --all` fetches the manifest-backed corpora at the pinned commits in
-`xtask/src/corpus_pins.rs` and verifies their files against `xtask/*.sha256`, with the
-upstream licence next to the files. PngSuite uses a minimum existing PNG count rather
-than a SHA-256 manifest; that check does not establish its per-file integrity.
+`corpus/` is gitignored. `corpus/psd` holds MIT-licensed test PSDs (ag-psd, psd-tools), listed in
+`corpus/psd/SOURCES.md`; `cargo xtask corpus --download` fetches PngSuite (public domain). Files
+copied in by hand must be MIT, BSD or CC0. No test fixtures are committed to the repository.
 
-| Path (fetched) | Title | Author | Source | License |
-|---|---|---|---|---|
-| `corpus/photoshop/` (256 PSDs) | Photoshop oracle corpus: smart filters, layer-style effects, type, adjustments in every mode and depth | PhotoCraft contributors (authored with Adobe Photoshop 2026 by a script) | [https://github.com/storytold/photocraft-corpus](https://github.com/storytold/photocraft-corpus) (`photoshop/`, with its generator and README) | MIT OR Apache-2.0 |
-| `corpus/psd-tools/` (309 files) | psd-tools test set | Kota Yamaguchi and contributors | [psd-tools `tests/psd_files`](https://github.com/psd-tools/psd-tools/tree/main/tests/psd_files) | MIT, Copyright (c) 2019 Kota Yamaguchi |
-| `corpus/psd/` (170 files) | Small selection of the psd-tools and ag-psd test files | Kota Yamaguchi; Agamnentzar | psd-tools (above) and [ag-psd `test/`](https://github.com/Agamnentzar/ag-psd/tree/master/test) | MIT (both) |
-| `corpus/heif/` (9 files, 0.1 MB) | HEIC/HEIF test files: `heic-rs/` checkerboards, RGB strips and a grid-tiled photo with EXIF and XMP (synthetic pixels encoded by macOS `sips`, each `.ref.png` Apple's decode); `pillow-heif/` the 10-bit RGBA `RGBA_10__29x100.heif` and its source `RGBA_16__29x100.png` | Thomas Braun (heic-rs); Pillow-Heif contributors | [heic-rs `tests/fixtures`](https://github.com/tbraun96/heic-rs/tree/main/tests/fixtures), [pillow-heif `tests/images`](https://github.com/bigcat88/pillow_heif/tree/master/tests/images) | MIT OR Apache-2.0 (heic-rs); BSD-3-Clause (pillow-heif) |
-| `corpus/pngsuite/` | PngSuite | Willem van Schaik | <http://www.schaik.com/pngsuite/> | Public domain |
-
-Files copied into `corpus/` by hand (tiff, exr, raw) must be MIT, BSD or CC0.
+`cargo xtask corpus --psd-tools` fetches every PSD/PSB of the psd-tools test set
+([`tests/psd_files`](https://github.com/psd-tools/psd-tools/tree/main/tests/psd_files), MIT,
+Copyright (c) 2019 Kota Yamaguchi) at a pinned commit into `corpus/psd-tools/`, verified against
+the sha256 list in `xtask/psd-tools-corpus.sha256`, with the upstream `LICENSE` next to them.
