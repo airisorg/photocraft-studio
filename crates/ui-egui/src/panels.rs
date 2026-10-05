@@ -432,8 +432,10 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                 if (tool.is_brushlike() && !matches!(tool, Tool::Brush | Tool::Eraser)) || tool == Tool::QuickSelection {
                     let before = app.session.tools.brush.clone();
                     let mut b = before.clone();
-                    brush_preset_chip(ui, &mut b);
+                    let pick = brush_preset_chip(ui, &mut b, &app.session.tools.presets);
                     crate::brush_panel::commit_gesture(app, ui.ctx(), &before, &b);
+                    crate::brush_picker::apply(app, ui.ctx(), pick);
+                    crate::brush_picker::settings_toggle(app, ui);
                     widgets::vline(ui, 22.0);
                 }
                 if crate::eraser_ui::options_bar(app, ui, tool)
@@ -448,6 +450,7 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                 let brush_before = app.session.tools.brush.clone();
                 let mut brush = brush_before.clone();
                 let b = &mut brush;
+                let mut picked = None;
                 match app.ui.tool {
                     Tool::Brush | Tool::Eraser if t.pro => {
                         picked = brush_preset_chip(ui, b, &app.session.tools.presets);
@@ -500,7 +503,7 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                         picked = brush_preset_chip(ui, b, &app.session.tools.presets);
                         crate::brush_picker::settings_toggle(app, ui);
                         widgets::vline(ui, 22.0);
-                        opt_label(ui, tl!("Size"));
+                        opt_label(ui, "Size");
                         widgets::value_field(ui, &mut b.size, 1.0..=2500.0, "px", 76.0);
                         widgets::vline(ui, 22.0);
                         percent_field(ui, tl!("Hardness"), &mut b.hardness, 0.0..=100.0, 66.0);
@@ -784,6 +787,7 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                     _ => {}
                 }
                 crate::brush_panel::commit_gesture(app, ui.ctx(), &brush_before, &brush);
+                crate::brush_picker::apply(app, ui.ctx(), picked);
             });
         });
 }
@@ -2216,8 +2220,8 @@ fn brush_preset_chip(
     brush_tip(ui.painter(), c, 7.0, b.hardness, Color32::WHITE);
     ui.painter().text(pos2(c.x, r.bottom() - 5.0), Align2::CENTER_CENTER, format!("{}", b.size.round() as i64), egui::FontId::proportional(9.5), t.text_dim);
     icons::paint(ui, Rect::from_center_size(pos2(r.right() - 9.0, c.y), vec2(10.0, 10.0)), "chevron-down", 9.0, t.text_faint);
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, tl!("Brush Preset picker")));
-    let resp = resp.on_hover_text(tl!("Brush Preset picker"));
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Brush Preset picker"));
+    let resp = resp.on_hover_text("Brush Preset picker");
     egui::Popup::from_toggle_button_response(&resp)
         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
         .show(|ui| crate::brush_picker::body(ui, b, presets))

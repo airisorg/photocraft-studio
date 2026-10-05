@@ -126,13 +126,19 @@ pub fn show_picker(app: &mut PhotocraftApp, ctx: &egui::Context) {
         return;
     }
     let screen = ctx.content_rect();
-    // Keep the whole picker on screen (it is about 280 × 300 points).
-    let pos = egui::pos2(x.min(screen.right() - 284.0).max(screen.left()), y.min(screen.bottom() - 310.0).max(screen.top()));
-    let area = egui::Area::new(egui::Id::new("canvas-brush-picker")).order(egui::Order::Foreground).fixed_pos(pos).show(ctx, |ui| {
+    // Keep the whole picker on screen: its last size, or about 320 × 480 points before it shows.
+    let id = egui::Id::new("canvas-brush-picker");
+    let size = ctx.memory(|m| m.area_rect(id)).map_or(egui::vec2(324.0, 480.0), |r| r.size());
+    let pos = egui::pos2(x.min(screen.right() - size.x).max(screen.left()), y.min(screen.bottom() - size.y).max(screen.top()));
+    let area = egui::Area::new(id).order(egui::Order::Foreground).fixed_pos(pos).show(ctx, |ui| {
         let before = app.session.tools.brush.clone();
         let mut b = before.clone();
-        egui::Frame::popup(ui.style()).show(ui, |ui| crate::panels::brush_picker_body(ui, &mut b));
+        let pick = egui::Frame::popup(ui.style()).show(ui, |ui| crate::brush_picker::body(ui, &mut b, &app.session.tools.presets)).inner;
         crate::brush_panel::commit_gesture(app, ui.ctx(), &before, &b);
+        if pick == Some(crate::brush_picker::Pick::OpenSettings) {
+            app.ui.brush_picker = None;
+        }
+        crate::brush_picker::apply(app, ui.ctx(), pick);
     });
     let outside = ctx.input(|i| i.pointer.any_pressed() && i.pointer.interact_pos().is_some_and(|p| !area.response.rect.contains(p)));
     if outside {
