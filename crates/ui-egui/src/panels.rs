@@ -934,6 +934,19 @@ pub fn right_dock(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     crate::dock::persist(app, ui.ctx());
 }
 
+/// The right dock's width range (points).
+const DOCK_WIDTH: std::ops::RangeInclusive<f32> = 250.0..=520.0;
+
+fn dock_width_id() -> egui::Id {
+    egui::Id::new("dock-width-request")
+}
+
+/// Set the right dock's width on the next frame (`ui.set {dockWidth}`); clamped to its range.
+pub fn request_dock_width(ctx: &egui::Context, w: f32) {
+    let w = if w.is_finite() { w.clamp(*DOCK_WIDTH.start(), *DOCK_WIDTH.end()) } else { *DOCK_WIDTH.start() };
+    ctx.data_mut(|d| d.insert_temp(dock_width_id(), w));
+}
+
 fn dock_panels(app: &mut PhotocraftApp, ui: &mut egui::Ui, p: &crate::state::Panels, t: &Tokens) {
     use crate::dock::Group;
     // Floating in Studio, Properties docks only in Pro (Photoshop).
@@ -951,15 +964,14 @@ fn dock_panels(app: &mut PhotocraftApp, ui: &mut egui::Ui, p: &crate::state::Pan
         return;
     }
     let margin = if t.pro { 2 } else { 8 };
-    egui::Panel::right("dock")
-        .resizable(true)
-        .default_size(if t.pro { 290.0 } else { 300.0 })
-        .size_range(250.0..=520.0)
-        .frame(egui::Frame::NONE.fill(t.dock).inner_margin(egui::Margin::same(margin)))
-        .show(ui, |ui| {
-            // Groups keep their heights whatever they show (#88): see `dock`.
-            crate::dock::show(app, ui, &shown, dock_body);
-        });
+    let mut panel = egui::Panel::right("dock").resizable(true).default_size(if t.pro { 290.0 } else { 300.0 }).size_range(DOCK_WIDTH);
+    if let Some(w) = ui.ctx().data_mut(|d| d.remove_temp::<f32>(dock_width_id())) {
+        panel = panel.exact_size(w);
+    }
+    panel.frame(egui::Frame::NONE.fill(t.dock).inner_margin(egui::Margin::same(margin))).show(ui, |ui| {
+        // Groups keep their heights whatever they show (#88): see `dock`.
+        crate::dock::show(app, ui, &shown, dock_body);
+    });
 }
 
 /// One dock group's tab content; `dock` bounds it and scrolls it when it's taller.
@@ -1373,6 +1385,8 @@ fn layers(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         .auto_shrink([false, !fill])
         .show(ui, |ui| {
             let filter = app.ui.layer_filter.clone();
+            let fx_collapsed = app.session.active().map(|d| d.fx_collapsed.clone()).unwrap_or_default();
+            crate::layer_row_ui::begin(ui.ctx());
             for &(depth, l) in &rows {
                 // Select › Isolate Layers.
                 if !photocraft_engine::select_extra_cmds::isolation_shows(&doc, &isolated, l.id) {
@@ -1393,7 +1407,7 @@ fn layers(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                 }
                 let row = RowSel { selected: selection.contains(&l.id), primary: active == Some(l.id), multi: selection.len() > 1 };
                 layer_row(app, &ctx, ui, &doc, l, depth, row, &mut actions);
-                if !l.effects.items.is_empty() {
+                if !l.effects.items.is_empty() && fx_collapsed.iter().all(|id| *id != l.id) {
                     effect_rows(app, ui, l, depth);
                 }
                 crate::smart_ui::filter_rows(app, ui, l, depth, &mut actions);
@@ -1574,7 +1588,15 @@ fn layer_row(
     if l.visible {
         icons::paint(ui, eye, "eye", 15.0, t.icon);
     }
-    x += 28.0 + depth as f32 * 14.0;
+    let ts = if t.pro { 24.0 } else { 34.0 };
+    // Everything but the indentation and the name, so a narrow panel squeezes the indentation first.
+    let fixed = 6.0
+        + 28.0
+        + if l.is_group() { crate::layer_tree_ui::TRIANGLE_W } else { 0.0 }
+        + if l.clipped { 12.0 } else { 0.0 }
+        + (ts + 6.0) * if l.mask.is_some() { 2.0 } else { 1.0 }
+        + crate::layer_row_ui::reserved_width(l);
+    x += 28.0 + crate::layer_row_ui::indent(depth, rect.width(), fixed);
     let toggled = crate::layer_tree_ui::disclosure(ui, rect, &mut x, l, actions);
     if l.clipped {
         painter.text(pos2(x, rect.center().y), Align2::LEFT_CENTER, "↳", egui::FontId::proportional(13.0), t.text_faint);
@@ -1636,8 +1658,8 @@ fn layer_row(
         crate::layer_row_ui::label(&painter, x, rect.center().y + 8.0, name_right, &sub, egui::FontId::proportional(11.0), t.text_faint);
     }
     crate::layer_row_ui::record(ctx, crate::layer_row_ui::RowRects { layer: l.id.0, row: rect, name: name_rect, indicators });
-    // ⌘-click a layer, mask or vector-mask thumbnail loads its transparency / mask / path as a
-    // selection (⇧ add, ⌥ subtract, ⇧⌥ intersect) instead of changing the layer selection.
+    // ⌘-click a layer or mask thumbnail loads its transparency / mask as a selection (⇧ add,
+    // ⌥ subtract, ⇧⌥ intersect) instead of changing the layer selection.
     let thumb_load = resp.clicked().then(|| (ui.input(|i| i.modifiers), resp.interact_pointer_pos())).and_then(|(m, pos)| {
         let p = pos.filter(|_| m.command)?;
         if let Some(kind) = masks.hit(p) {
@@ -1652,7 +1674,7 @@ fn layer_row(
     });
     if let Some(p) = thumb_load {
         actions.push(("select.loadSelection".into(), p));
-    } else if resp.clicked() && !eye_resp.clicked() && !toggled {
+    } else if resp.clicked() && !eye_resp.clicked() && !toggled && !fx_toggled {
         let mode = select_mode(ui.input(|i| i.modifiers));
         actions.push(("layer.select".into(), json!({"layer": l.id.0, "mode": mode})));
         // Clicking a thumbnail picks what painting targets; adjustment/fill layers target their mask.
@@ -1683,25 +1705,19 @@ fn layer_row(
     // on the row opens Layer Style (#350, #537).
     // The first click already made this the active layer.
     if resp.double_clicked() {
-        let pos = resp.interact_pointer_pos();
-        let on = |r: Rect| pos.is_some_and(|p| r.expand(2.0).contains(p));
-        if crate::doc_props_ui::is_background(doc, l) {
-            actions.push(("layer.new.layerFromBackground".into(), json!({})));
-        } else if name_rect.is_some_and(on) {
-            if let Some(done) = crate::layer_row_ui::start_rename(ctx, l.id.0, &l.name) {
-                // One rename at a time: starting this one commits any other (#314).
-                actions.push(done);
-            }
-        } else if pos.and_then(|p| masks.hit(p)).is_none() {
-            let id = match &l.content {
-                LayerContent::Adjustment(_) | LayerContent::Fill(_) if on(thumb) => "layer.layerContentOptions",
-                LayerContent::Smart(_) if on(thumb) => "layer.smartObjects.editContents",
-                LayerContent::Text(_) if on(thumb) => "type.editText",
-                _ => "layer.layerStyle.blendingOptions",
-            };
-            if crate::menus::is_enabled(app, id) {
-                // Null params: run like the menu item, dialog included.
-                actions.push((id.into(), Value::Null));
+        ctx.data_mut(|d| d.insert_temp(rename_id, l.name.clone()));
+    }
+    if let Some(mut text) = ctx.data(|d| d.get_temp::<String>(rename_id)) {
+        let edit_rect = Rect::from_min_max(pos2(x - 3.0, rect.center().y - 11.0), pos2(name_right.max(x + 40.0), rect.center().y + 11.0));
+        let te = ui.put(edit_rect, egui::TextEdit::singleline(&mut text).font(egui::FontId::proportional(12.5)));
+        te.request_focus();
+        let (enter, esc) = ui.input(|i| (i.key_pressed(egui::Key::Enter), i.key_pressed(egui::Key::Escape)));
+        if esc {
+            ctx.data_mut(|d| d.remove::<String>(rename_id));
+        } else if enter || te.lost_focus() {
+            ctx.data_mut(|d| d.remove::<String>(rename_id));
+            if !text.trim().is_empty() && text != l.name {
+                actions.push(("layer.setProps".into(), json!({"layer": l.id.0, "name": text.trim()})));
             }
         }
     }
@@ -2315,7 +2331,6 @@ fn effect_rows(app: &mut PhotocraftApp, ui: &mut egui::Ui, l: &Layer, depth: usi
             egui::FontId::proportional(11.5),
             if on { t.text_dim } else { t.text_faint },
         );
-        resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, name.clone()));
         if resp.double_clicked() {
             crate::layer_style::open(app, kind);
         }

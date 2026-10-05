@@ -157,14 +157,9 @@ pub struct DocState {
     pub channel_view: channel_cmds::ChannelView,
     /// Select › Isolate Layers: the Layers panel lists only these layers (empty = off; view state).
     pub isolated_layers: Vec<LayerId>,
-    /// Painting symmetry axis made from the selected path (tool state, not document pixels).
-    pub symmetry_path: Option<symmetry_cmds::SymmetryAxis>,
     /// Layers panel: layers whose effects list is collapsed under their row (the fx triangle;
     /// view state, not history). Effects lists start open.
     pub fx_collapsed: Vec<LayerId>,
-    /// ⌥-click on a layer's eye (`layer.showOnly`): the layer shown alone and every layer's
-    /// visibility before, so the next ⌥-click restores it (view state, not history).
-    pub show_only: Option<(LayerId, Vec<(LayerId, bool)>)>,
 }
 
 impl DocState {
@@ -185,9 +180,7 @@ impl DocState {
             coalesce: None,
             channel_view: Default::default(),
             isolated_layers: Vec::new(),
-            symmetry_path: None,
             fx_collapsed: Vec::new(),
-            show_only: None,
         }
     }
     /// The selected layers in bottom-to-top document order, always including the active layer.

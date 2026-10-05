@@ -25,7 +25,7 @@ const ICON_W: f32 = 14.0;
 /// Width of the effects triangle beside the fx badge.
 const TRIANGLE_W: f32 = 10.0;
 /// The blend-mode label is shown only while the name keeps at least this much room.
-pub const MIN_NAME_W: f32 = 64.0;
+const MIN_NAME_W: f32 = 64.0;
 
 /// A right-hand row indicator.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -119,7 +119,7 @@ pub fn indicators(
     let has_fx = !l.effects.items.is_empty();
     let show_blend = l.blend != BlendMode::Normal && l.blend != BlendMode::PassThrough;
     let fx_galley = has_fx.then(|| painter.layout_no_wrap("fx".into(), fx_font, t.text_dim));
-    let blend_galley = show_blend.then(|| painter.layout_no_wrap(tl!(l.blend.label()).into(), blend_font, t.text_faint));
+    let blend_galley = show_blend.then(|| painter.layout_no_wrap(l.blend.label().into(), blend_font, t.text_faint));
     let mut items = Vec::new();
     if locked {
         items.push((Indicator::Lock, ICON_W));
@@ -159,13 +159,12 @@ pub fn indicators(
                     let all = ui.input(|i| i.modifiers.alt);
                     actions.push(("layer.setEffectsExpanded".into(), json!({"layer": l.id.0, "expanded": !fx_open, "all": all})));
                 }
-                let (verb, name) = (if fx_open { tl!("Collapse") } else { tl!("Expand") }, l.name.clone());
-                let tip = if fx_open {
-                    tl!("Hide the layer's effects  ({key}-click: all layers)")
+                let (verb, name) = (if fx_open { "Collapse" } else { "Expand" }, l.name.clone());
+                let resp = resp.on_hover_text(if fx_open {
+                    "Hide the layer's effects  (⌥-click: all layers)"
                 } else {
-                    tl!("Show the layer's effects  ({key}-click: all layers)")
-                };
-                let resp = resp.on_hover_text(crate::i18n::fmt(tip, &[("key", &crate::shortcuts::pretty("Alt"))]));
+                    "Show the layer's effects  (⌥-click: all layers)"
+                });
                 resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("{verb} effects {name}")));
             }
         }
@@ -196,7 +195,7 @@ pub fn label(painter: &Painter, x: f32, cy: f32, right: f32, text: &str, font: F
 /// The Layers panel's own items at the top of its panel menu (Photoshop's flyout).
 pub fn panel_menu(app: &mut crate::PhotocraftApp, ui: &mut egui::Ui) {
     let can = app.session.is_enabled("layer.setExpanded");
-    if ui.add_enabled(can, egui::Button::new(tl!("Collapse All Groups"))).clicked() {
+    if ui.add_enabled(can, egui::Button::new("Collapse All Groups")).clicked() {
         if let Err(e) = app.run("layer.setExpanded", json!({"all": true, "expanded": false})) {
             app.ui.status = e;
             app.ui.status_error = true;
@@ -223,116 +222,5 @@ pub fn recorded(ctx: &egui::Context) -> Vec<RowRects> {
     ctx.data(|d| d.get_temp::<Vec<RowRects>>(rects_id())).unwrap_or_default()
 }
 
-// ------------------------------------------------------------------ in-place rename (#314)
-
-/// The Layers panel's in-place rename. One at a time, like Photoshop: Enter, Tab or a click
-/// anywhere else commits it, Esc cancels it, and starting another rename commits this one.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Rename {
-    pub layer: u64,
-    /// The name when the rename started (unchanged text renames nothing).
-    pub original: String,
-    pub text: String,
-    /// Focus was given to the field (only once: asking every frame kept it from ever losing focus).
-    pub focused: bool,
-    /// The pass its field was last drawn in.
-    pub pass: u64,
-}
-
-impl Rename {
-    /// The command that applies it, if it changes the name.
-    pub fn commit_action(&self) -> Option<(String, Value)> {
-        let name = self.text.trim();
-        (!name.is_empty() && name != self.original).then(|| ("layer.setProps".to_string(), json!({"layer": self.layer, "name": name})))
-    }
-}
-
-fn rename_id() -> egui::Id {
-    egui::Id::new("layer-rename")
-}
-
-/// The rename in progress, if any.
-pub fn rename(ctx: &egui::Context) -> Option<Rename> {
-    ctx.data(|d| d.get_temp::<Rename>(rename_id()))
-}
-
-/// The layer being renamed, if any.
-pub fn renaming(ctx: &egui::Context) -> Option<u64> {
-    rename(ctx).map(|r| r.layer)
-}
-
-/// Is a rename field on screen (drawn this pass or the last)? It owns the keyboard meanwhile.
-pub fn rename_active(ctx: &egui::Context) -> bool {
-    rename(ctx).is_some_and(|r| r.pass + 1 >= ctx.cumulative_pass_nr())
-}
-
-fn store(ctx: &egui::Context, r: Option<Rename>) {
-    ctx.data_mut(|d| match r {
-        Some(r) => {
-            d.insert_temp(rename_id(), r);
-        }
-        None => {
-            d.remove::<Rename>(rename_id());
-        }
-    });
-}
-
-/// Start renaming `layer` (now called `name`). A rename open on another layer is committed: its
-/// command is returned for the caller to run.
-pub fn start_rename(ctx: &egui::Context, layer: u64, name: &str) -> Option<(String, Value)> {
-    let previous = rename(ctx);
-    if previous.as_ref().is_some_and(|r| r.layer == layer) {
-        return None;
-    }
-    store(ctx, Some(Rename { layer, original: name.to_string(), text: name.to_string(), focused: false, pass: ctx.cumulative_pass_nr() }));
-    previous.and_then(|r| r.commit_action())
-}
-
-/// End the rename in progress: commit it (its command is returned) or cancel it.
-pub fn end_rename(ctx: &egui::Context, commit: bool) -> Option<(String, Value)> {
-    let r = rename(ctx)?;
-    store(ctx, None);
-    if commit { r.commit_action() } else { None }
-}
-
-/// Draw the rename field of `layer` in `rect` when it is the one being renamed, and handle its
-/// keys and focus. Returns the rename command when it was committed this frame.
-pub fn rename_field(ui: &mut egui::Ui, layer: u64, rect: Rect) -> Option<(String, Value)> {
-    let ctx = ui.ctx().clone();
-    let mut r = rename(&ctx).filter(|r| r.layer == layer)?;
-    let id = egui::Id::new(("layer-rename-field", layer));
-    let te = ui.put(rect, egui::TextEdit::singleline(&mut r.text).id(id).font(FontId::proportional(12.5)));
-    r.pass = ctx.cumulative_pass_nr();
-    if !r.focused {
-        te.request_focus();
-        // Photoshop selects the whole name, so typing replaces it.
-        if let Some(mut state) = egui::TextEdit::load_state(&ctx, id) {
-            let all = egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(r.text.chars().count()));
-            state.cursor.set_char_range(Some(all));
-            state.store(&ctx, id);
-        }
-        r.focused = true;
-        store(&ctx, Some(r));
-        return None;
-    }
-    let (enter, tab, esc) = ctx.input(|i| (i.key_pressed(egui::Key::Enter), i.key_pressed(egui::Key::Tab), i.key_pressed(egui::Key::Escape)));
-    if esc {
-        store(&ctx, None);
-        None
-    } else if enter || tab || te.lost_focus() || !te.has_focus() {
-        store(&ctx, None);
-        r.commit_action()
-    } else {
-        store(&ctx, Some(r));
-        None
-    }
-}
-
 #[cfg(test)]
 mod tests;
-
-#[cfg(test)]
-mod rename_tests;
-
-#[cfg(test)]
-mod edit_tests;

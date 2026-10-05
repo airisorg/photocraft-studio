@@ -4,7 +4,7 @@
 use egui::{Modifiers, PointerButton, Pos2, Rect, pos2, vec2};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
-use photocraft_doc::{Effect, LayerContent};
+use photocraft_doc::LayerContent;
 use serde_json::json;
 
 use super::{Indicator, RowRects, layout, recorded};
@@ -21,8 +21,6 @@ fn busy() -> photocraft_engine::Session {
         let a = s.execute("layer.new.layer", json!({"name": format!("{LONG} {depth}")})).unwrap()["layer"].as_u64().unwrap();
         s.execute("edit.fill", json!({"contents": "color", "color": "#336699"})).unwrap();
         s.execute("layer.layerStyle.dropShadow", json!({"layer": a})).unwrap();
-        // #153: the vector mask thumbnail and both link chains take row width too.
-        s.execute("layer.vectorMask.revealAll", json!({"layer": a})).unwrap();
         s.execute("layer.setProps", json!({"layer": a, "blend": "Multiply", "locks": {"all": true}})).unwrap();
         s.execute("layer.layerMask.revealAll", json!({"layer": a})).unwrap();
         let b = s.execute("layer.new.layer", json!({"name": format!("{LONG} b{depth}")})).unwrap()["layer"].as_u64().unwrap();
@@ -135,23 +133,6 @@ fn the_fx_triangle_hides_and_shows_the_effects_rows() {
     assert!(h.state().session.active().unwrap().fx_collapsed.is_empty());
 }
 
-#[test]
-fn a_configured_but_disabled_effect_stays_discoverable_in_the_panel() {
-    let mut session = photocraft_engine::Session::new();
-    session.execute("file.new", json!({"width": 64, "height": 48})).unwrap();
-    let layer_id = session.execute("layer.new.layer", json!({"name": "Styled"})).unwrap()["layer"].as_u64().unwrap();
-    session.execute("layer.layerStyle.dropShadow", json!({"layer": layer_id})).unwrap();
-    let state = session.active_mut().unwrap();
-    let doc = std::sync::Arc::make_mut(&mut state.doc);
-    let layer = doc.layers.iter_mut().find(|layer| layer.id.0 == layer_id).unwrap();
-    let Some(Effect::DropShadow(shadow)) = layer.effects.items.first_mut() else { panic!("drop shadow was configured") };
-    shadow.common.enabled = false;
-
-    let h = harness(session, 1.0, "promedium", 290.0);
-    let effect_row = h.get_by_label("Drop Shadow").rect();
-    assert!(effect_row.is_positive(), "a configured disabled effect remains visible for discovery");
-}
-
 fn groups_open(s: &photocraft_engine::Session) -> Vec<bool> {
     s.active().unwrap().doc.walk().into_iter().filter_map(|(_, _, l)| if let LayerContent::Group(g) = &l.content { Some(g.expanded) } else { None }).collect()
 }
@@ -177,42 +158,4 @@ fn collapse_all_groups_from_the_panel_menu_and_it_is_saved() {
         s.add_document(back, None);
         assert!(groups_open(&s).iter().all(|o| !o), "{name}: groups stay closed");
     }
-}
-
-/// Dragging down the eye column hides (or shows) every layer swept over and never reorders the
-/// layers; a hidden layer's eye box is empty and a click shows it again.
-#[test]
-fn dragging_down_the_eyes_sweeps_visibility_without_reordering() {
-    let mut s = photocraft_engine::Session::new();
-    s.execute("file.new", json!({"width": 64, "height": 48})).unwrap();
-    for i in 0..4 {
-        s.execute("layer.new.layer", json!({"name": format!("L{i}")})).unwrap();
-    }
-    let mut h = harness(s, 1.0, "promedium", 290.0);
-    let order = |h: &Harness<'_, PhotocraftApp>| h.state().session.active().unwrap().doc.layers.iter().map(|l| l.id).collect::<Vec<_>>();
-    let visible = |h: &Harness<'_, PhotocraftApp>, id: u64| h.state().session.active().unwrap().doc.layer(photocraft_doc::LayerId(id)).unwrap().visible;
-    let before = order(&h);
-    // Rows top to bottom: L3, L2, L1, L0, Background.
-    let rows = recorded(&h.ctx);
-    let eye = |r: &RowRects| pos2(r.row.left() + 17.0, r.row.center().y);
-    let (first, last) = (eye(&rows[0]), eye(&rows[2]));
-    h.event(egui::Event::PointerMoved(first));
-    h.run_steps(1);
-    h.event(egui::Event::PointerButton { pos: first, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
-    h.run_steps(1);
-    for k in 1..=10 {
-        h.event(egui::Event::PointerMoved(first + (last - first) * (k as f32 / 10.0)));
-        h.run_steps(1);
-    }
-    h.event(egui::Event::PointerButton { pos: last, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
-    h.run_steps(3);
-    for r in &rows[..3] {
-        assert!(!visible(&h, r.layer), "layer {} swept hidden", r.layer);
-    }
-    assert!(visible(&h, rows[3].layer), "rows past the sweep are untouched");
-    assert_eq!(order(&h), before, "an eye drag never reorders the layers");
-    // A click on the (empty) eye box of a hidden layer shows it again.
-    let p = eye(&recorded(&h.ctx)[1]);
-    click(&mut h, p);
-    assert!(visible(&h, rows[1].layer));
 }
