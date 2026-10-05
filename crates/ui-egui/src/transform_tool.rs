@@ -5,8 +5,7 @@
 //! axis, ⌥ scales about the reference point, ⌘-drag a corner distorts (⌘⌥⇧: perspective), ⌘-drag
 //! an edge skews (⇧ along the edge), drag outside rotates (⇧ snaps to 15°), drag inside moves
 //! (⇧ locks to 8 directions), the reference point can be dragged and ⌥-click puts it under the
-//! pointer. Arrow keys nudge the box (move_mods.rs). ↩ commits, Esc cancels. Undo and Redo step
-//! through the session's own changes (`Steps`), not the document's history.
+//! pointer. Arrow keys nudge the box (move_mods.rs). ↩ commits, Esc cancels.
 
 use std::sync::Arc;
 
@@ -19,32 +18,6 @@ use serde_json::json;
 use crate::PhotocraftApp;
 use crate::canvas::{ToolEvent, ViewXform};
 use crate::state::TransformSession;
-
-/// Which Split button is armed. The guide follows the pointer and the split is added on release.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum SplitTool {
-    Cross,
-    Vertical,
-    Horizontal,
-}
-
-impl SplitTool {
-    fn command(self) -> &'static str {
-        match self {
-            SplitTool::Cross => "edit.transform.splitWarpCrosswise",
-            SplitTool::Vertical => "edit.transform.splitWarpVertically",
-            SplitTool::Horizontal => "edit.transform.splitWarpHorizontally",
-        }
-    }
-
-    fn icon(self) -> &'static str {
-        match self {
-            SplitTool::Cross => "cross",
-            SplitTool::Vertical => "vertical",
-            SplitTool::Horizontal => "horizontal",
-        }
-    }
-}
 
 /// Preview state that isn't serialisable: the document without the transformed pixels, and
 /// full-resolution textures of those pixels (transform_tex.rs).
@@ -164,19 +137,8 @@ pub fn begin(app: &mut PhotocraftApp, ctx: &egui::Context) -> Result<(), String>
     let max_side = ctx.input(|i| i.max_texture_side).max(app.gpu.as_ref().map_or(1, |g| g.max_texture_side()));
     let (image, uv) = preview_image(&doc, id, lifted.as_ref(), b, max_side);
     let texture = crate::transform_tex::PreviewTextures::new(ctx, format!("transform-{session}"), image, uv);
-    app.transform_preview = Some(TransformPreview {
-        session,
-        doc: Arc::new(pd),
-        texture,
-        opacity: layer.opacity * layer.fill_opacity,
-        gesture: None,
-        warp_drag: None,
-        split_tool: None,
-        split_pointer: None,
-        split_placing: false,
-        split_quick: false,
-        steps: Steps::default(),
-    });
+    app.transform_preview =
+        Some(TransformPreview { session, doc: Arc::new(pd), texture, opacity: layer.opacity * layer.fill_opacity, gesture: None, warp_drag: None });
     app.ui.transform = Some(TransformSession {
         session,
         layer: id.0,
@@ -437,26 +399,7 @@ fn preview_image(
         }
     };
     let Some(surf) = surf else { return (egui::ColorImage::new([1, 1], vec![Color32::TRANSPARENT]), [1.0, 1.0]) };
-    // A flattened render already has the masks applied.
-    let raw = lifted.is_some() || layer.is_some_and(|l| matches!(l.content, LayerContent::Raster(_)));
-    crate::transform_tex::read_surface(surf, mask.as_ref().filter(|_| raw), b, max_side)
-}
-
-/// The layer's masks as the moving texels carry them: the enabled masks when all of them are linked
-/// (the vector mask and feathering folded in as the compositor applies them), else the linked
-/// pixel mask alone. `None` when no enabled mask moves with the pixels.
-fn preview_mask(l: &photocraft_doc::Layer, b: photocraft_geom::Rect) -> Option<crate::transform_tex::PreviewMask> {
-    use crate::transform_tex::PreviewMask;
-    let pixel = l.mask.as_ref().filter(|m| m.enabled);
-    let vector = l.vector_mask.as_ref().filter(|v| v.enabled);
-    let linked_pixel = pixel.filter(|m| m.linked);
-    if pixel.is_none_or(|m| m.linked)
-        && vector.is_some_and(|v| v.linked)
-        && let Some(surface) = photocraft_compose::masks::combined_mask(l, b)
-    {
-        return Some(PreviewMask { surface, density: 1.0 });
-    }
-    linked_pixel.map(|m| PreviewMask { surface: m.surface.clone(), density: m.density })
+    crate::transform_tex::read_surface(surf, b, max_side)
 }
 
 fn contains(l: &photocraft_doc::Layer, id: LayerId) -> bool {
@@ -1176,6 +1119,16 @@ fn quad_scale(t: &TransformSession) -> f32 {
     if s.is_finite() { s as f32 } else { 1.0 }
 }
 
+/// How much the box enlarges its pixels: the longest edge relative to the original (picks the
+/// preview's texture level and filter).
+fn quad_scale(t: &TransformSession) -> f32 {
+    let (w0, h0) = ((t.rect[2] - t.rect[0]).max(1e-9), (t.rect[3] - t.rect[1]).max(1e-9));
+    let len = |a: [f64; 2], b: [f64; 2]| (b[0] - a[0]).hypot(b[1] - a[1]);
+    let q = &t.quad;
+    let s = (len(q[0], q[1]) / w0).max(len(q[3], q[2]) / w0).max(len(q[0], q[3]) / h0).max(len(q[1], q[2]) / h0);
+    if s.is_finite() { s as f32 } else { 1.0 }
+}
+
 /// Scale (%), angle (°) and translation implied by the current quad (affine readout).
 fn readout(t: &TransformSession) -> (f64, f64, f64, f64) {
     let (w0, h0) = (t.rect[2] - t.rect[0], t.rect[3] - t.rect[1]);
@@ -1711,43 +1664,6 @@ mod tests {
         assert!(app.ui.transform.is_none() && app.transform_preview.is_none());
     }
 
-    /// #352: ⌥⌘T transforms a copy. OK leaves the original and a moved copy as one history step;
-    /// Cancel leaves no copy and nothing to redo; with a selection the copy holds the selected
-    /// pixels only.
-    #[test]
-    fn free_transform_a_copy() {
-        let ctx = egui::Context::default();
-        let bounds = |app: &PhotocraftApp, i: usize| app.session.active().unwrap().doc.layers[i].surface().unwrap().content_bounds();
-        let mut app = app_with_square(64, photocraft_geom::Rect::new(8, 8, 24, 24));
-        let (layers, steps) = (app.session.active().unwrap().doc.layers.len(), app.session.active().unwrap().history.past_len());
-        crate::menus::invoke(&mut app, &ctx, "edit.freeTransformCopy", json!({})).unwrap();
-        assert!(app.ui.transform.as_ref().unwrap().copy);
-        assert!(!crate::menus::is_enabled(&app, "edit.freeTransformCopy"), "one transform at a time");
-        // Esc: the copy goes too.
-        cancel(&mut app);
-        let st = app.session.active().unwrap();
-        assert_eq!((st.doc.layers.len(), st.history.past_len()), (layers, steps));
-        assert!(!st.history.can_redo(), "nothing to redo");
-        // OK: original in place, a moved copy, one step.
-        crate::menus::invoke(&mut app, &ctx, "edit.freeTransformCopy", json!({})).unwrap();
-        if let Some(t) = app.ui.transform.as_mut() {
-            t.quad = t.quad.map(|[x, y]| [x + 20.0, y]);
-        }
-        commit(&mut app);
-        let st = app.session.active().unwrap();
-        assert_eq!((st.doc.layers.len(), st.history.past_len()), (layers + 1, steps + 1));
-        assert_eq!(bounds(&app, layers - 1), photocraft_geom::Rect::new(8, 8, 24, 24), "the original stays");
-        assert_eq!(bounds(&app, layers), photocraft_geom::Rect::new(28, 8, 44, 24), "the copy moved");
-        app.session.undo();
-        assert_eq!(app.session.active().unwrap().doc.layers.len(), layers, "one undo removes copy and move");
-        // With a selection: Layer via Copy, so only the selected pixels are copied.
-        app.run("select.rect", json!({"x": 8, "y": 8, "width": 8, "height": 16})).unwrap();
-        crate::menus::invoke(&mut app, &ctx, "edit.freeTransformCopy", json!({})).unwrap();
-        assert_eq!(app.ui.transform.as_ref().unwrap().rect, [8.0, 8.0, 16.0, 24.0]);
-        cancel(&mut app);
-        assert_eq!(app.session.active().unwrap().doc.layers.len(), layers);
-    }
-
     fn app_with_square(size: u32, fill: photocraft_geom::Rect) -> PhotocraftApp {
         let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
         app.session.execute("file.new", json!({"width": size, "height": size})).unwrap();
@@ -1834,14 +1750,6 @@ mod tests {
         let t0 = std::time::Instant::now();
         begin(&mut app, &ctx).unwrap();
         let begin_ms = t0.elapsed().as_secs_f64() * 1e3;
-        // The same with a linked layer mask applied to the texels (#205).
-        cancel(&mut app);
-        app.session.execute("layer.layerMask.revealAll", json!({})).unwrap();
-        app.session.execute("paint.gradient", json!({"from": [0, 0], "to": [w, 0], "colors": ["#000000", "#ffffff"], "target": "mask"})).unwrap();
-        let t0 = std::time::Instant::now();
-        begin(&mut app, &ctx).unwrap();
-        let masked_ms = t0.elapsed().as_secs_f64() * 1e3;
-        eprintln!("transform preview begin {w}x{h}: {begin_ms:.1} ms, with a linked mask {masked_ms:.1} ms");
         let size = app.transform_preview.as_ref().unwrap().texture.size();
         rotate_about_pivot(&mut app, 0.05);
         let frame = |zoom: f32| {

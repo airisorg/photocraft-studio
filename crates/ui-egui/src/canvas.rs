@@ -2204,15 +2204,6 @@ pub fn tool_event(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers)
     }
     // Window › Modifier Keys: sticky Shift/⌘/⌥ act as held keys.
     let mods = crate::workspace_ui::sticky_mods(app, mods);
-    // Control+Alt-drag or Alt+right-drag with a painting tool resizes the brush instead of
-    // painting (#231, #297).
-    if crate::brush_resize::pointer(app, ev, mods, armed) {
-        return;
-    }
-    // ⌥ (Alt) with a painting tool is the Eyedropper for that press.
-    if alt_eyedropper(app, ev, mods) {
-        return;
-    }
     // Move tool: ⇧ locks the axis, ⌥ duplicates (move_mods.rs).
     let ev = crate::move_mods::filter_event(app, ev, mods);
     // Ruler, Count and Note tools.
@@ -2366,8 +2357,6 @@ pub fn tool_event(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers)
             crate::collaboration::progress(app, Some(&d));
             let before = app.session.active().map(|st| st.revision);
             finish_gesture(app, d);
-            let committed = app.session.active().map(|st| st.revision) != before;
-            crate::collaboration::finish(app, committed);
             crate::move_mods::finish(app);
         }
     }
