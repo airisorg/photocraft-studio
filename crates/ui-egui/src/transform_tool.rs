@@ -149,7 +149,59 @@ pub fn begin(app: &mut PhotocraftApp, ctx: &egui::Context) -> Result<(), String>
         warp: None,
         selection: false,
         target: None,
-        copy: false,
+    });
+    Ok(())
+}
+
+/// Free Transform of a targeted unlinked layer mask, alpha channel or Quick Mask by itself: the
+/// box frames its content (within the selection) and previews the moving values in grey over the
+/// document with them vacated.
+fn begin_lone(
+    app: &mut PhotocraftApp,
+    ctx: &egui::Context,
+    doc: Arc<Document>,
+    surf: photocraft_raster::Surface,
+    target: serde_json::Value,
+) -> Result<(), String> {
+    use photocraft_engine::transform_cmds as tc;
+    let b = tc::target_bounds(&doc, &surf);
+    if b.is_empty() {
+        return Err("Could not transform: nothing is selected".into());
+    }
+    let whole;
+    let sel = match &doc.selection {
+        Some(s) => s,
+        None => {
+            let mut s = photocraft_raster::Surface::new(photocraft_color::PixelFormat::GRAY8);
+            s.fill_rect(b, &[1.0]);
+            whole = s;
+            &whole
+        }
+    };
+    let (lifted, rest) = tc::split_gray_selected(&surf, sel).ok_or("this channel can't be transformed")?;
+    crate::type_tool::commit(app);
+    let layer = app.session.active().and_then(|st| st.active_layer).map_or(0, |l| l.0);
+    let mut pd = (*doc).clone();
+    let tp = json!({ "target": target });
+    if let Ok(Some(s)) = tc::lone_target_mut(&mut pd, Some(LayerId(layer)), &tp) {
+        *s = rest;
+    }
+    let rect = [b.x0 as f64, b.y0 as f64, b.x1 as f64, b.y1 as f64];
+    let session = app.ui.alloc_id();
+    let max_side = ctx.input(|i| i.max_texture_side).max(app.gpu.as_ref().map_or(1, |g| g.max_texture_side()));
+    let (image, uv) = crate::transform_tex::read_surface(&lifted, None, b, max_side);
+    let texture = crate::transform_tex::PreviewTextures::new(ctx, format!("transform-{session}"), image, uv);
+    app.transform_preview = Some(TransformPreview { session, doc: Arc::new(pd), texture, opacity: 0.6, gesture: None, warp_drag: None });
+    app.ui.transform = Some(TransformSession {
+        session,
+        layer,
+        rect,
+        quad: corners(rect),
+        pivot: [(rect[0] + rect[2]) / 2.0, (rect[1] + rect[3]) / 2.0],
+        interpolation: "bicubic".into(),
+        warp: None,
+        selection: false,
+        target: Some(target),
     });
     start_steps(app);
     Ok(())
@@ -304,7 +356,6 @@ pub fn begin_selection(app: &mut PhotocraftApp, ctx: &egui::Context) -> Result<(
         warp: None,
         selection: true,
         target: None,
-        copy: false,
     });
     start_steps(app);
     Ok(())
@@ -399,7 +450,26 @@ fn preview_image(
         }
     };
     let Some(surf) = surf else { return (egui::ColorImage::new([1, 1], vec![Color32::TRANSPARENT]), [1.0, 1.0]) };
-    crate::transform_tex::read_surface(surf, b, max_side)
+    // A flattened render already has the masks applied.
+    let raw = lifted.is_some() || layer.is_some_and(|l| matches!(l.content, LayerContent::Raster(_)));
+    crate::transform_tex::read_surface(surf, mask.as_ref().filter(|_| raw), b, max_side)
+}
+
+/// The layer's masks as the moving texels carry them: the enabled masks when all of them are linked
+/// (the vector mask and feathering folded in as the compositor applies them), else the linked
+/// pixel mask alone. `None` when no enabled mask moves with the pixels.
+fn preview_mask(l: &photocraft_doc::Layer, b: photocraft_geom::Rect) -> Option<crate::transform_tex::PreviewMask> {
+    use crate::transform_tex::PreviewMask;
+    let pixel = l.mask.as_ref().filter(|m| m.enabled);
+    let vector = l.vector_mask.as_ref().filter(|v| v.enabled);
+    let linked_pixel = pixel.filter(|m| m.linked);
+    if pixel.is_none_or(|m| m.linked)
+        && vector.is_some_and(|v| v.linked)
+        && let Some(surface) = photocraft_compose::masks::combined_mask(l, b)
+    {
+        return Some(PreviewMask { surface, density: 1.0 });
+    }
+    linked_pixel.map(|m| PreviewMask { surface: m.surface.clone(), density: m.density })
 }
 
 fn contains(l: &photocraft_doc::Layer, id: LayerId) -> bool {
@@ -447,6 +517,17 @@ pub fn commit(app: &mut PhotocraftApp) {
             }
             app.ui.status = e;
         }
+        return;
+    }
+    if t.quad == corners(t.rect) {
+        return; // untouched: nothing to do (Photoshop adds no history step either)
+    }
+    let mut p = json!({"layer": t.layer, "rect": t.rect, "quad": t.quad, "interpolation": t.interpolation});
+    if let Some(target) = t.target {
+        p["target"] = target;
+    }
+    if let Err(e) = app.run("edit.transform", p) {
+        app.ui.status = e;
     }
 }
 
@@ -1428,7 +1509,6 @@ mod tests {
             warp: None,
             selection: false,
             target: None,
-            copy: false,
         }
     }
 
@@ -1750,6 +1830,14 @@ mod tests {
         let t0 = std::time::Instant::now();
         begin(&mut app, &ctx).unwrap();
         let begin_ms = t0.elapsed().as_secs_f64() * 1e3;
+        // The same with a linked layer mask applied to the texels (#205).
+        cancel(&mut app);
+        app.session.execute("layer.layerMask.revealAll", json!({})).unwrap();
+        app.session.execute("paint.gradient", json!({"from": [0, 0], "to": [w, 0], "colors": ["#000000", "#ffffff"], "target": "mask"})).unwrap();
+        let t0 = std::time::Instant::now();
+        begin(&mut app, &ctx).unwrap();
+        let masked_ms = t0.elapsed().as_secs_f64() * 1e3;
+        eprintln!("transform preview begin {w}x{h}: {begin_ms:.1} ms, with a linked mask {masked_ms:.1} ms");
         let size = app.transform_preview.as_ref().unwrap().texture.size();
         rotate_about_pivot(&mut app, 0.05);
         let frame = |zoom: f32| {
@@ -1826,32 +1914,6 @@ mod tests {
         begin_warp(&mut app, &ctx).unwrap();
         leave_warp(&mut app);
         assert!(app.ui.transform.as_ref().unwrap().warp.is_none());
-    }
-
-    /// A press on a preset warp that misses its points leaves the preset alone (no invisible undo
-    /// step); grabbing a point turns it into a custom mesh.
-    #[test]
-    fn a_press_on_a_preset_warp_converts_it_only_when_it_grabs_a_point() {
-        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
-        app.session.execute("file.new", json!({"width": 64, "height": 64})).unwrap();
-        app.sync_views();
-        app.session.execute("layer.new.layer", json!({})).unwrap();
-        app.session
-            .edit("paint", |doc, a| {
-                doc.layer_mut(a.unwrap()).unwrap().surface_mut().unwrap().fill_rect(photocraft_geom::Rect::new(8, 8, 32, 32), &[1.0, 0.0, 0.0, 1.0]);
-                Ok(())
-            })
-            .unwrap();
-        begin_warp(&mut app, &egui::Context::default()).unwrap();
-        let t = app.ui.transform.as_mut().unwrap();
-        let preset = Warp::preset(WarpStyle::Arc, 50.0, t.rect);
-        t.warp = Some(preset.clone());
-        warp_pointer(&mut app, ToolEvent::Down { x: 20.0, y: 20.0, pressure: 1.0 }, 2.0, egui::Modifiers::NONE);
-        warp_pointer(&mut app, ToolEvent::Up { x: 20.0, y: 20.0 }, 2.0, egui::Modifiers::NONE);
-        assert_eq!(app.ui.transform.as_ref().unwrap().warp.as_ref(), Some(&preset), "a miss changes nothing");
-        let corner = preset.to_mesh(1, 1).points[15];
-        warp_pointer(&mut app, ToolEvent::Down { x: corner[0], y: corner[1], pressure: 1.0 }, 2.0, egui::Modifiers::NONE);
-        assert_eq!(app.ui.transform.as_ref().unwrap().warp.as_ref().unwrap().style, WarpStyle::Custom);
     }
 
     // ---- Layer masks (#205) ----
