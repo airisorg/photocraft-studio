@@ -70,62 +70,6 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     photocraft_format::atomic_write(path, bytes).map_err(|e| e.to_string())
 }
 
-type SharedRecovery = Rc<RefCell<Option<RecoveryStore>>>;
-
-/// Run `f` on the recovery store (`Err` without a config directory). The service closures never
-/// call each other, so the store is never borrowed twice.
-fn with_store<R>(store: &SharedRecovery, f: impl FnOnce(&mut RecoveryStore) -> R) -> Result<R, String> {
-    let mut slot = store.try_borrow_mut().map_err(|_| "crash recovery is busy".to_string())?;
-    Ok(f(slot.as_mut().ok_or("no config directory")?))
-}
-
-/// Crash recovery: background incremental .pcraft autosaves into `dir` (`None`: no config
-/// directory, so autosaves fail and nothing is recovered). Recovered documents keep their entries
-/// until a newer autosave replaces them or they're saved or closed (see [`RecoveryStore`]).
-fn recovery_services(dir: Option<PathBuf>) -> Services {
-    let store: SharedRecovery = Rc::new(RefCell::new(dir.map(RecoveryStore::new)));
-    let (s1, s2, s3) = (store.clone(), store.clone(), store.clone());
-    Services {
-        autosave: Some(Box::new(move |doc: &Arc<Document>, revision: u64, path: Option<&str>| {
-            with_store(&s1, |s| s.autosave(doc, revision, path.map(str::to_string)))
-        })),
-        discard_autosave: Some(Box::new(move |id: u64| {
-            let _ = with_store(&s2, |s| s.discard(id));
-        })),
-        recover: Some(Box::new(move || {
-            let found = with_store(&s3, |s| s.recover()).unwrap_or_default();
-            found.into_iter().map(|(e, doc)| Recovered { key: e.info.key, path: e.info.original_path, doc }).collect()
-        })),
-        adopt_autosave: Some(Box::new(move |id: u64, key: &str| {
-            let _ = with_store(&store, |s| s.adopt(id, key));
-        })),
-        ..Default::default()
-    }
-}
-
-/// The pixels to paste when the clipboard holds copied files rather than an image (Copy in
-/// Files, Finder or Explorer puts paths on the clipboard, #338): the first file that decodes,
-/// upright, as RGBA8. Files that aren't images are skipped after reading only their header.
-fn image_from_files(paths: &[PathBuf]) -> Option<(u32, u32, Vec<u8>)> {
-    use std::io::Read;
-    paths.iter().find_map(|path| {
-        // text/uri-list lines end in CRLF (RFC 2483, and GTK writes them so), but arboard splits
-        // on LF only, so a path copied in GNOME Files arrives with a trailing '\r'.
-        let path = path.to_str().map_or_else(|| path.clone(), |s| PathBuf::from(s.trim_end_matches('\r')));
-        let mut head = Vec::with_capacity(256);
-        std::fs::File::open(&path).ok()?.take(256).read_to_end(&mut head).ok()?;
-        // TGA has no magic number and is only guessed from the header, so trust the extension
-        // too before reading what may be a large non-image file.
-        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-        match photocraft_codecs::detect(&head)? {
-            photocraft_codecs::Format::Tga if photocraft_codecs::from_extension(ext) != Some(photocraft_codecs::Format::Tga) => return None,
-            _ => {}
-        }
-        let img = photocraft_codecs::decode(&std::fs::read(&path).ok()?).ok()?;
-        Some((img.width(), img.height(), img.to_rgba8()))
-    })
-}
-
 pub fn native(automation: Option<photocraft_automation::AuthorizedWorkspace>) -> Services {
     let savers: Rc<RefCell<HashMap<u64, Autosaver>>> = Rc::default();
     let savers2 = savers.clone();
