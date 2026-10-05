@@ -23,7 +23,6 @@ mod app_icon;
 mod apple_events;
 mod control_server;
 mod crash_guard;
-mod gpu_startup;
 // Pure logic is tested on every platform; only Linux runs the check.
 #[cfg(any(target_os = "linux", test))]
 mod linux_libs;
