@@ -83,7 +83,9 @@ pub fn path_from_resource(data: &[u8], w: u32, h: u32) -> Option<Path> {
 /// - without subpaths, the initial-fill record alone decides coverage (1 = everything);
 /// - with subpaths the initial-fill record is ignored; a first component that subtracts starts
 ///   from a full canvas (the shape is inverted);
-/// - a subpath with operation -1 continues the previous component (same operation).
+/// - a subpath with operation -1 continues the previous component ([`PathOp::Join`]: filled
+///   together with it, so subpaths wound the other way cut holes, as in psd-tools
+///   stroke-effects' custom shapes).
 ///
 /// The model applies the first subpath as "combine" and inverts the final result, so a leading
 /// subtract becomes `inverted` with every later operation replaced by its complement dual
@@ -93,14 +95,8 @@ fn layer_path_from_records(p: &PathData, w: u32, h: u32) -> Path {
     if path.subpaths.is_empty() {
         return path;
     }
-    let ops: Vec<i16> = p.subpaths().iter().map(|s| s.operation).collect();
-    let mut prev = PathOp::Combine;
-    for (s, &raw) in path.subpaths.iter_mut().zip(&ops) {
-        if raw == -1 {
-            s.op = prev;
-        }
-        prev = s.op;
-    }
+    // `path_from_records` maps -1 to `PathOp::Join` (the component's operation is its first
+    // subpath's); a leading -1 acts as the first component.
     path.inverted = path.subpaths.first().is_some_and(|s| s.op == PathOp::Subtract);
     if path.inverted {
         for s in path.subpaths.iter_mut().skip(1) {
@@ -607,48 +603,6 @@ mod tests {
         let (p, _) = path_from_vmsk(&vmsk_with(false, &[2, -1, 1]), 100, 100).unwrap();
         assert!(p.inverted);
         assert_eq!(p.subpaths.iter().map(|s| s.op).collect::<Vec<_>>(), [PathOp::Combine, PathOp::Join, PathOp::Subtract]);
-        // No subpaths: a vector mask with initial fill reveals all, without hides all; a shape
-        // with initial fill covers everything.
-        let reveal = vector_mask_from_block(&vmsk_with(true, &[]), 100, 100).unwrap();
-        assert_eq!(photocraft_vector::vector_mask_values(&reveal, photocraft_geom::Rect::new(0, 0, 2, 2)), vec![1.0; 4]);
-        let hide = vector_mask_from_block(&vmsk_with(false, &[]), 100, 100).unwrap();
-        assert_eq!(photocraft_vector::vector_mask_values(&hide, photocraft_geom::Rect::new(0, 0, 2, 2)), vec![0.0; 4]);
-        assert!(path_from_vmsk(&vmsk_with(true, &[]), 100, 100).unwrap().0.inverted);
-        // Our own writer round-trips each case.
-        for m in [reveal, hide] {
-            assert_eq!(vector_mask_from_block(&vector_mask_bytes(&m, 100, 100), 100, 100), Some(m));
-        }
-        let mut lead = sample_path();
-        lead.subpaths[0].op = PathOp::Subtract;
-        let back = path_from_vmsk(&vmsk_bytes(&lead, 0, 64, 64), 64, 64).unwrap().0;
-        assert!(!back.inverted, "a stored leading subtract is drawn as combine by the model");
-    }
-
-    fn vmsk_with(initial_fill: bool, ops: &[i16]) -> Vec<u8> {
-        let square = |x: f64| PsdSubpath {
-            closed: true,
-            operation: 0,
-            knots: [(x, 0.25), (x + 0.25, 0.25), (x + 0.25, 0.5), (x, 0.5)].iter().map(|&p| PsdKnot { linked: false, pre: p, anchor: p, post: p }).collect(),
-        };
-        let subs: Vec<PsdSubpath> = ops.iter().enumerate().map(|(i, &op)| PsdSubpath { operation: op, ..square(0.1 * i as f64) }).collect();
-        VectorMaskBlock { version: 3, flags: 0, path: PathData::from_subpaths(&subs, initial_fill) }.to_bytes()
-    }
-
-    /// psd-tools vector-mask.psd / vector-mask2.psd / vector-mask3.psd: Photoshop's initial-fill
-    /// record only matters without subpaths; a leading subtract inverts; -1 continues the
-    /// previous component.
-    #[test]
-    fn layer_path_semantics_follow_photoshop() {
-        // Initial fill with a combine subpath: a plain (not inverted) shape.
-        let (p, _) = path_from_vmsk(&vmsk_with(true, &[1]), 100, 100).unwrap();
-        assert!(!p.inverted);
-        // Leading subtract: everything but the shape; later ops become their complements.
-        let (p, _) = path_from_vmsk(&vmsk_with(true, &[2, 1, 2, 0]), 100, 100).unwrap();
-        assert!(p.inverted);
-        assert_eq!(p.subpaths.iter().map(|s| s.op).collect::<Vec<_>>(), [PathOp::Combine, PathOp::Subtract, PathOp::Combine, PathOp::Exclude]);
-        // -1 continues the previous component's operation.
-        let (p, _) = path_from_vmsk(&vmsk_with(false, &[1, 2, -1]), 100, 100).unwrap();
-        assert_eq!(p.subpaths[2].op, PathOp::Subtract);
         // No subpaths: a vector mask with initial fill reveals all, without hides all; a shape
         // with initial fill covers everything.
         let reveal = vector_mask_from_block(&vmsk_with(true, &[]), 100, 100).unwrap();

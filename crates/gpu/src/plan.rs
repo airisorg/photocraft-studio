@@ -346,6 +346,9 @@ enum Cov {
 pub const F_KNOCKOUT: u32 = 16;
 /// Effect merge: A already holds the layer; only mix with the backdrop by the layer's opacity.
 pub const F_NO_LAYER: u32 = 32;
+/// Outside strokes along a filled shape's outline (`effects::outline_share`; the coverage slot
+/// carries the layer's alpha in `.g`).
+pub const F_OUTLINE: u32 = 131072;
 /// Shape layer (outside strokes never show inside it).
 pub const F_VECTOR: u32 = 64;
 /// Merge onto an opaque clipping base, keeping its alpha.
@@ -720,6 +723,16 @@ impl<'a> Planner<'a> {
         self.passes.push(p);
         self.release(merged);
         dst
+    }
+
+    /// A stroked shape's fill or vector stroke alone (`compose::shape_split`), unmasked.
+    fn shape_part(&mut self, layer: &'a Layer, role: Role, surface: Surface) -> Slot {
+        let mut p = Pass::new(Kernel::Content, 0);
+        p.color = photocraft_raster::to_rgba(&surface.format(), &surface.default_pixel());
+        if surface.tile_count() > 0 {
+            p.tex = Some(TexUse { layer: layer.id, role, surface: SurfaceRef::Derived(std::sync::Arc::new(surface)) });
+        }
+        self.emit(p)
     }
 
     /// render_content for non-adjustment layers.

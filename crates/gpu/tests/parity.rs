@@ -1002,7 +1002,13 @@ fn stroke_effects_on_filled_and_stroked_shapes() {
         let fill = if fill_kind == 0 {
             Fill::Solid(Color::rgb(0.3, 0.6, 0.9))
         } else {
-            Fill::gradient(vec![(0.0, Color::rgb(0.9, 0.3, 0.1)), (1.0, clear)], 20.0, 1.0, GradientStyle::Linear, false)
+            Fill::Gradient {
+                stops: vec![(0.0, Color::rgb(0.9, 0.3, 0.1)), (1.0, clear)],
+                angle: 20.0,
+                scale: 1.0,
+                style: GradientStyle::Linear,
+                reverse: false,
+            }
         };
         let stroke_v = vector_stroke.then(|| ShapeStroke {
             width: 3.0,

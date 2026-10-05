@@ -11,6 +11,7 @@
 //! cargo run --release -p photocraft-io --example oracle_diff -- corpus/psd             # every file: max err, bad %, PASS/DIFF
 //! cargo run --release -p photocraft-io --example oracle_diff -- file.psd 0 dump prefix # raw f32 planes for offline fitting
 //! cargo run --release -p photocraft-io --example oracle_diff -- file.psd 0 bylayer    # max error around each layer
+//! SCALE=4 …                                                                         # upscale the png
 //! HIDE_ADJ=1 …                                                                        # adjustment layers hidden
 //! ONLY="name,name" …                                                                  # only these top-level layers (+ the bottom one)
 //! DUMP_FX=1 …                                                                          # raw effects descriptors

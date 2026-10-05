@@ -39,6 +39,7 @@ const F_TEX: u32 = 4u;           // layer pixels live in `layer_tex`
 const F_GRADIENT: u32 = 8u;      // gradient fill (stops in `lut_tex`)
 const F_KNOCKOUT: u32 = 16u;     // effect paint: the layer knocks out the coverage (drop shadow)
 const F_NO_LAYER: u32 = 32u;    // effect merge: A already holds the layer (only the opacity mix)
+const F_OUTLINE: u32 = 131072u;      // outside strokes: filled shape outline (effects::outline_share)
 const F_VECTOR: u32 = 64u;       // effect paint: shape layer (outside stroke never inside)
 const F_ATOP: u32 = 128u;        // effect merge: clipped layer over an opaque base
 const F_GATE: u32 = 256u;        // effect paint: coverage only inside the layer's shape

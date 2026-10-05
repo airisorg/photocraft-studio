@@ -707,7 +707,7 @@ impl Compositor {
 
     /// How far beyond a page cell the effect maps of `f` must be computed to be exact in it.
     fn fx_apron(doc: &Document, f: &plan::FxLayer<'_>) -> i32 {
-        let vector_shape = matches!(f.layer.content, LayerContent::Shape(_));
+        let vector_shape = matches!(f.layer.content, LayerContent::Shape(_)) && photocraft_compose::effect_outline(f.layer).is_none();
         let progs: Vec<fx::MapProgram> = f
             .layer
             .effects
@@ -1031,6 +1031,9 @@ impl Compositor {
                 let f = plan.fx.get(m.fx)?;
                 let key = (f.layer.id, paged.get(m.fx).copied().unwrap_or(false).then_some(cell));
                 let e = self.fx.get(&key)?;
+                if m.item == plan::SHAPE_MAP {
+                    return Some((e.shape.view.clone(), e.region));
+                }
                 let t = e.progs.get(m.item)?.maps.get(m.map)?.as_ref()?;
                 Some((t.view.clone(), e.region))
             }));
