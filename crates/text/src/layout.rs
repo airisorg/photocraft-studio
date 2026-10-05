@@ -603,8 +603,8 @@ impl Layouter {
                     0.0
                 };
                 let dx = if is_box {
-                    let base = line_origin + indent_start - kern_align;
-                    let slack = avail.unwrap_or(0.0) - adv - line_kern;
+                    let base = line_origin + indent_start;
+                    let slack = avail.unwrap_or(0.0) - adv;
                     base + if last_line {
                         match ps.align {
                             TextAlign::JustifyCenter => slack * 0.5 - m.offset,
@@ -628,7 +628,7 @@ impl Layouter {
                 let g0 = out.glyphs.len();
                 let c0 = out.clusters.len();
                 let mut vinfo: Vec<VGlyph> = Vec::new();
-                let mut extra = 0.0f32; // horizontal-scale growth and kerning along the line
+                let mut extra = 0.0f32; // horizontal-scale growth along the line
                 let mut seen_runs: Vec<usize> = Vec::new();
                 for item in line.items() {
                     let PositionedLayoutItem::GlyphRun(gr) = item else {
@@ -672,16 +672,6 @@ impl Layouter {
                     let mut pen = gr.offset();
                     let mut cursor = cursors.iter_mut().find(|c| c.0 == run.index());
                     for g in gr.glyphs() {
-                        // Kerning of the clusters before this glyph's cluster.
-                        if let Some(c) = cursor.as_deref_mut() {
-                            if let Some(&slot) = c.1.get(c.2) {
-                                while c.3 < slot {
-                                    extra += kern_px.get(c.3).copied().unwrap_or(0.0);
-                                    c.3 += 1;
-                                }
-                            }
-                            c.2 += 1;
-                        }
                         out.glyphs.push(PlacedGlyph {
                             face,
                             id: g.id,
@@ -953,12 +943,7 @@ fn style_props(st: &CharStyle, k: f32, fallback: &[String], idx: u32) -> Vec<Sty
     if !st.font_family.is_empty() {
         fam.push(quote(&st.font_family));
     }
-    // Serif runs fall back to a Mincho face for Japanese (craft-fonts), others to a Gothic one.
-    if crate::craft_fonts::is_serif_family(&st.font_family) {
-        fam.extend(crate::craft_fonts::mincho_first(fallback).iter().map(|f| quote(f)));
-    } else {
-        fam.extend(fallback.iter().map(|f| quote(f)));
-    }
+    fam.extend(fallback.iter().map(|f| quote(f)));
     fam.push("sans-serif".into());
     let feats = feature_list(st);
     let vars: Vec<String> = st.variations.iter().filter(|v| v.axis.len() == 4 && v.axis.is_ascii()).map(|v| format!("\"{}\" {}", v.axis, v.value)).collect();

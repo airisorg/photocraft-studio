@@ -557,11 +557,16 @@ pub fn draw_overlay(app: &mut PhotocraftApp, painter: &egui::Painter, xf: &ViewX
         let p = aff.apply(Point::new(x as f64, y as f64));
         xf.to_screen(p.x as f32, p.y as f32)
     };
+    // Line space (lines, clusters, carets) → screen: vertical type turns it 90° clockwise.
+    let scr = |x: f32, y: f32| -> Pos2 {
+        let (x, y) = l.to_text(x, y);
+        scr_t(x, y)
+    };
     // Tell the OS where the caret is: this is what enables the IME and places its candidate window.
     {
         let (x, top, bot) = l.caret(byte_of(&text, ed.caret));
         let (x, top, bot) = if l.lines.is_empty() { (0.0, -(12.0 * l.px_per_pt.max(1.0)), 3.0) } else { (x, top, bot) };
-        let r = egui::Rect::from_two_pos(scr(x, top), scr(x, bot)).expand2(egui::vec2(1.0, 0.0));
+        let r = egui::Rect::from_two_pos(scr(x, top), scr(x, bot)).expand(1.0);
         painter.ctx().output_mut(|o| {
             o.ime = Some(egui::output::IMEOutput { purpose: egui::IMEPurpose::Normal, rect: r, cursor_rect: r, should_interrupt_composition: false });
         });
@@ -766,7 +771,15 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         Some((f, s, z, _)) => (f.clone(), if s.is_empty() { "Regular".into() } else { s.clone() }, *z),
         None => (o.type_font.clone(), o.type_style.clone(), o.type_size),
     };
-    let _ = crate::icons::button(ui, "text-cursor", 24.0, false, "Toggle text orientation");
+    if crate::icons::button(ui, "text-cursor", 24.0, false, "Toggle text orientation").clicked()
+        && let Some((layer, _)) = target(app)
+    {
+        let to = if is_vertical(app, LayerId(layer)) { "horizontal" } else { "vertical" };
+        if let Err(e) = app.run(&format!("type.orientation.{to}"), json!({"layer": layer})) {
+            app.ui.status = e;
+            app.ui.status_error = true;
+        }
+    }
     if font_picker(ui, &mut fam, 170.0) {
         app.ui.tool_options.type_font = fam.clone();
         let st = styles(&fam);
