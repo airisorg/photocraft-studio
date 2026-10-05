@@ -310,7 +310,7 @@ pub struct PhotocraftApp {
     pub last_canvas_rect: egui::Rect,
     pub fps: f32,
     last_frame_time: f64,
-    thumbs: HashMap<(photocraft_doc::LayerId, u8), (u64, egui::TextureHandle)>,
+    thumbs: HashMap<(photocraft_doc::LayerId, bool), (u64, egui::TextureHandle)>,
     /// Snapshots whose live layer/mask keys were last used to prune thumbnail handles.
     thumb_documents: Vec<(DocId, std::sync::Weak<Document>)>,
     /// Content bounds cached per (key, revision): scanning a 36 MP layer every frame cost ~77 ms.
@@ -606,14 +606,6 @@ impl PhotocraftApp {
         self.ui.views.resize_with(n, Default::default);
         self.ui.windows.retain(|w| w.document < n);
         self.prune_thumbs();
-        self.sync_mask_targets();
-        // Channel-view textures outlive a hidden view (cheap re-show), not their document.
-        if !self.channel_views.is_empty() {
-            let docs = self.session.documents();
-            self.channel_views.retain(|id, _| docs.iter().any(|d| d.doc.id.0 == *id));
-        }
-        // Commands may close and reopen a preserved-ID document before the next repaint.
-        canvas::retain_gpu_documents(self);
     }
 
     /// Record `path` as the most-recently-opened file (File › Open Recent): de-duplicated, newest
@@ -1003,19 +995,6 @@ fn read_dropped(_f: &dyn egui::DroppedFile) -> Result<Vec<u8>, String> {
 }
 
 impl PhotocraftApp {
-    /// Viewing a layer mask (#196) targets it; a vector-mask target needs a vector mask on the
-    /// active layer (a shape layer's path is its content, not a mask).
-    fn sync_mask_targets(&mut self) {
-        let Some(st) = self.session.active() else { return };
-        if photocraft_engine::mask_view_cmds::current(st).is_some() {
-            self.ui.mask_target = true;
-            self.ui.vector_mask_target = false;
-        }
-        if self.ui.vector_mask_target && !mask_thumbs_ui::has_vector_mask(st) {
-            self.ui.vector_mask_target = false;
-        }
-    }
-
     fn prune_thumbs(&mut self) {
         let documents = self.session.documents();
         if self.thumb_documents.len() == documents.len()
@@ -1029,12 +1008,9 @@ impl PhotocraftApp {
             let mut live = std::collections::HashSet::new();
             let mut pending: Vec<_> = documents.iter().flat_map(|st| &st.doc.layers).collect();
             while let Some(layer) = pending.pop() {
-                live.insert((layer.id, mask_thumbs_ui::THUMB_LAYER));
+                live.insert((layer.id, false));
                 if layer.mask.is_some() {
-                    live.insert((layer.id, mask_thumbs_ui::THUMB_MASK));
-                }
-                if layer.vector_mask.is_some() {
-                    live.insert((layer.id, mask_thumbs_ui::THUMB_VECTOR));
+                    live.insert((layer.id, true));
                 }
                 if let Some(children) = layer.children() {
                     pending.extend(children);
