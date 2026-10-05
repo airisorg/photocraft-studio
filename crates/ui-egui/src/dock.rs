@@ -29,8 +29,6 @@ pub enum Group {
     Color,
     /// Properties | Adjustments.
     Properties,
-    /// Character | Paragraph (not in the default workspace; Window › Character opens it, #150).
-    Character,
     /// Navigator | Histogram | Info.
     Navigator,
     /// History | Actions | Layer Comps.
@@ -41,51 +39,26 @@ pub enum Group {
 
 impl Group {
     /// Photoshop Essentials order, top to bottom.
-    pub const ALL: [Group; 6] = [Group::Color, Group::Properties, Group::Character, Group::Navigator, Group::History, Group::Layers];
+    pub const ALL: [Group; 5] = [Group::Color, Group::Properties, Group::Navigator, Group::History, Group::Layers];
 
     pub fn key(self) -> &'static str {
         match self {
             Group::Color => "color",
             Group::Properties => "properties",
-            Group::Character => "character",
             Group::Navigator => "navigator",
             Group::History => "history",
             Group::Layers => "layers",
         }
     }
 
-    /// Height (points, tab strip included) a group gets until the user resizes it, when the
-    /// column has room (see [`DockLayout::heights_for`]).
+    /// Height (points, tab strip included) a group gets until the user resizes it.
     pub fn default_height(self) -> f32 {
         match self {
-            Group::Color => 190.0,
-            Group::Properties => 250.0,
-            Group::Character => 270.0,
-            Group::Navigator => 210.0,
-            Group::History => 200.0,
+            Group::Color => 200.0,
+            Group::Properties => 340.0,
+            Group::Navigator => 230.0,
+            Group::History => 220.0,
             Group::Layers => 320.0,
-        }
-    }
-
-    /// What a group left at its default height gives way down to so the filler (Layers) keeps
-    /// [`Group::preferred_fill`] in a short column (#147). Content taller than this scrolls.
-    pub fn compact_height(self) -> f32 {
-        match self {
-            Group::Color => 130.0,
-            Group::Properties => 160.0,
-            Group::Character => 160.0,
-            Group::Navigator => 140.0,
-            Group::History => 130.0,
-            Group::Layers => 200.0,
-        }
-    }
-
-    /// The height the filling group asks for before default-sized groups above it get their
-    /// full defaults: Layers wants room for about ten rows at 900 pt (#147).
-    pub fn preferred_fill(self) -> f32 {
-        match self {
-            Group::Layers => 500.0,
-            g => g.min_height(),
         }
     }
 
@@ -103,7 +76,6 @@ impl Group {
             Group::Color if pro => &["Color", "Swatches", "Gradients", "Patterns"],
             Group::Color => &["Swatches", "Color", "Gradients", "Patterns"],
             Group::Properties => &["Properties", "Adjustments"],
-            Group::Character => &["Character", "Paragraph"],
             Group::Navigator => &["Navigator", "Histogram", "Info"],
             Group::History => &["History", "Actions", "Layer Comps"],
             Group::Layers => &["Layers", "Channels", "Paths"],
@@ -119,7 +91,6 @@ impl Group {
         match self {
             Group::Color => &mut tabs.color,
             Group::Properties => &mut tabs.properties,
-            Group::Character => &mut tabs.character,
             Group::Navigator => &mut tabs.navigator,
             Group::History => &mut tabs.history,
             Group::Layers => &mut tabs.layers,
@@ -135,7 +106,6 @@ impl Group {
         match self {
             Group::Color => panels.color,
             Group::Properties => panels.properties,
-            Group::Character => panels.character,
             Group::Navigator => panels.navigator,
             Group::History => panels.history,
             Group::Layers => panels.layers,
@@ -146,7 +116,6 @@ impl Group {
         match self {
             Group::Color => &mut panels.color,
             Group::Properties => &mut panels.properties,
-            Group::Character => &mut panels.character,
             Group::Navigator => &mut panels.navigator,
             Group::History => &mut panels.history,
             Group::Layers => &mut panels.layers,
@@ -158,8 +127,7 @@ impl Group {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DockLayout {
-    /// Top-to-bottom order; a group missing here (say one added after the layout was saved)
-    /// goes just below the nearest group that precedes it by default (or last).
+    /// Top-to-bottom order; groups missing here keep their default place after the listed ones.
     pub order: Vec<Group>,
     /// Heights the user dragged groups to (points, tab strip included). Unset = default.
     pub heights: BTreeMap<Group, f32>,
@@ -176,21 +144,9 @@ impl DockLayout {
     /// Every group once, in display order.
     pub fn order(&self) -> Vec<Group> {
         let mut out: Vec<Group> = Vec::with_capacity(Group::ALL.len());
-        for g in &self.order {
+        for g in self.order.iter().chain(Group::ALL.iter()) {
             if !out.contains(g) {
                 out.push(*g);
-            }
-        }
-        // Missing groups slot in below their default predecessor, so a group new to an old
-        // saved layout (Character) never lands below Layers and takes over as the filler.
-        for (i, g) in Group::ALL.iter().enumerate() {
-            if out.contains(g) {
-                continue;
-            }
-            let prev = Group::ALL.iter().take(i).rev().find_map(|p| out.iter().position(|x| x == p));
-            match prev {
-                Some(at) => out.insert(at + 1, *g),
-                None => out.push(*g),
             }
         }
         out
@@ -229,9 +185,7 @@ impl DockLayout {
 
     /// Lay out the `shown` groups (in display order) in a column `avail` points tall with
     /// `strip`-high tab strips. Returns each group's height. The last expanded group fills the
-    /// rest. Groups the user never resized give way first, down to their compact heights, so
-    /// the filler gets its preferred height (Layers: ~10 rows, #147); when the column is still
-    /// too short every group gives way down to its minimum height.
+    /// rest; when the column is too short the others give way down to their minimum heights.
     pub fn heights_for(&self, shown: &[Group], avail: f32, strip: f32) -> Vec<(Group, f32)> {
         let avail = if avail.is_finite() { avail.max(0.0) } else { 0.0 };
         let filler = shown.iter().rposition(|g| !self.is_collapsed(*g));
@@ -251,23 +205,6 @@ impl DockLayout {
         if let Some(f) = filler {
             let gaps = GAP * shown.len().saturating_sub(1) as f32;
             let min_fill = shown.get(f).map_or(0.0, |g| g.min_height());
-            let pref_fill = shown.get(f).map_or(0.0, |g| g.preferred_fill());
-            let used: f32 = hs.iter().sum::<f32>() + gaps;
-            let mut deficit = (used + pref_fill - avail).max(0.0);
-            for i in (0..f).rev() {
-                if deficit <= 0.0 {
-                    break;
-                }
-                let Some(g) = shown.get(i) else { continue };
-                if self.is_collapsed(*g) || self.heights.contains_key(g) {
-                    continue;
-                }
-                if let Some(h) = hs.get_mut(i) {
-                    let give = (*h - g.compact_height()).max(0.0).min(deficit);
-                    *h -= give;
-                    deficit -= give;
-                }
-            }
             let used: f32 = hs.iter().sum::<f32>() + gaps;
             let mut deficit = (used + min_fill - avail).max(0.0);
             // Squeeze the expanded groups nearest the filler first.
@@ -332,27 +269,6 @@ fn rects_id() -> egui::Id {
     egui::Id::new("dock-group-rects")
 }
 
-/// A group's tab strip as drawn last frame (screen points), for tests and automation.
-#[derive(Clone, Debug, PartialEq)]
-pub struct StripRects {
-    pub group: Group,
-    /// `(tab index, rect)` of the tabs on the strip (the others are in the chevron menu).
-    pub tabs: Vec<(usize, Rect)>,
-    /// The panel menu button.
-    pub menu: Rect,
-    /// The » overflow button, when some tabs didn't fit.
-    pub chevron: Option<Rect>,
-}
-
-/// The tab strips drawn last frame.
-pub fn last_strips(ctx: &egui::Context) -> Vec<StripRects> {
-    ctx.data(|d| d.get_temp::<Vec<StripRects>>(strips_id())).unwrap_or_default()
-}
-
-fn strips_id() -> egui::Id {
-    egui::Id::new("dock-strip-rects")
-}
-
 /// Draw the `shown` groups (any order; the layout decides) filling `ui`. `body` draws one
 /// group's tab content.
 pub fn show(app: &mut PhotocraftApp, ui: &mut egui::Ui, shown: &[Group], mut body: impl FnMut(&mut PhotocraftApp, &mut egui::Ui, Group, usize)) {
@@ -365,7 +281,6 @@ pub fn show(app: &mut PhotocraftApp, ui: &mut egui::Ui, shown: &[Group], mut bod
     let rects = rects_after_layout(&heights, area);
     let mut actions: Vec<Action> = Vec::new();
     let mut dragging: Option<Group> = None;
-    let mut strips: Vec<StripRects> = Vec::with_capacity(rects.len());
     for (i, (g, rect)) in rects.iter().copied().enumerate() {
         let collapsed = app.ui.dock.is_collapsed(g);
         let mut child = ui.new_child(egui::UiBuilder::new().id_salt(("dock-group", g.key())).max_rect(rect));
@@ -387,7 +302,6 @@ pub fn show(app: &mut PhotocraftApp, ui: &mut egui::Ui, shown: &[Group], mut bod
                     .show(ui, |ui| body(app, ui, g, tab));
             }
         });
-        strips.push(StripRects { group: g, tabs: resp.tabs.clone(), menu: resp.menu.rect, chevron: resp.chevron });
         // The body may switch tabs itself (Adjustments jumps back to Properties).
         if sel != before {
             *g.tab_mut(&mut app.ui.dock_tabs) = sel.min(tabs.len().saturating_sub(1));
@@ -409,25 +323,21 @@ pub fn show(app: &mut PhotocraftApp, ui: &mut egui::Ui, shown: &[Group], mut bod
         }
         egui::Popup::menu(&resp.menu).show(|ui| {
             ui.set_min_width(170.0);
-            if tabs.get(sel) == Some(&"Layers") {
-                crate::layer_row_ui::panel_menu(app, ui);
-                ui.separator();
-            }
-            if ui.button(if collapsed { tl!("Expand Panel Group") } else { tl!("Collapse Panel Group") }).clicked() {
+            if ui.button(if collapsed { "Expand Panel Group" } else { "Collapse Panel Group" }).clicked() {
                 actions.push(Action::ToggleCollapse(g));
                 ui.close();
             }
             let pos = order.iter().position(|x| *x == g).unwrap_or(0);
-            if ui.add_enabled(!locked && pos > 0, egui::Button::new(tl!("Move Group Up"))).clicked() {
+            if ui.add_enabled(!locked && pos > 0, egui::Button::new("Move Group Up")).clicked() {
                 actions.push(Action::Move(g, order.get(pos.saturating_sub(1)).copied()));
                 ui.close();
             }
-            if ui.add_enabled(!locked && pos + 1 < order.len(), egui::Button::new(tl!("Move Group Down"))).clicked() {
+            if ui.add_enabled(!locked && pos + 1 < order.len(), egui::Button::new("Move Group Down")).clicked() {
                 actions.push(Action::Move(g, order.get(pos + 2).copied()));
                 ui.close();
             }
             ui.separator();
-            if ui.button(tl!("Close Tab Group")).clicked() {
+            if ui.button("Close Tab Group").clicked() {
                 actions.push(Action::Close(g));
                 ui.close();
             }
@@ -454,10 +364,7 @@ pub fn show(app: &mut PhotocraftApp, ui: &mut egui::Ui, shown: &[Group], mut bod
         };
         ui.painter().line_segment([pos2(area.left(), line_y), pos2(area.right(), line_y)], Stroke::new(3.0, t.accent));
     }
-    ui.ctx().data_mut(|d| {
-        d.insert_temp(rects_id(), rects);
-        d.insert_temp(strips_id(), strips);
-    });
+    ui.ctx().data_mut(|d| d.insert_temp(rects_id(), rects));
     ui.advance_cursor_after_rect(area);
     for a in actions {
         match a {
@@ -511,13 +418,6 @@ fn resize(layout: &mut DockLayout, heights: &[(Group, f32)], i: usize, dy: f32) 
     let filler = heights.iter().rposition(|(g, _)| !layout.is_collapsed(*g));
     let Some(j) = heights.iter().enumerate().skip(i + 1).find(|(_, (n, _))| !layout.is_collapsed(*n)).map(|(j, _)| j) else { return };
     let Some(&(n, nh)) = heights.get(j) else { return };
-    // The first drag pins the other groups at the heights they show, so groups still at their
-    // defaults (which give way to the filler) don't shift while this one is resized.
-    for (k, (o, oh)) in heights.iter().enumerate() {
-        if Some(k) != filler && !layout.is_collapsed(*o) {
-            layout.heights.entry(*o).or_insert(*oh);
-        }
-    }
     let new_h = (h + dy).clamp(g.min_height(), (h + nh - n.min_height()).max(g.min_height()));
     layout.heights.insert(g, new_h);
     if Some(j) != filler {

@@ -912,11 +912,11 @@ pub fn right_dock(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             ui.spacing_mut().item_spacing.y = 4.0;
             use crate::dock::Group;
             let entries: [(&str, &str, Group); 5] = [
-                ("sliders-horizontal", tl!("Properties"), Group::Properties),
-                ("navigation", tl!("Navigator"), Group::Navigator),
-                ("palette", tl!("Color & Swatches"), Group::Color),
-                ("layers", tl!("Layers"), Group::Layers),
-                ("clock", tl!("History"), Group::History),
+                ("sliders-horizontal", "Properties", Group::Properties),
+                ("navigation", "Navigator", Group::Navigator),
+                ("palette", "Color & Swatches", Group::Color),
+                ("layers", "Layers", Group::Layers),
+                ("clock", "History", Group::History),
             ];
             for (icon, name, g) in entries {
                 // Studio floats Properties outside the dock.
@@ -934,26 +934,12 @@ pub fn right_dock(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     crate::dock::persist(app, ui.ctx());
 }
 
-/// The right dock's width range (points).
-const DOCK_WIDTH: std::ops::RangeInclusive<f32> = 250.0..=520.0;
-
-fn dock_width_id() -> egui::Id {
-    egui::Id::new("dock-width-request")
-}
-
-/// Set the right dock's width on the next frame (`ui.set {dockWidth}`); clamped to its range.
-pub fn request_dock_width(ctx: &egui::Context, w: f32) {
-    let w = if w.is_finite() { w.clamp(*DOCK_WIDTH.start(), *DOCK_WIDTH.end()) } else { *DOCK_WIDTH.start() };
-    ctx.data_mut(|d| d.insert_temp(dock_width_id(), w));
-}
-
 fn dock_panels(app: &mut PhotocraftApp, ui: &mut egui::Ui, p: &crate::state::Panels, t: &Tokens) {
     use crate::dock::Group;
     // Floating in Studio, Properties docks only in Pro (Photoshop).
     let shown: Vec<Group> = [
         (Group::Color, p.color),
         (Group::Properties, t.pro && p.properties),
-        (Group::Character, p.character),
         (Group::Navigator, p.navigator),
         (Group::History, p.history),
         (Group::Layers, p.layers),
@@ -965,14 +951,15 @@ fn dock_panels(app: &mut PhotocraftApp, ui: &mut egui::Ui, p: &crate::state::Pan
         return;
     }
     let margin = if t.pro { 2 } else { 8 };
-    let mut panel = egui::Panel::right("dock").resizable(true).default_size(if t.pro { 290.0 } else { 300.0 }).size_range(DOCK_WIDTH);
-    if let Some(w) = ui.ctx().data_mut(|d| d.remove_temp::<f32>(dock_width_id())) {
-        panel = panel.exact_size(w);
-    }
-    panel.frame(egui::Frame::NONE.fill(t.dock).inner_margin(egui::Margin::same(margin))).show(ui, |ui| {
-        // Groups keep their heights whatever they show (#88): see `dock`.
-        crate::dock::show(app, ui, &shown, dock_body);
-    });
+    egui::Panel::right("dock")
+        .resizable(true)
+        .default_size(if t.pro { 290.0 } else { 300.0 })
+        .size_range(250.0..=520.0)
+        .frame(egui::Frame::NONE.fill(t.dock).inner_margin(egui::Margin::same(margin)))
+        .show(ui, |ui| {
+            // Groups keep their heights whatever they show (#88): see `dock`.
+            crate::dock::show(app, ui, &shown, dock_body);
+        });
 }
 
 /// One dock group's tab content; `dock` bounds it and scrolls it when it's taller.
@@ -988,7 +975,6 @@ fn dock_body(app: &mut PhotocraftApp, ui: &mut egui::Ui, group: crate::dock::Gro
         (Group::Color, _) => color_picker(app, ui),
         (Group::Properties, 0) => properties_body(app, ui),
         (Group::Properties, _) => adjustments_grid(app, ui),
-        (Group::Character, tab) => crate::type_tool::character_panel(app, ui, tab == 1),
         (Group::Navigator, 0) => navigator(app, ui),
         (Group::Navigator, 1) => crate::tone::histogram_panel(app, ui),
         (Group::Navigator, _) => info_panel(app, ui),
