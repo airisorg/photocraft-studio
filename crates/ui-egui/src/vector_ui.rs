@@ -518,15 +518,15 @@ pub fn shape_properties(app: &mut PhotocraftApp, ui: &mut egui::Ui, id: photocra
     let mut edit: Option<Value> = None;
     let key = |k: &str| format!("shape-{}-{k}", id.0);
     // The shared collapsible section headers (#155).
-    if crate::props_layout::section(ui, "appearance", tl!("Appearance")) {
+    if crate::props_layout::section(ui, "appearance", "Appearance") {
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(tl!("Fill")).color(t.text_dim).size(12.0));
-            if let Some(c) = swatch(ui, sh.fill.as_ref(), tl!("Set shape fill type")) {
+            ui.label(egui::RichText::new("Fill").color(t.text_dim).size(12.0));
+            if let Some(c) = swatch(ui, sh.fill.as_ref(), "Set shape fill type") {
                 edit = Some(if c == "none" { json!({"fill": null}) } else { json!({"fill": c, "coalesce": key("fill")}) });
             }
             ui.add_space(12.0);
-            ui.label(egui::RichText::new(tl!("Stroke")).color(t.text_dim).size(12.0));
-            if let Some(c) = swatch(ui, sh.stroke.as_ref().map(|s| &s.paint), tl!("Set shape stroke type")) {
+            ui.label(egui::RichText::new("Stroke").color(t.text_dim).size(12.0));
+            if let Some(c) = swatch(ui, sh.stroke.as_ref().map(|s| &s.paint), "Set shape stroke type") {
                 edit = Some(if c == "none" {
                     json!({"stroke": null})
                 } else {
@@ -552,7 +552,7 @@ pub fn shape_properties(app: &mut PhotocraftApp, ui: &mut egui::Ui, id: photocra
         });
     }
     if let Some(live) = &sh.live
-        && crate::props_layout::section(ui, "liveShape", tl!("Shape"))
+        && crate::props_layout::section(ui, "liveShape", "Shape")
     {
         let num = |ui: &mut egui::Ui, label: &str, v: &mut f32, range: std::ops::RangeInclusive<f32>, unit: &str| -> bool {
             ui.label(egui::RichText::new(tl!(&label)).color(t.text_dim).size(12.0));

@@ -433,9 +433,6 @@ pub fn apply(ctx: &egui::Context, kind: ThemeKind) {
     });
 }
 
-/// Seconds the pointer rests on a control before its tooltip shows.
-pub const TOOLTIP_DELAY: f32 = 0.35;
-
 /// Vertical gap between stacked control rows in panels (Properties fields, the Layers panel's
 /// Opacity and Fill rows); docks zero egui's item spacing, so rows add this themselves.
 pub const ROW_GAP: f32 = 4.0;

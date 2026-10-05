@@ -766,15 +766,7 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         Some((f, s, z, _)) => (f.clone(), if s.is_empty() { "Regular".into() } else { s.clone() }, *z),
         None => (o.type_font.clone(), o.type_style.clone(), o.type_size),
     };
-    if crate::icons::button(ui, "text-cursor", 24.0, false, tl!("Toggle text orientation")).clicked()
-        && let Some((layer, _)) = target(app)
-    {
-        let to = if is_vertical(app, LayerId(layer)) { "horizontal" } else { "vertical" };
-        if let Err(e) = app.run(&format!("type.orientation.{to}"), json!({"layer": layer})) {
-            app.ui.status = e;
-            app.ui.status_error = true;
-        }
-    }
+    let _ = crate::icons::button(ui, "text-cursor", 24.0, false, "Toggle text orientation");
     if font_picker(ui, &mut fam, 170.0) {
         app.ui.tool_options.type_font = fam.clone();
         let st = styles(&fam);
@@ -1032,7 +1024,7 @@ fn toggle_cell(ui: &mut egui::Ui, w: f32, on: bool, tip: &str, paint: impl FnOnc
     paint(ui, r, if on { t.text } else { t.text_dim });
     let tip = tip.to_string();
     resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, on, &tip));
-    resp.on_hover_text(tl!(&tip)).clicked()
+    resp.on_hover_text(tip).clicked()
 }
 
 /// Width of each of `n` equal cells filling `avail` with 2 pt gaps.
@@ -1044,6 +1036,7 @@ fn cell_width(avail: f32, n: usize) -> f32 {
 /// Properties panel sections for a type layer: Character, Paragraph and Type Options (#155).
 pub fn type_properties(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     type_sections(app, ui, true, true);
+    type_options(app, ui);
 }
 
 /// Window › Character / Paragraph (#150): the same controls as Properties, in their own dock
@@ -1058,7 +1051,11 @@ pub fn character_panel(app: &mut PhotocraftApp, ui: &mut egui::Ui, paragraph: bo
     type_sections(app, ui, !paragraph, paragraph);
 }
 
+/// The Character and/or Paragraph sections, with the shared collapsible headers and fields that
+/// fill the panel width (#155).
 fn type_sections(app: &mut PhotocraftApp, ui: &mut egui::Ui, character: bool, paragraph: bool) {
+    use crate::props_layout::{COL_GAP, LABEL_GAP, LABEL_W, field_width, section};
+    use crate::theme::ROW_GAP;
     let Some((c, para)) = styles_at(app) else { return };
     let t = crate::theme::Tokens::get(ui.ctx());
     // Row helper: `ui.horizontal` with the column gap, then the shared row gap.
@@ -1069,27 +1066,27 @@ fn type_sections(app: &mut PhotocraftApp, ui: &mut egui::Ui, character: bool, pa
         });
         ui.add_space(ROW_GAP);
     };
-    let w = ((ui.available_width() - 70.0) / 2.0).clamp(50.0, 90.0);
-    if character {
-        section(ui, "Character");
+    if character && section(ui, "character", "Character") {
+        let full = ui.available_width();
+        let w = field_width(full, 2, LABEL_W);
         let mut fam = c.font_family.clone();
-        ui.horizontal(|ui| {
-            if font_picker(ui, &mut fam) {
+        row(ui, &mut |ui| {
+            if font_picker(ui, &mut fam, full) {
                 app.ui.tool_options.type_font = fam.clone();
                 let st = styles(&fam);
                 let style = if st.contains(&c.font_style) { c.font_style.clone() } else { st.first().cloned().unwrap_or_else(|| "Regular".into()) };
                 apply(app, ui.ctx(), json!({"font": fam, "fontStyle": style}));
             }
         });
-        ui.horizontal(|ui| {
+        row(ui, &mut |ui| {
             let mut style = if c.font_style.is_empty() { "Regular".to_string() } else { c.font_style.clone() };
             let opts: Vec<(String, String)> = styles(&fam).into_iter().map(|s| (s.clone(), s)).collect();
             let opts_ref: Vec<(String, &str)> = opts.iter().map(|(a, b)| (a.clone(), b.as_str())).collect();
-            if crate::widgets::dropdown(ui, "props-type-style", &mut style, &opts_ref, 170.0) {
+            if crate::widgets::dropdown(ui, "props-type-style", &mut style, &opts_ref, full) {
                 apply(app, ui.ctx(), json!({"fontStyle": style}));
             }
         });
-        ui.horizontal(|ui| {
+        row(ui, &mut |ui| {
             let k = shown_scale(app);
             if let Some(v) = num_field(ui, "tT", "Font size", c.size_pt * k, 0.1..=1296.0, "pt", w) {
                 app.ui.tool_options.type_size = v;
@@ -1100,28 +1097,31 @@ fn type_sections(app: &mut PhotocraftApp, ui: &mut egui::Ui, character: bool, pa
                 apply(app, ui.ctx(), json!({"leading": v / k}));
             }
         });
-        ui.horizontal(|ui| {
+        row(ui, &mut |ui| {
             let mut k = match c.kerning {
                 photocraft_doc::text::Kerning::Metrics => "metrics",
                 photocraft_doc::text::Kerning::Optical => "optical",
                 photocraft_doc::text::Kerning::Off => "off",
             }
             .to_string();
-            icon_label(ui, "text-cursor", "Kerning");
-            if crate::widgets::dropdown(
-                ui,
-                "props-kern",
-                &mut k,
-                &[("metrics".to_string(), "Metrics"), ("optical".to_string(), "Optical"), ("off".to_string(), "0")],
-                w,
-            ) {
-                apply(app, ui.ctx(), json!({"kerning": k}));
-            }
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = LABEL_GAP;
+                icon_label(ui, "text-cursor", "Kerning");
+                if crate::widgets::dropdown(
+                    ui,
+                    "props-kern",
+                    &mut k,
+                    &[("metrics".to_string(), "Metrics"), ("optical".to_string(), "Optical"), ("off".to_string(), "0")],
+                    w,
+                ) {
+                    apply(app, ui.ctx(), json!({"kerning": k}));
+                }
+            });
             if let Some(v) = num_field(ui, "VA", "Tracking (1/1000 em)", c.tracking, -1000.0..=10000.0, "", w) {
                 apply(app, ui.ctx(), json!({"tracking": v}));
             }
         });
-        ui.horizontal(|ui| {
+        row(ui, &mut |ui| {
             if let Some(v) = num_field(ui, "↕T", "Vertical scale", c.vertical_scale * 100.0, 0.0..=1000.0, "%", w) {
                 apply(app, ui.ctx(), json!({"verticalScale": v}));
             }
@@ -1129,89 +1129,86 @@ fn type_sections(app: &mut PhotocraftApp, ui: &mut egui::Ui, character: bool, pa
                 apply(app, ui.ctx(), json!({"horizontalScale": v}));
             }
         });
-        ui.horizontal(|ui| {
+        row(ui, &mut |ui| {
             if let Some(v) = num_field(ui, "Aª", "Baseline shift", c.baseline_shift_pt, -1296.0..=1296.0, "pt", w) {
                 apply(app, ui.ctx(), json!({"baselineShift": v}));
             }
-            // Colour chip.
-            ui.add_space(8.0);
-            ui.label(egui::RichText::new("Color:").color(t.text_dim).size(12.0));
-            let rgb = c.color.to_rgb();
-            let q = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
-            let (rect, resp) = ui.allocate_exact_size(egui::vec2(40.0, 18.0), egui::Sense::click());
-            ui.painter().rect_filled(rect, 2.0, Color32::from_rgb(q(rgb[0]), q(rgb[1]), q(rgb[2])));
-            ui.painter().rect_stroke(rect, 2.0, Stroke::new(1.0, t.field_border), egui::StrokeKind::Outside);
-            egui::Popup::from_toggle_button_response(&resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
-                let mut col = Color32::from_rgb(q(rgb[0]), q(rgb[1]), q(rgb[2]));
-                if egui::color_picker::color_picker_color32(ui, &mut col, egui::color_picker::Alpha::Opaque) {
-                    apply(app, ui.ctx(), json!({"color": format!("#{:02x}{:02x}{:02x}", col.r(), col.g(), col.b())}));
-                }
+            // Colour: label + a swatch filling the rest of the second column.
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = LABEL_GAP;
+                let g = ui.painter().layout_no_wrap("Color".into(), egui::FontId::proportional(12.0), t.text_dim);
+                let lw = g.size().x.max(LABEL_W);
+                let (lr, _) = ui.allocate_exact_size(egui::vec2(lw, 22.0), egui::Sense::hover());
+                ui.painter().galley(egui::pos2(lr.left(), lr.center().y - g.size().y / 2.0), g, t.text_dim);
+                let rgb = c.color.to_rgb();
+                let q = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+                let sw = (LABEL_W + LABEL_GAP + w - lw - LABEL_GAP).max(24.0);
+                let (rect, resp) = ui.allocate_exact_size(egui::vec2(sw, 22.0), egui::Sense::click());
+                ui.painter().rect_filled(rect, t.radius_sm, Color32::from_rgb(q(rgb[0]), q(rgb[1]), q(rgb[2])));
+                ui.painter().rect_stroke(rect, t.radius_sm, Stroke::new(1.0, t.field_border), egui::StrokeKind::Inside);
+                let resp = resp.on_hover_text("Text color");
+                egui::Popup::from_toggle_button_response(&resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+                    let mut col = Color32::from_rgb(q(rgb[0]), q(rgb[1]), q(rgb[2]));
+                    if egui::color_picker::color_picker_color32(ui, &mut col, egui::color_picker::Alpha::Opaque) {
+                        apply(app, ui.ctx(), json!({"color": format!("#{:02x}{:02x}{:02x}", col.r(), col.g(), col.b())}));
+                    }
+                });
             });
         });
-        // Faux styles row: T (bold)  T (italic)  TT  Tᴛ  T̲  T̶
+        // Faux styles: T (bold)  T (italic)  TT  Tᴛ  T̲  T̶, sharing the row evenly.
+        let caps = c.caps;
+        let toggles: [(&str, &str, bool, serde_json::Value); 6] = [
+            ("T", "Faux Bold", c.faux_bold, json!({"fauxBold": !c.faux_bold})),
+            ("T", "Faux Italic", c.faux_italic, json!({"fauxItalic": !c.faux_italic})),
+            (
+                "TT",
+                "All Caps",
+                caps == photocraft_doc::text::Caps::AllCaps,
+                json!({"caps": if caps == photocraft_doc::text::Caps::AllCaps { "normal" } else { "allCaps" }}),
+            ),
+            (
+                "Tᴛ",
+                "Small Caps",
+                caps == photocraft_doc::text::Caps::SmallCaps,
+                json!({"caps": if caps == photocraft_doc::text::Caps::SmallCaps { "normal" } else { "smallCaps" }}),
+            ),
+            ("T", "Underline", c.underline, json!({"underline": !c.underline})),
+            ("T", "Strikethrough", c.strikethrough, json!({"strikethrough": !c.strikethrough})),
+        ];
+        let cw = cell_width(full, toggles.len());
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
-            let caps = c.caps;
-            let toggles: [(&str, &str, bool, serde_json::Value); 6] = [
-                ("T", "Faux Bold", c.faux_bold, json!({"fauxBold": !c.faux_bold})),
-                ("T", "Faux Italic", c.faux_italic, json!({"fauxItalic": !c.faux_italic})),
-                (
-                    "TT",
-                    "All Caps",
-                    caps == photocraft_doc::text::Caps::AllCaps,
-                    json!({"caps": if caps == photocraft_doc::text::Caps::AllCaps { "normal" } else { "allCaps" }}),
-                ),
-                (
-                    "Tᴛ",
-                    "Small Caps",
-                    caps == photocraft_doc::text::Caps::SmallCaps,
-                    json!({"caps": if caps == photocraft_doc::text::Caps::SmallCaps { "normal" } else { "smallCaps" }}),
-                ),
-                ("T", "Underline", c.underline, json!({"underline": !c.underline})),
-                ("T", "Strikethrough", c.strikethrough, json!({"strikethrough": !c.strikethrough})),
-            ];
             for (i, (glyph, tip, on, props)) in toggles.into_iter().enumerate() {
-                let (r, resp) = ui.allocate_exact_size(egui::vec2(28.0, 24.0), egui::Sense::click());
-                let bg = if on {
-                    t.accent_soft
-                } else if resp.hovered() {
-                    t.hover
-                } else {
-                    Color32::TRANSPARENT
-                };
-                ui.painter().rect_filled(r, 3.0, bg);
-                let font = if i == 0 { crate::theme::semibold(13.0) } else { egui::FontId::proportional(13.0) };
-                let col = if on { t.text } else { t.text_dim };
-                let g = ui.painter().layout_no_wrap(glyph.to_string(), font, col);
-                let pos = r.center() - g.size() / 2.0;
-                let gr = egui::Rect::from_min_size(pos, g.size());
-                if i == 1 {
-                    // Faux italic: a slanted T drawn as strokes (no italic face is bundled).
-                    let (top, bot, cx) = (gr.top() + 3.0, gr.bottom() - 3.0, gr.center().x);
-                    let slant = (bot - top) * 0.25;
-                    ui.painter().line_segment([egui::pos2(cx - 4.0 + slant / 2.0, top), egui::pos2(cx + 4.0 + slant / 2.0, top)], Stroke::new(1.3, col));
-                    ui.painter().line_segment([egui::pos2(cx + slant / 2.0, top), egui::pos2(cx - slant / 2.0, bot)], Stroke::new(1.3, col));
-                } else {
-                    ui.painter().galley(pos, g, col);
-                }
-                if i == 4 {
-                    ui.painter().line_segment([egui::pos2(gr.left(), gr.bottom() - 2.0), egui::pos2(gr.right(), gr.bottom() - 2.0)], Stroke::new(1.0, col));
-                }
-                if i == 5 {
-                    ui.painter().line_segment([egui::pos2(gr.left() - 1.0, gr.center().y), egui::pos2(gr.right() + 1.0, gr.center().y)], Stroke::new(1.0, col));
-                }
-                if resp.on_hover_text(tip).clicked() {
+                let clicked = toggle_cell(ui, cw, on, tip, |ui, r, col| {
+                    let font = if i == 0 { crate::theme::semibold(13.0) } else { egui::FontId::proportional(13.0) };
+                    let g = ui.painter().layout_no_wrap(glyph.to_string(), font, col);
+                    let pos = r.center() - g.size() / 2.0;
+                    let gr = egui::Rect::from_min_size(pos, g.size());
+                    if i == 1 {
+                        // Faux italic: a slanted T drawn as strokes (no italic face is bundled).
+                        let (top, bot, cx) = (gr.top() + 3.0, gr.bottom() - 3.0, gr.center().x);
+                        let slant = (bot - top) * 0.25;
+                        ui.painter().line_segment([egui::pos2(cx - 4.0 + slant / 2.0, top), egui::pos2(cx + 4.0 + slant / 2.0, top)], Stroke::new(1.3, col));
+                        ui.painter().line_segment([egui::pos2(cx + slant / 2.0, top), egui::pos2(cx - slant / 2.0, bot)], Stroke::new(1.3, col));
+                    } else {
+                        ui.painter().galley(pos, g, col);
+                    }
+                    if i == 4 {
+                        ui.painter().line_segment([egui::pos2(gr.left(), gr.bottom() - 2.0), egui::pos2(gr.right(), gr.bottom() - 2.0)], Stroke::new(1.0, col));
+                    }
+                    if i == 5 {
+                        ui.painter()
+                            .line_segment([egui::pos2(gr.left() - 1.0, gr.center().y), egui::pos2(gr.right() + 1.0, gr.center().y)], Stroke::new(1.0, col));
+                    }
+                });
+                if clicked {
                     apply(app, ui.ctx(), props);
                 }
             }
         });
+        ui.add_space(ROW_GAP);
     }
-    if !paragraph {
-        return;
-    }
-    section(ui, "Paragraph");
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 2.0;
+    if paragraph && section(ui, "paragraph", "Paragraph") {
         use photocraft_doc::text::TextAlign as A;
         let full = ui.available_width();
         let w = field_width(full, 2, LABEL_W);
@@ -1237,9 +1234,11 @@ fn type_sections(app: &mut PhotocraftApp, ui: &mut egui::Ui, character: bool, pa
                     apply(app, ui.ctx(), json!({"align": key}));
                 }
             }
-            align_glyph(ui.painter(), r.shrink2(egui::vec2(7.0, 7.0)), a, if on { t.text } else { t.icon });
-            if resp.on_hover_text(tip).clicked() {
-                apply(app, ui.ctx(), json!({"align": key}));
+        });
+        ui.add_space(ROW_GAP);
+        row(ui, &mut |ui| {
+            if let Some(v) = num_field(ui, "→|", "Indent left margin", para.start_indent_pt, -1296.0..=1296.0, "pt", w) {
+                apply(app, ui.ctx(), json!({"startIndent": v}));
             }
             if let Some(v) = num_field(ui, "|←", "Indent right margin", para.end_indent_pt, -1296.0..=1296.0, "pt", w) {
                 apply(app, ui.ctx(), json!({"endIndent": v}));
@@ -1284,29 +1283,51 @@ fn type_options(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let full = ui.available_width();
     let mut run: Option<String> = None;
     ui.horizontal(|ui| {
-        if let Some(v) = num_field(ui, "→|", "Indent left margin", para.start_indent_pt, -1296.0..=1296.0, "pt", w) {
-            apply(app, ui.ctx(), json!({"startIndent": v}));
-        }
-        if let Some(v) = num_field(ui, "|←", "Indent right margin", para.end_indent_pt, -1296.0..=1296.0, "pt", w) {
-            apply(app, ui.ctx(), json!({"endIndent": v}));
-        }
+        ui.spacing_mut().item_spacing.x = COL_GAP;
+        // Anti-aliasing dropdown (aₐ glyph label), then the two orientation toggles.
+        let orient_w = 2.0 * 28.0 + 2.0;
+        let dd_w = (full - crate::props_layout::LABEL_W - LABEL_GAP - COL_GAP - orient_w).max(60.0);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = LABEL_GAP;
+            let t = crate::theme::Tokens::get(ui.ctx());
+            let (r, resp) = ui.allocate_exact_size(egui::vec2(crate::props_layout::LABEL_W, 22.0), egui::Sense::hover());
+            ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, "aa", crate::theme::semibold(11.0), t.text_dim);
+            resp.on_hover_text("Anti-aliasing method");
+            let mut cur = aa.clone();
+            let opts: Vec<(String, &str)> = ["none", "sharp", "crisp", "strong", "smooth", "windowsLcd", "windows"]
+                .into_iter()
+                .filter_map(|k| photocraft_engine::commands::find(&format!("type.antiAlias.{k}")).map(|c| (k.to_string(), c.label)))
+                .collect();
+            if crate::widgets::dropdown(ui, "props-type-aa", &mut cur, &opts, dd_w) {
+                run = Some(format!("type.antiAlias.{cur}"));
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            for (key, tip, on) in [("horizontal", "Horizontal type", !vertical), ("vertical", "Vertical type", vertical)] {
+                let clicked = toggle_cell(ui, 28.0, on, tip, |ui, r, col| {
+                    let g = egui::Rect::from_center_size(r.center(), egui::vec2(12.0, 12.0));
+                    let s = Stroke::new(1.3, col);
+                    if key == "horizontal" {
+                        ui.painter().line_segment([g.left_top(), g.right_top()], s);
+                        ui.painter().line_segment([g.center_top(), g.center_bottom()], s);
+                    } else {
+                        ui.painter().line_segment([g.left_top(), g.left_bottom()], s);
+                        ui.painter().line_segment([g.left_center(), g.right_center()], s);
+                    }
+                });
+                if clicked && !on {
+                    run = Some(format!("type.orientation.{key}"));
+                }
+            }
+        });
     });
-    ui.horizontal(|ui| {
-        if let Some(v) = num_field(ui, "¶→", "Indent first line", para.first_line_indent_pt, -1296.0..=1296.0, "pt", w) {
-            apply(app, ui.ctx(), json!({"firstLineIndent": v}));
-        }
-    });
-    ui.horizontal(|ui| {
-        if let Some(v) = num_field(ui, "↑¶", "Add space before paragraph", para.space_before_pt, 0.0..=1296.0, "pt", w) {
-            apply(app, ui.ctx(), json!({"spaceBefore": v}));
-        }
-        if let Some(v) = num_field(ui, "¶↓", "Add space after paragraph", para.space_after_pt, 0.0..=1296.0, "pt", w) {
-            apply(app, ui.ctx(), json!({"spaceAfter": v}));
-        }
-    });
-    let mut hy = para.hyphenate;
-    if crate::widgets::checkbox(ui, &mut hy, "Hyphenate").changed() {
-        apply(app, ui.ctx(), json!({"hyphenate": hy}));
+    ui.add_space(crate::theme::ROW_GAP);
+    if let Some(id) = run
+        && let Err(e) = app.run(&id, json!({}))
+    {
+        app.ui.status = e;
+        app.ui.status_error = true;
     }
 }
 

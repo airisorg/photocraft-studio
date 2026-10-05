@@ -2010,11 +2010,9 @@ fn properties_body(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         return;
     }
     let Some(id) = st.active_layer else { return };
-    // Borrowed from the document snapshot: cloning the layer every frame copied whole groups.
-    let doc = st.doc.clone();
-    let Some(layer) = doc.layer(id) else { return };
+    let Some(layer) = st.doc.layer(id).cloned() else { return };
     // Header: kind icon, layer name and kind (#155); sections below draw their own separators.
-    crate::props_layout::header(ui, layer);
+    crate::props_layout::header(ui, &layer);
     let is_adjustment = matches!(layer.content, LayerContent::Adjustment(_));
     if is_adjustment || layer.artboard().is_some() || !t.pro {
         ui.add_space(4.0);
@@ -2024,16 +2022,12 @@ fn properties_body(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     if let LayerContent::Adjustment(adj) = &layer.content {
         adjustment_controls(app, ui, id, adj);
     } else if layer.artboard().is_some() {
-        crate::artboard_ui::properties(app, ui, layer);
+        crate::artboard_ui::properties(app, ui, &layer);
     } else if t.pro {
         // Transform, Align, the kind's sections and Quick Actions.
-        crate::layer_props_ui::properties(app, ui, layer);
+        crate::layer_props_ui::properties(app, ui, &layer);
     } else {
-        if matches!(layer.content, LayerContent::Fill(photocraft_doc::Fill::Gradient { .. })) {
-            crate::gradient_ui::properties(app, ui, layer);
-            ui.add_space(6.0);
-        }
-        layer_controls(app, ui, layer);
+        layer_controls(app, ui, &layer);
         if matches!(layer.content, LayerContent::Text(_)) {
             crate::type_tool::type_properties(app, ui);
         }

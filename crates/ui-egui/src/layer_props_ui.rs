@@ -37,7 +37,7 @@ pub fn transform_params(layer: u64, b: [i32; 4], w: Option<f32>, h: Option<f32>,
 fn field(ui: &mut egui::Ui, id: &str, label: &str, current: f32, width: f32) -> Option<f32> {
     let t = Tokens::get(ui.ctx());
     let (r, _) = ui.allocate_exact_size(vec2(LABEL_W, 22.0), Sense::hover());
-    ui.painter().text(pos2(r.right() - 2.0, r.center().y), egui::Align2::RIGHT_CENTER, tl!(label), egui::FontId::proportional(12.0), t.text_dim);
+    ui.painter().text(pos2(r.right() - 2.0, r.center().y), egui::Align2::RIGHT_CENTER, label, egui::FontId::proportional(12.0), t.text_dim);
     let key = egui::Id::new(("layer-props-field", id));
     let mut v = ui.data(|d| d.get_temp::<f32>(key)).unwrap_or(current);
     let resp = widgets::value_field(ui, &mut v, -300_000.0..=300_000.0, "px", width);
@@ -110,7 +110,7 @@ pub fn properties(app: &mut PhotocraftApp, ui: &mut egui::Ui, layer: &Layer) {
                 if let Some(v) = field(ui, "w", "W", b.width() as f32, w) {
                     run.extend(transform_params(layer.id.0, bb, Some(v), None, linked).map(|p| ("edit.transform".to_string(), p)));
                 }
-                if crate::icons::button(ui, if linked { "link" } else { "unlink" }, LINK_W, linked, tl!("Link width and height")).clicked() {
+                if crate::icons::button(ui, if linked { "link" } else { "unlink" }, LINK_W, linked, "Link width and height").clicked() {
                     ui.data_mut(|d| d.insert_temp(link_key, !linked));
                 }
                 if let Some(v) = field(ui, "h", "H", b.height() as f32, w) {
