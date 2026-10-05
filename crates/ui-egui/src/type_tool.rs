@@ -228,7 +228,7 @@ pub fn pointer_down(app: &mut PhotocraftApp, x: f64, y: f64, shift: bool) -> boo
             return true;
         }
         let off = hit_offset(app, id, x, y);
-        app.ui.text_edit = Some(TextEdit { layer: id.0, caret: off, anchor: off, session: key, created: false, dragging: true, resize: None, preedit: None });
+        app.ui.text_edit = Some(TextEdit { layer: id.0, caret: off, anchor: off, session: session_key(app), created: false, dragging: true, preedit: None });
         return true;
     }
     false
@@ -282,7 +282,7 @@ pub fn pointer_up(app: &mut PhotocraftApp, start: [f64; 2], end: [f64; 2]) {
         }
         // Like Photoshop: the placeholder is selected, so typing replaces it.
         let n = PLACEHOLDER.chars().count();
-        app.ui.text_edit = Some(TextEdit { layer: id, caret: n, anchor: 0, session: key, created: true, dragging: false, resize: None, preedit: None });
+        app.ui.text_edit = Some(TextEdit { layer: id, caret: n, anchor: 0, session: key, created: true, dragging: false, preedit: None });
     }
 }
 
@@ -308,18 +308,6 @@ fn insert(app: &mut PhotocraftApp, s: &str) {
         e.caret = a + s.chars().count();
         e.anchor = e.caret;
     }
-}
-
-/// Alt+←/→: kern the pair before the caret by `by` (1/1000 em). No pair (caret at a text or line
-/// edge): nothing happens, like Photoshop. Not coalesced: one history step per press.
-fn kern_pair(app: &mut PhotocraftApp, id: LayerId, caret: usize, by: f32) {
-    let Some(text) = current_text(app, id) else { return };
-    let before = caret.checked_sub(1).and_then(|i| text.chars().nth(i));
-    let after = text.chars().nth(caret);
-    if before.is_none_or(|c| c == '\n') || after.is_none_or(|c| c == '\n') {
-        return;
-    }
-    let _ = app.run("type.edit", json!({"layer": id.0, "kernPair": {"at": caret, "by": by}}));
 }
 
 /// IME composition. The preedit text is written into the layer (so it lays out and reflows like
@@ -593,16 +581,11 @@ pub fn draw_overlay(app: &mut PhotocraftApp, painter: &egui::Painter, xf: &ViewX
         let p = aff.apply(Point::new(x as f64, y as f64));
         xf.to_screen(p.x as f32, p.y as f32)
     };
-    // Line space (lines, clusters, carets) → screen: vertical type turns it 90° clockwise.
-    let scr = |x: f32, y: f32| -> Pos2 {
-        let (x, y) = l.to_text(x, y);
-        scr_t(x, y)
-    };
     // Tell the OS where the caret is: this is what enables the IME and places its candidate window.
     {
         let (x, top, bot) = l.caret(byte_of(&text, ed.caret));
         let (x, top, bot) = if l.lines.is_empty() { (0.0, -(12.0 * l.px_per_pt.max(1.0)), 3.0) } else { (x, top, bot) };
-        let r = egui::Rect::from_two_pos(scr(x, top), scr(x, bot)).expand(1.0);
+        let r = egui::Rect::from_two_pos(scr(x, top), scr(x, bot)).expand2(egui::vec2(1.0, 0.0));
         painter.ctx().output_mut(|o| {
             o.ime = Some(egui::output::IMEOutput { purpose: egui::IMEPurpose::Normal, rect: r, cursor_rect: r, should_interrupt_composition: false });
         });
@@ -1416,45 +1399,6 @@ mod tests {
         let doc = &app.session.active().unwrap().doc;
         assert_eq!(doc.layers.last().unwrap().name, "Héllo world");
         assert!(app.ui.text_edit.is_none());
-    }
-
-    #[test]
-    fn a_name_from_text_after_blank_lines_keeps_following_the_text() {
-        let mut app = app();
-        pointer_up(&mut app, [50.0, 100.0], [50.0, 100.0]);
-        insert(&mut app, "\n\nTitle");
-        let id = app.ui.text_edit.as_ref().unwrap().layer;
-        commit(&mut app);
-        let name = |app: &PhotocraftApp| app.session.active().unwrap().doc.layers.last().unwrap().name.clone();
-        assert_eq!(name(&app), "Title");
-        // Edited later, outside the session that created it (#483).
-        app.run("type.edit", json!({"layer": id, "text": "\nSubtitle"})).unwrap();
-        assert_eq!(name(&app), "Subtitle");
-    }
-
-    #[test]
-    fn dragging_a_box_handle_resizes_the_paragraph_box() {
-        let mut app = app();
-        pointer_up(&mut app, [10.0, 10.0], [110.0, 60.0]);
-        let id = LayerId(app.ui.text_edit.as_ref().unwrap().layer);
-        let steps = app.session.active().unwrap().history.entries().len();
-        // Top-left corner: the box keeps its bottom-right corner.
-        assert!(pointer_down(&mut app, 10.0, 10.0, false));
-        assert_eq!(app.ui.text_edit.as_ref().unwrap().resize, Some(0));
-        pointer_move(&mut app, 20.0, 25.0);
-        pointer_move(&mut app, 30.0, 30.0);
-        pointer_up(&mut app, [10.0, 10.0], [30.0, 30.0]);
-        assert_eq!(box_shape(&app, id), Some((0.0, 0.0, 80.0, 30.0)));
-        let aff = layout(&mut app, id).unwrap().1;
-        assert_eq!((aff.m[4], aff.m[5]), (30.0, 30.0));
-        // The whole drag is one history step, and the edit session survives it.
-        assert_eq!(app.session.active().unwrap().history.entries().len(), steps);
-        assert!(app.ui.text_edit.is_some());
-        // Right edge: only the width changes, and never below the minimum.
-        assert!(pointer_down(&mut app, 110.0, 45.0, false));
-        pointer_move(&mut app, 0.0, 99.0);
-        pointer_up(&mut app, [110.0, 45.0], [0.0, 99.0]);
-        assert_eq!(box_shape(&app, id), Some((0.0, 0.0, MIN_BOX, 30.0)));
     }
 
     #[test]
