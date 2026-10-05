@@ -1562,6 +1562,7 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
     // Use Tablet Pressure is off; the pen's eraser end selects the Eraser.
     app.stylus.use_pressure = app.session.prefs().tools.use_tablet_pressure;
     app.stylus.update(&ui.input(|i| i.events.clone()));
+    crate::stylus::Stylus::sync_eraser_tool(app);
     let space_down = ui.input(|i| i.key_down(egui::Key::Space));
     // Space while drawing a crop frame moves it instead of panning.
     crate::crop_ui::set_space(app, space_down);

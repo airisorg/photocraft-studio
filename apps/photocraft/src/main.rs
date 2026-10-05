@@ -32,7 +32,6 @@ mod services;
 // Windows gets pen pressure from winit (WM_POINTER); the web runner has its own listener.
 #[cfg(any(target_os = "macos", target_os = "linux", test))]
 mod tablet;
-mod ui_state;
 
 use photocraft_engine::Session;
 use photocraft_ui_egui::PhotocraftApp;
@@ -141,8 +140,7 @@ fn main() -> eframe::Result {
     #[cfg(target_os = "macos")]
     let _tablet = tablet::install_macos(&stylus_feed);
 
-    // Read the displays' ICC profiles while the window opens (colour-managed canvas; `None`
-    // where the platform has no reader).
+    // Read the main display's ICC profile while the window opens (colour-managed canvas).
     let monitor = monitor_profile::detect_async();
     // Brush presets load in the background; the app attaches them when they arrive.
     let presets = services::presets_dir().map(photocraft_engine::preset_store::open_dir_async);
@@ -265,7 +263,7 @@ fn main() -> eframe::Result {
             // and the X11 reader write into this feed.
             app.stylus.feed = stylus_feed;
             #[cfg(target_os = "linux")]
-            tablet::spawn_x11(&app.stylus.feed, display);
+            tablet::spawn_x11(&app.stylus.feed, tablet::DisplayKind::of(cc));
             // Paths on the command line (Linux/Windows file associations, `photocraft a.psd`).
             app.open_paths(&files);
             // Portable marker found but its data folder isn't writable (#228): say where settings went.
