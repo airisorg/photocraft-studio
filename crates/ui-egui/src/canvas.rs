@@ -919,11 +919,7 @@ pub(crate) fn retain_gpu_documents(app: &mut PhotocraftApp) {
 /// Tabs + canvas for the active document, or the start screen.
 pub fn document_area(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     retain_gpu_documents(app);
-    crate::transform_tool::track_steps(app, ui.ctx());
-    let n = app.session.documents().len();
-    // Files opening in the background (#210) have tabs before they have documents.
-    let opening = !app.jobs.opens.is_empty();
-    if !opening && app.ui.chrome.shows_home(n, app.session.prefs().general.auto_show_home_screen) {
+    if app.ui.chrome.shows_home(app.session.documents().len()) {
         start_screen(app, ui);
         return;
     }
@@ -1348,12 +1344,12 @@ const DISPLAY_LUT: usize = 33;
 /// `doc`'s colour management: document → monitor profile and View › Proof Colors / Gamut
 /// Warning (the 32-bit preview is applied by the canvas shader, see [`hdr_preview`]). Returns the canvas `display` mode (0 none — the identity, e.g. sRGB on
 /// an sRGB monitor —, 1 LUT, 2 LUT + gamut warning).
-fn sync_display_lut(app: &mut PhotocraftApp, doc: &photocraft_doc::Document, key: u64, display: Option<u32>) -> u8 {
+fn sync_display_lut(app: &mut PhotocraftApp, doc: &photocraft_doc::Document, key: u64) -> u8 {
     let Some(gpu) = app.gpu.clone() else { return 0 };
     let output = display.unwrap_or(0);
     // Rebuild only when anything feeding the LUT changes.
-    let sig = app.session.color.display_signature_for(doc, display);
-    if let Some((s, mode)) = gpu.display_lut_signature(key, output)
+    let sig = app.session.color.display_signature(doc);
+    if let Some((s, mode)) = gpu.display_lut_signature(key)
         && s == sig
     {
         return mode;
@@ -1374,7 +1370,7 @@ fn sync_display_lut(app: &mut PhotocraftApp, doc: &photocraft_doc::Document, key
             0
         }
     };
-    gpu.cache_display_lut_signature(key, output, sig, mode);
+    gpu.cache_display_lut_signature(key, sig, mode);
     mode
 }
 
@@ -1447,8 +1443,7 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
             },
             pixel_grid: false,
             view_key: egui::Id::new(("pc-canvas-proxy", ctx.viewport_id(), idx)).value(),
-            display: sync_display_lut(app, &doc, key, output),
-            output: output.unwrap_or(0),
+            display: sync_display_lut(app, &doc, key),
             hdr: hdr_preview(app, &doc),
         };
         crate::gpu_canvas::GpuCanvas::paint(&painter, rect, params);
@@ -1467,8 +1462,7 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
             },
             pixel_grid,
             view_key: egui::Id::new(("pc-canvas", ctx.viewport_id(), idx)).value(),
-            display: sync_display_lut(app, &doc, doc.id.0, output),
-            output: output.unwrap_or(0),
+            display: sync_display_lut(app, &doc, doc.id.0),
             hdr: hdr_preview(app, &doc),
         };
         crate::gpu_canvas::GpuCanvas::paint(&painter, rect, params);

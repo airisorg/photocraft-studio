@@ -583,8 +583,20 @@ impl GpuCanvas {
         }
         // LUTs and identity-transform signatures can outlive document textures. Prune both,
         // or a preserved-ID reopen can skip rebuilding a missing LUT.
-        res.luts.retain(|k, _| live.contains(&k.0));
-        res.display_lut_signatures.retain(|k, _| live.contains(&k.0));
+        res.luts.retain(|k, _| live.contains(k));
+        res.display_lut_signatures.retain(|k, _| live.contains(k));
+    }
+
+    pub(crate) fn display_lut_signature(&self, doc: u64) -> Option<(u64, u8)> {
+        let renderer = self.rs.renderer.read();
+        renderer.callback_resources.get::<Resources>()?.display_lut_signatures.get(&doc).copied()
+    }
+
+    pub(crate) fn cache_display_lut_signature(&self, doc: u64, signature: u64, mode: u8) {
+        let mut renderer = self.rs.renderer.write();
+        if let Some(res) = renderer.callback_resources.get_mut::<Resources>() {
+            res.display_lut_signatures.insert(doc, (signature, mode));
+        }
     }
 
     pub(crate) fn display_lut_signature(&self, doc: u64, output: u32) -> Option<(u64, u8)> {
@@ -616,7 +628,7 @@ impl GpuCanvas {
         let (device, queue) = (&self.rs.device, &self.rs.queue);
         let mut renderer = self.rs.renderer.write();
         let Some(res) = renderer.callback_resources.get_mut::<Resources>() else { return };
-        res.display_lut_signatures.remove(&(doc, output));
+        res.display_lut_signatures.remove(&doc);
         match rgba {
             None => {
                 res.luts.remove(&(doc, output));
@@ -1114,11 +1126,10 @@ struct Resources {
     encode_bgl: wgpu::BindGroupLayout,
     encode_pipeline: wgpu::RenderPipeline,
     lut_bgl: wgpu::BindGroupLayout,
-    /// Display LUTs per (document, display) (monitor profile, Proof Colors / Gamut Warning);
-    /// `identity_lut` otherwise.
-    luts: HashMap<(u64, u32), wgpu::BindGroup>,
+    /// Display LUTs per document (Proof Colors / Gamut Warning); `identity_lut` otherwise.
+    luts: HashMap<u64, wgpu::BindGroup>,
     /// Signatures belong to their renderer resources, including identity transforms (mode 0).
-    display_lut_signatures: HashMap<(u64, u32), (u64, u8)>,
+    display_lut_signatures: HashMap<u64, (u64, u8)>,
     identity_lut: wgpu::BindGroup,
     /// Transparency checkerboard and gamut warning colours (Preferences › Transparency & Gamut).
     style: CanvasStyle,
