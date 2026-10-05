@@ -228,29 +228,15 @@ pub fn clipboard_keys(ctx: &egui::Context, typing: bool, raw: &mut egui::RawInpu
 }
 
 pub fn handle(app: &mut PhotocraftApp, ctx: &egui::Context) {
-    // Camera Raw is modal like Photoshop's filter dialog: no application shortcut (Save, Undo,
-    // tools) runs beneath it, and it handles its own keys (Y, U, O, S). Unlike the other dialogs
-    // below it covers the canvas, so canvas zoom keys are blocked too.
-    if app.camera_raw.is_some() {
-        return;
-    }
-    // An open menu owns the keyboard (arrows, ↩, Esc), like a native menu.
-    if crate::menu_nav::is_open(ctx) {
-        return;
-    }
     // Liquify is a full-window custom dialog with focusable sliders. egui can therefore claim
     // keyboard input before the distortion-mode handler below runs. Give Liquify's local
     // shortcuts first refusal (Undo, brush size, tool keys), but never steal keys from text edits.
     if app.distort.liquify.is_some() && !ctx.text_edit_focused() {
         crate::liquify_ui::keys(app, ctx);
     }
-    use crate::shortcut_dispatch::{Focus, dispatch_pressed};
-    let focus = Focus::of(ctx);
-    // Dialogs (and Liquify's panel while one of its controls has focus) keep canvas zoom; a
-    // focused text field keeps its keys.
-    let liquify_focus = app.distort.liquify.is_some() && focus != Focus::None;
-    if liquify_focus || !app.ui.dialogs.is_empty() || app.discard.is_some() {
-        if focus != Focus::Text {
+    if ctx.egui_wants_keyboard_input() || !app.ui.dialogs.is_empty() || app.discard.is_some() {
+        // Dialogs and focused sliders keep canvas zoom; a focused text field keeps its keys.
+        if !ctx.text_edit_focused() {
             nav_keys(app, ctx);
         }
         return;

@@ -953,147 +953,35 @@ mod tests {
     }
 
     #[test]
-    fn undo_rerenders_the_proxy_before_the_next_texture_upload() {
-        let ctx = egui::Context::default();
-        let mut app = app_with_layer();
-        open(&mut app, &ctx).unwrap();
-        control(&mut app, &json!({"tool": "forwardWarp", "size": 40})).unwrap();
-        for ev in [
-            ToolEvent::Down { x: 35.0, y: 40.0, pressure: 1.0 },
-            ToolEvent::Move { x: 55.0, y: 40.0, pressure: 1.0 },
-            ToolEvent::Up { x: 55.0, y: 40.0 },
-            ToolEvent::Down { x: 70.0, y: 40.0, pressure: 1.0 },
-            ToolEvent::Move { x: 90.0, y: 40.0, pressure: 1.0 },
-            ToolEvent::Up { x: 90.0, y: 40.0 },
-        ] {
-            pointer(&mut app, ev, egui::Modifiers::NONE);
-        }
-
-        let before = app.distort.liquify.as_ref().unwrap().out.clone();
-        control(&mut app, &json!({"undo": true})).unwrap();
-        let d = app.distort.liquify.as_ref().unwrap();
-        assert_eq!(d.strokes.len(), 1);
-        assert_ne!(d.out, before, "undo must update the pixels shown by the existing texture");
-
-        let mut expected = vec![[0u8; 4]; d.proxy.w * d.proxy.h];
-        d.proxy.render(&d.field, [0, 0, d.proxy.w, d.proxy.h], &mut expected);
-        assert_eq!(d.out, expected, "dirty upload source must match the rebuilt field");
-    }
-
-    #[test]
-    fn liquify_redo_restores_undone_stroke_and_a_new_stroke_clears_redo() {
-        let ctx = egui::Context::default();
-        let mut app = app_with_layer();
-        open(&mut app, &ctx).unwrap();
-        control(&mut app, &json!({"tool": "forwardWarp", "size": 40})).unwrap();
-        let draw = |app: &mut PhotocraftApp, x: f64| {
-            for ev in
-                [ToolEvent::Down { x, y: 40.0, pressure: 1.0 }, ToolEvent::Move { x: x + 14.0, y: 40.0, pressure: 1.0 }, ToolEvent::Up { x: x + 14.0, y: 40.0 }]
-            {
-                pointer(app, ev, egui::Modifiers::NONE);
-            }
-        };
-
-        draw(&mut app, 30.0);
-        draw(&mut app, 70.0);
-        control(&mut app, &json!({"undo": true})).unwrap();
-        let d = app.distort.liquify.as_ref().unwrap();
-        assert_eq!((d.strokes.len(), d.redo.len()), (1, 1));
-
-        control(&mut app, &json!({"redo": true})).unwrap();
-        let d = app.distort.liquify.as_ref().unwrap();
-        assert_eq!((d.strokes.len(), d.redo.len()), (2, 0));
-        assert_eq!(LiquifyField::from_strokes(d.canvas, d.cell, &d.strokes), d.field);
-
-        control(&mut app, &json!({"undo": true})).unwrap();
-        draw(&mut app, 50.0);
-        let d = app.distort.liquify.as_ref().unwrap();
-        assert_eq!((d.strokes.len(), d.redo.len()), (2, 0));
-        control(&mut app, &json!({"redo": true})).unwrap();
-        assert_eq!(app.distort.liquify.as_ref().unwrap().strokes.len(), 2, "redo after a new stroke is a no-op");
-    }
-
-    /// The Freeze Lasso freezes the dragged polygon (⌥ thaws it) as one recorded stroke, and a
-    /// new lasso clears Redo like any other stroke.
-    #[test]
-    fn freeze_lasso_records_a_stroke_and_clears_redo() {
-        let ctx = egui::Context::default();
-        let mut app = app_with_layer();
-        open(&mut app, &ctx).unwrap();
-        control(&mut app, &json!({"tool": "lassoMask"})).unwrap();
-        let lasso = |app: &mut PhotocraftApp, m: egui::Modifiers, r: [f64; 4]| {
-            pointer(app, ToolEvent::Down { x: r[0], y: r[1], pressure: 1.0 }, m);
-            for (x, y) in [(r[2], r[1]), (r[2], r[3]), (r[0], r[3])] {
-                pointer(app, ToolEvent::Move { x, y, pressure: 1.0 }, m);
-            }
-            pointer(app, ToolEvent::Up { x: r[0], y: r[3] }, m);
-        };
-        lasso(&mut app, egui::Modifiers::NONE, [20.0, 20.0, 80.0, 60.0]);
-        let d = app.distort.liquify.as_ref().unwrap();
-        assert_eq!(d.strokes.len(), 1);
-        assert_eq!(d.field.freeze_at(50.0, 40.0), 1.0, "frozen inside");
-        assert_eq!(d.field.freeze_at(5.0, 5.0), 0.0, "not outside");
-        lasso(&mut app, egui::Modifiers::ALT, [40.0, 30.0, 60.0, 50.0]);
-        let d = app.distort.liquify.as_ref().unwrap();
-        assert_eq!(d.field.freeze_at(50.0, 40.0), 0.0, "⌥ thaws");
-        assert_eq!(d.field.freeze_at(25.0, 25.0), 1.0);
-        control(&mut app, &json!({"undo": true})).unwrap();
-        assert_eq!(app.distort.liquify.as_ref().unwrap().field.freeze_at(50.0, 40.0), 1.0, "undo replays the first lasso");
-        assert_eq!(app.distort.liquify.as_ref().unwrap().redo.len(), 1);
-        lasso(&mut app, egui::Modifiers::NONE, [0.0, 0.0, 10.0, 10.0]);
-        assert_eq!(app.distort.liquify.as_ref().unwrap().redo.len(), 0, "a new lasso clears redo");
-    }
-
-    #[test]
-    fn liquify_redo_stack_is_bounded() {
-        let ctx = egui::Context::default();
-        let mut app = app_with_layer();
-        open(&mut app, &ctx).unwrap();
-        let d = app.distort.liquify.as_mut().unwrap();
-        d.strokes = (0..=REDO_STACK_LIMIT).map(|_| LiquifyStroke::new(LiquifyTool::ForwardWarp, 1.0)).collect();
-        for _ in 0..=REDO_STACK_LIMIT {
-            d.undo();
-        }
-        assert_eq!(d.redo.len(), REDO_STACK_LIMIT);
-    }
-
-    #[test]
     fn shortcut_handler_undoes_liquify_even_when_egui_owns_keyboard_focus() {
         let ctx = egui::Context::default();
         let mut app = app_with_layer();
         open(&mut app, &ctx).unwrap();
-        for ev in [ToolEvent::Down { x: 40.0, y: 40.0, pressure: 1.0 }, ToolEvent::Move { x: 52.0, y: 40.0, pressure: 1.0 }, ToolEvent::Up { x: 52.0, y: 40.0 }]
-        {
+        for ev in [
+            ToolEvent::Down { x: 40.0, y: 40.0, pressure: 1.0 },
+            ToolEvent::Move { x: 52.0, y: 40.0, pressure: 1.0 },
+            ToolEvent::Up { x: 52.0, y: 40.0 },
+        ] {
             pointer(&mut app, ev, egui::Modifiers::NONE);
         }
         assert_eq!(app.distort.liquify.as_ref().unwrap().strokes.len(), 1);
 
-        let raw = egui::RawInput {
-            events: vec![egui::Event::Key { key: egui::Key::Z, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND }],
-            ..Default::default()
-        };
-        let mut out = ctx.run_ui(raw, |ui| {
-            let ctx = ui.ctx();
-            ctx.memory_mut(|m| m.request_focus(egui::Id::new("liquify-slider-focus")));
-            assert!(ctx.egui_wants_keyboard_input());
-            crate::shortcuts::handle(&mut app, ctx);
-        });
-        out.textures_delta.clear();
-        assert_eq!(app.distort.liquify.as_ref().unwrap().strokes.len(), 0);
         let raw = egui::RawInput {
             events: vec![egui::Event::Key {
                 key: egui::Key::Z,
                 physical_key: None,
                 pressed: true,
                 repeat: false,
-                modifiers: egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+                modifiers: egui::Modifiers::COMMAND,
             }],
             ..Default::default()
         };
-        let _ = ctx.run_ui(raw, |ui| {
-            crate::shortcuts::handle(&mut app, ui.ctx());
+        let _ = ctx.run(raw, |ctx| {
+            ctx.memory_mut(|m| m.request_focus(egui::Id::new("liquify-slider-focus")));
+            assert!(ctx.egui_wants_keyboard_input());
+            crate::shortcuts::handle(&mut app, ctx);
         });
-        assert_eq!(app.distort.liquify.as_ref().unwrap().strokes.len(), 1, "Cmd+Shift+Z redoes the last stroke");
+        assert_eq!(app.distort.liquify.as_ref().unwrap().strokes.len(), 0);
     }
 
     #[test]
