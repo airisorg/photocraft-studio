@@ -808,6 +808,10 @@ fn switch_on_hover(ctx: &egui::Context, buttons: &[egui::Response]) {
     // `Response::hovered` is false while the menu's popup layer is open. Hit-test the title
     // rect manually, but only when its own layer is top-most at the pointer.
     let Some(p) = ctx.pointer_hover_pos() else { return };
+    // Only a moving pointer switches: a pointer resting on a title must not undo ← / → .
+    if ctx.input(|i| i.pointer.delta() == egui::Vec2::ZERO) {
+        return;
+    }
     if let Some(i) = buttons.iter().position(|b| pointer_reaches_title(ctx, b, p))
         && i != open
     {
@@ -816,19 +820,13 @@ fn switch_on_hover(ctx: &egui::Context, buttons: &[egui::Response]) {
     }
 }
 
-fn render_level(ui: &mut egui::Ui, items: &[&MenuItem], depth: usize, clicked: &mut Option<String>) {
-    // On short displays leave room for the menu bar and popup frame so the ScrollArea becomes
-    // active before the popup reaches the bottom edge. Keep wheel/scrollbar input and also allow
-    // direct dragging of the menu contents.
-    let max_height = (ui.ctx().content_rect().height() - 56.0).max(96.0);
-    egui::ScrollArea::vertical()
-        .id_salt(("menu-level", depth))
-        .max_height(max_height)
-        .scroll_source(egui::containers::scroll_area::ScrollSource::ALL)
-        .show(ui, |ui| render_level_rows(ui, items, depth, clicked));
+fn render_level(ui: &mut egui::Ui, items: &[&MenuItem], depth: usize, clicked: &mut Option<String>, nav: &mut crate::menu_nav::Nav) {
+    // Menu popups can be taller than the window: each level stays on screen and scrolls (wheel,
+    // scroll arrows, keyboard), like a native menu on a small display.
+    crate::menu_nav::level(ui, depth, nav, |ui, nav| render_level_rows(ui, items, depth, clicked, nav));
 }
 
-fn render_level_rows(ui: &mut egui::Ui, items: &[&MenuItem], depth: usize, clicked: &mut Option<String>) {
+fn render_level_rows(ui: &mut egui::Ui, items: &[&MenuItem], depth: usize, clicked: &mut Option<String>, nav: &mut crate::menu_nav::Nav) {
     let t = crate::theme::Tokens::get(ui.ctx());
     let lang = crate::i18n::current();
     // Items never wrap: the menu widens to its longest label plus shortcut (translations can be
@@ -869,11 +867,6 @@ fn render_level_rows(ui: &mut egui::Ui, items: &[&MenuItem], depth: usize, click
             }
             let hit = nav.row(ui, depth - 1, it.enabled, Some(&it.id), |ui, _| {
                 let r = ui.add_enabled(it.enabled, b);
-                let r = match it.id.as_str() {
-                    "image.mode.bits8" | "image.mode.bits16" => r.on_hover_text(crate::i18n::tr(lang, "Integer")),
-                    "image.mode.bits32" => r.on_hover_text(crate::i18n::tr(lang, "Floating point")),
-                    _ => r,
-                };
                 let hit = r.clicked();
                 (r, hit)
             });
@@ -892,14 +885,7 @@ fn render_level_rows(ui: &mut egui::Ui, items: &[&MenuItem], depth: usize, click
             let any_enabled = child.iter().any(|c| c.enabled && c.label != "---");
             let enabled = any_enabled || !child.is_empty();
             ui.add_enabled_ui(enabled, |ui| {
-                nav.row(ui, depth - 1, enabled, None, |ui, nav| {
-                    let r = ui.menu_button(crate::i18n::tr(lang, name), |ui| render_level(ui, &child, depth + 1, clicked, nav));
-                    if r.inner.is_some() {
-                        // Where the submenu hangs from, to keep it below the menu bar (#319).
-                        nav.set_anchor(depth, r.response.rect);
-                    }
-                    (r.response, ())
-                });
+                nav.row(ui, depth - 1, enabled, None, |ui, nav| (ui.menu_button(name, |ui| render_level(ui, &child, depth + 1, clicked, nav)).response, ()));
             });
             last_was_sep = false;
         }

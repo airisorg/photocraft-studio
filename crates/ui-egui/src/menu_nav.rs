@@ -49,11 +49,6 @@ pub struct Nav {
     pub bar_bottom: Option<f32>,
     /// The visible (scrolled) part of each level.
     pub(crate) views: Vec<Rect>,
-    /// The full height of each level's rows (taller than its view when it scrolls).
-    pub(crate) contents: Vec<f32>,
-    /// Per level: the row its open submenu hangs from (level 0 has none). From the frame
-    /// before, since a submenu is drawn while its row is.
-    anchors: Vec<Option<Rect>>,
     /// Scroll the highlighted row of `level` into view when it is next drawn.
     reveal: bool,
     /// Highlight the first enabled row of this level once it has been drawn (a keyboard-opened
@@ -112,8 +107,6 @@ impl Nav {
         self.roots.resize(level + 1, root);
         self.views.truncate(level);
         self.views.resize(level + 1, Rect::NOTHING);
-        self.contents.truncate(level);
-        self.contents.resize(level + 1, 0.0);
     }
 
     /// Draw a row of `level` with `add`, highlighted like a hovered row when the keyboard (or the
@@ -186,16 +179,6 @@ impl Nav {
         self.first_at = Some(level + 1);
     }
 
-    /// Remember the row the submenu of `level` (1 = a top-level menu's submenu) hangs from.
-    pub fn set_anchor(&mut self, level: usize, row: Rect) {
-        if self.anchors.len() <= level {
-            self.anchors.resize(level + 1, None);
-        }
-        if let Some(a) = self.anchors.get_mut(level) {
-            *a = Some(row);
-        }
-    }
-
     /// Handle this frame's navigation keys (after the menus were drawn). `tops` are the menu
     /// bar's popup ids; an activated command lands in `clicked`.
     pub fn keys(&mut self, ctx: &egui::Context, tops: &[Id], clicked: &mut Option<String>) {
@@ -265,38 +248,6 @@ fn pointer_on(ui: &Ui, rect: Rect) -> bool {
     ui.ctx().pointer_hover_pos().is_some_and(|p| rect.contains(p) && ui.ctx().layer_id_at(p) == Some(ui.layer_id()))
 }
 
-/// The height a menu level's rows may take. Every level stays below the menu bar (#319): a
-/// top-level menu hangs from it, and a submenu that is too tall for the window between its row
-/// and the bottom, or (opening upward, as egui does when that fits) between the bar and its row,
-/// scrolls instead of egui sliding it up over the menu bar, where it hid the menu titles.
-/// `anchor` is the submenu's row (unknown on its first frame); `frame` the popup's margins.
-pub fn level_room(screen: Rect, bar_bottom: Option<f32>, depth: usize, anchor: Option<Rect>, frame: f32) -> f32 {
-    level_room_in(screen, screen, bar_bottom, depth, anchor, None, frame)
-}
-
-/// [`level_room`] when only `visible`, a part of the window's content rect `screen`, can be seen
-/// (#315: a window taller than its display runs under the taskbar). egui still places popups
-/// within the whole window, so a submenu opens upward only when downward doesn't fit the window.
-/// `rows` is the level's rows' height when known (the popup shrinks to it).
-pub fn level_room_in(screen: Rect, visible: Rect, bar_bottom: Option<f32>, depth: usize, anchor: Option<Rect>, rows: Option<f32>, frame: f32) -> f32 {
-    let top = bar_bottom.unwrap_or(visible.top()).max(visible.top()) + EDGE;
-    let bottom = visible.bottom().min(screen.bottom()) - EDGE;
-    let below_bar = bottom - top;
-    let room = match anchor.filter(|_| depth > 1) {
-        Some(row) => {
-            // Downward from the row, or upward from it, whichever leaves more room. egui opens a
-            // submenu upward only when the downward one doesn't fit the window (it hangs from the
-            // row's top less half the frame margin).
-            let (down, up) = (bottom - row.top(), row.bottom() - top);
-            let opens_up = |h: f32| row.top() - (frame - 2.0) / 2.0 + h + frame > screen.bottom();
-            let want = rows.unwrap_or(f32::INFINITY);
-            if want > down && up > down && opens_up(want.min(up)) { up } else { down }.min(below_bar)
-        }
-        None => below_bar,
-    } - frame;
-    if room.is_finite() { room.max(4.0 * ARROW) } else { 4.0 * ARROW }
-}
-
 /// Draw one level of a menu, bounded by the window: when its rows don't fit they scroll, with
 /// scroll arrows at the top and bottom. `depth` is 1 for a top-level menu.
 pub fn level(ui: &mut Ui, depth: usize, nav: &mut Nav, rows: impl FnOnce(&mut Ui, &mut Nav)) {
@@ -304,37 +255,28 @@ pub fn level(ui: &mut Ui, depth: usize, nav: &mut Nav, rows: impl FnOnce(&mut Ui
     let level = depth.saturating_sub(1);
     nav.begin_level(level, find_menu_root(ui).id);
     let screen = ctx.content_rect();
-    // Only the part of the window on its monitor, clear of the taskbar, can be seen (#315).
-    let visible = crate::work_area::visible_rect(&ctx);
     // The menu frame's margin and stroke around the rows.
     let frame = ui.spacing().menu_margin.sum().y + 2.0;
-    let anchor = nav.anchors.get(level).copied().flatten();
+    // A top-level menu hangs below the menu bar; a submenu may slide up to fit the window.
+    // (From the menu bar, not from where the popup is now: egui slides a popup that doesn't fit.)
+    let top = nav.bar_bottom.unwrap_or(screen.top()) + EDGE;
+    let room = if depth <= 1 { screen.bottom() - top - EDGE } else { screen.height() - 2.0 * EDGE } - frame;
+    let room = room.max(4.0 * ARROW);
     let key = ui.id().with(("pc-menu-level", depth));
     // Rows' height from the last frame: does this level overflow?
     let content: Option<f32> = ctx.data(|d| d.get_temp(key));
-    let room = level_room_in(screen, visible, nav.bar_bottom, depth, anchor, content, frame);
     let over = content.is_some_and(|h| h > room + 0.5);
     let up = over.then(|| ui.allocate_exact_size(vec2(0.0, ARROW), Sense::hover()).0);
-    let height = if over { room - 2.0 * ARROW } else { room };
     // Wheel, scroll bar and dragging the rows all scroll (#160).
-    // The popup's `Ui` is only as tall as the popup was last frame (egui's `default_area_size`, 400
-    // pt, on the first): a scroll area never grows past that, so every menu stuck at that height
-    // and scrolled even on a tall window (#235). Ask for the room the window has; auto-shrink then
-    // fits the area to its rows, so a menu scrolls only when they don't fit.
     let out = egui::ScrollArea::vertical()
         .id_salt(("menu-level", depth))
-        .max_height(height)
-        .min_scrolled_height(height)
+        .max_height(if over { room - 2.0 * ARROW } else { room })
         .scroll_source(egui::containers::scroll_area::ScrollSource::ALL)
         .show(ui, |ui| rows(ui, nav));
     let down = over.then(|| ui.allocate_exact_size(vec2(0.0, ARROW), Sense::hover()).0);
     ctx.data_mut(|d| d.insert_temp(key, out.content_size.y));
     if let Some(v) = nav.views.get_mut(level) {
-        // `inner_rect` is the size asked for, before auto-shrink fits it to the rows.
-        *v = Rect::from_min_size(out.inner_rect.min, vec2(out.inner_rect.width(), out.inner_rect.height().min(out.content_size.y)));
-    }
-    if let Some(c) = nav.contents.get_mut(level) {
-        *c = out.content_size.y;
+        *v = out.inner_rect;
     }
     if nav.first_at == Some(level) {
         nav.first_at = None;
