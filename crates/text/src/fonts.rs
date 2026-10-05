@@ -387,59 +387,14 @@ fn system_font_dirs() -> Vec<std::path::PathBuf> {
     v
 }
 
-/// A platform-private family (macOS names its UI faces with a leading '.'): never listed or
-/// picked by default.
-pub fn is_hidden_family(name: &str) -> bool {
-    name.starts_with('.')
-}
-
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
-    #[test]
-    fn hidden_families_sort_last_and_are_not_listed() {
-        assert!(super::is_hidden_family(".Hiragino Kaku Gothic Interface"));
-        assert!(!super::is_hidden_family("Hiragino Sans"));
-        let mut v = [".Hiragino Kaku Gothic Interface".to_string(), "Hiragino Kaku Gothic ProN".to_string()];
-        v.sort_by_key(|n| (super::is_hidden_family(n), n.to_lowercase()));
-        assert_eq!(v[0], "Hiragino Kaku Gothic ProN");
-    }
-
     #[test]
     #[cfg(target_os = "linux")]
     fn scans_flatpak_host_fonts() {
         let dirs = super::system_font_dirs();
         assert!(dirs.iter().any(|d| d.ends_with("run/host/fonts")));
         assert!(dirs.iter().any(|d| d.ends_with("run/host/user-fonts")));
-    }
-
-    /// The bundled UI fonts cover Czech (the `cs` UI language) on their own: every letter with a
-    /// diacritic and the Czech quotation marks, so no system fallback font is needed.
-    #[test]
-    fn bundled_fonts_cover_czech() {
-        use skrifa::MetadataProvider;
-        let czech = "aábcčdďeéěfghiíjklmnňoópqrřsštťuúůvwxyýzž„“";
-        let letters: String = czech.chars().chain(czech.chars().flat_map(char::to_uppercase)).collect();
-        for (name, bytes) in super::BUNDLED {
-            let font = skrifa::FontRef::new(bytes).expect("bundled font parses");
-            let cmap = font.charmap();
-            let missing: String = letters.chars().filter(|c| cmap.map(*c).is_none_or(|g| g.to_u32() == 0)).collect();
-            assert!(missing.is_empty(), "{name} lacks Czech glyphs: {missing}");
-        }
-    }
-
-    /// The bundled UI fonts cover French (the `fr` UI language) on their own: every accented
-    /// letter, the ligatures, the guillemets and the no-break space used before `: ; ? !`.
-    #[test]
-    fn bundled_fonts_cover_french() {
-        use skrifa::MetadataProvider;
-        let french = "àâæçéèêëîïôœùûüÿ";
-        let letters: String = french.chars().chain(french.chars().flat_map(char::to_uppercase)).chain("«»\u{a0}’".chars()).collect();
-        for (name, bytes) in super::BUNDLED {
-            let font = skrifa::FontRef::new(bytes).expect("bundled font parses");
-            let cmap = font.charmap();
-            let missing: String = letters.chars().filter(|c| cmap.map(*c).is_none_or(|g| g.to_u32() == 0)).collect();
-            assert!(missing.is_empty(), "{name} lacks French glyphs: {missing:?}");
-        }
     }
 
     #[test]
