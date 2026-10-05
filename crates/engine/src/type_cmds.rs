@@ -401,10 +401,6 @@ fn with_text_layer<R>(s: &mut Session, p: &Value, label: &str, f: impl FnOnce(&m
         // Only this layer's pixels changed: the canvas recomposites their old and new area
         // instead of the whole document (#124). Unknown old pixels mean a full refresh.
         let damage = before.zip(t.cache.as_ref().map(|c| c.tile_bounds())).map(|(a, b)| a.union(&b));
-        let name = auto_named.then(|| layer_name(&t.text));
-        if let Some(n) = name {
-            l.name = n;
-        }
         Ok((r, damage))
     })?;
     if let Some(st) = s.active_mut() {

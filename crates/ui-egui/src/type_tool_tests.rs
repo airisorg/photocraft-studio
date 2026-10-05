@@ -243,16 +243,8 @@ fn size_applies_at_layer_and_selection_scope() {
         let w1 = text(&app, id).cache.unwrap().content_bounds().width();
         assert!(w1 as f32 > w0 as f32 * 1.4, "psd {psd}: the pixels grow ({w0} → {w1})");
         // Selection scope: "world" only.
-        app.ui.text_edit = Some(crate::state::TextEdit {
-            layer: id.0,
-            caret: 11,
-            anchor: 6,
-            session: "s".into(),
-            created: false,
-            dragging: false,
-            resize: None,
-            preedit: None,
-        });
+        app.ui.text_edit =
+            Some(crate::state::TextEdit { layer: id.0, caret: 11, anchor: 6, session: "s".into(), created: false, dragging: false, preedit: None });
         super::apply(&mut app, &ctx, json!({"size": 10.0}));
         assert_eq!((size_at(&app, id, 0), size_at(&app, id, 5), size_at(&app, id, 6), size_at(&app, id, 10)), (30.0, 30.0, 10.0, 10.0), "psd {psd}");
     }
@@ -295,119 +287,4 @@ fn size_drag_is_live_and_one_history_step_per_drag() {
     assert!(h.state_mut().session.undo());
     assert!(h.state_mut().session.undo());
     assert_eq!(size_at(h.state(), id, 0), 20.0);
-}
-
-/// A point inside glyph `i` of vertical type: `f` of the way down its advance, right of the
-/// column's centre line.
-fn vglyph(h: &mut Harness<'static, PhotocraftApp>, id: LayerId, i: usize, f: f32) -> Pos2 {
-    let (l, _, text) = layout(h.state_mut(), id).unwrap();
-    assert!(l.vertical);
-    let b = text.char_indices().nth(i).unwrap().0;
-    let c = l.clusters.iter().find(|c| c.range.start == b).unwrap().clone();
-    let ln = &l.lines[c.line];
-    let (x, y) = l.to_text(c.x + c.advance * f, ln.baseline - ln.ascent * 0.35);
-    screen(h, id, x, y)
-}
-
-fn key(h: &mut Harness<'static, PhotocraftApp>, k: egui::Key) {
-    h.event(egui::Event::Key { key: k, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE });
-    h.run_steps(1);
-}
-
-/// Vertical type (#199): clicks and drags land on the glyph under the pointer down the column,
-/// and the arrow keys follow the vertical flow (↓ next character, ← next column).
-#[test]
-fn vertical_type_caret_selection_and_arrows_follow_the_columns() {
-    let rotated = Affine { m: [0.94, 0.342, -0.342, 0.94, 900.0, 200.0] };
-    for ppp in [1.0, 2.0] {
-        for tf in [None, Some(rotated)] {
-            let mut app = new_app();
-            let id = LayerId(app.run("type.create", json!({"text": "HOHOHO\nHOHO", "size": 60, "x": 800, "y": 120})).unwrap()["layer"].as_u64().unwrap());
-            app.run("type.orientation.vertical", json!({"layer": id.0})).unwrap();
-            // Snapping would pull the pointer onto the layer's edges and centre lines.
-            app.ui.extras.snap = false;
-            if let Some(a) = tf {
-                app.run("type.edit", json!({"layer": id.0, "transform": a.m})).unwrap();
-            }
-            let mut h = harness(ppp, app);
-            let (l, aff, _) = layout(h.state_mut(), id).unwrap();
-            let b = l.bounds().unwrap();
-            assert!(b[3] - b[1] > b[2] - b[0], "vertical bounds {b:?}");
-            let m = aff.apply(Point::new(f64::from(b[0] + b[2]) / 2.0, f64::from(b[1] + b[3]) / 2.0));
-            let v = &mut h.state_mut().ui.views[0];
-            (v.zoom, v.center, v.fit_pending) = (0.5, [m.x as f32, m.y as f32], false);
-            h.run_steps(2);
-            let ctx = format!("ppp {ppp} transformed {}", tf.is_some());
-            // Upper part of glyph 2 → caret before it; lower part of glyph 4 → after it.
-            let p = vglyph(&mut h, id, 2, 0.2);
-            click(&mut h, p);
-            assert_eq!(selection(&h), (2, 2), "{ctx}");
-            let p = vglyph(&mut h, id, 4, 0.8);
-            click(&mut h, p);
-            assert_eq!(selection(&h), (5, 5), "{ctx}");
-            // Drag down the column from glyph 1 into the second column's glyph 2 (char 9).
-            let (a, b) = (vglyph(&mut h, id, 1, 0.25), vglyph(&mut h, id, 9, 0.75));
-            drag(&mut h, a, b);
-            assert_eq!(selection(&h), (1, 10), "{ctx}: drag");
-            // Arrows: ↓ next char, ↑ previous, ← next column (same position), → back.
-            let p = vglyph(&mut h, id, 1, 0.2);
-            click(&mut h, p);
-            assert_eq!(selection(&h), (1, 1), "{ctx}");
-            key(&mut h, egui::Key::ArrowDown);
-            assert_eq!(selection(&h).1, 2, "{ctx}: ↓");
-            key(&mut h, egui::Key::ArrowUp);
-            assert_eq!(selection(&h).1, 1, "{ctx}: ↑");
-            key(&mut h, egui::Key::ArrowLeft);
-            assert_eq!(selection(&h).1, 8, "{ctx}: ← moves to the next column");
-            key(&mut h, egui::Key::ArrowRight);
-            assert_eq!(selection(&h).1, 1, "{ctx}: → moves back");
-        }
-    }
-    assert_eq!(super::flow_key(egui::Key::ArrowUp, false), egui::Key::ArrowUp);
-}
-
-fn rgb_at(app: &PhotocraftApp, id: LayerId, ci: usize) -> [u8; 4] {
-    let t = text(app, id);
-    let b = t.text.char_indices().nth(ci).map_or(t.text.len(), |(b, _)| b);
-    let mut at = 0;
-    for r in t.char_runs() {
-        if b < at + r.len {
-            return r.style.color.to_rgba8();
-        }
-        at += r.len;
-    }
-    [0; 4]
-}
-
-/// A new foreground colour recolours the selected characters only, inside the editing session's
-/// history step; with nothing selected (a caret, or not editing) the type keeps its colour.
-#[test]
-fn foreground_colour_recolours_only_selected_type() {
-    let mut app = new_app();
-    let id =
-        LayerId(app.run("type.create", json!({"text": "Hello world", "size": 40, "x": 300, "y": 420, "color": "#000000"})).unwrap()["layer"].as_u64().unwrap());
-    app.run("tools.setColors", json!({"foreground": "#ff0000"})).unwrap();
-    super::foreground_changed(&mut app);
-    assert_eq!(rgb_at(&app, id, 0), [0, 0, 0, 255], "not editing: unchanged");
-    let edit = |caret, anchor| crate::state::TextEdit {
-        layer: id.0,
-        caret,
-        anchor,
-        session: "s".into(),
-        created: false,
-        dragging: false,
-        resize: None,
-        preedit: None,
-    };
-    app.ui.text_edit = Some(edit(3, 3));
-    super::foreground_changed(&mut app);
-    assert_eq!(rgb_at(&app, id, 0), [0, 0, 0, 255], "a caret: unchanged");
-    let steps = app.session.active().unwrap().history.entries().len();
-    app.ui.text_edit = Some(edit(11, 6));
-    super::foreground_changed(&mut app);
-    app.run("tools.setColors", json!({"foreground": "#00ff00"})).unwrap();
-    super::foreground_changed(&mut app);
-    assert_eq!((rgb_at(&app, id, 0), rgb_at(&app, id, 5)), ([0, 0, 0, 255], [0, 0, 0, 255]));
-    assert_eq!((rgb_at(&app, id, 6), rgb_at(&app, id, 10)), ([0, 255, 0, 255], [0, 255, 0, 255]));
-    assert_eq!(app.session.active().unwrap().history.entries().len(), steps + 1, "one step for the session");
 }

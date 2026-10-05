@@ -1658,11 +1658,11 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
         // Tools follow the left button; the right one opens the Brush Preset picker or erases
         // (Preferences › Tools, `paint_mouse`).
         crate::paint_mouse::sync_tool_smoothing(app);
-        let mut buttons = crate::paint_mouse::canvas_buttons(app, &response, tool);
-        // Right-click with the Move tool, or ⌘/Ctrl+right-click: the layers under the pointer.
-        if response.secondary_clicked()
-            && crate::layer_pick_ui::is_gesture(tool, mods)
-            && let Some(p) = response.interact_pointer_pos()
+        let buttons = crate::paint_mouse::canvas_buttons(app, &response, tool);
+        // A drag is only recognised once the pointer has moved past egui's click distance: the
+        // gesture starts where the button went down, not where it is now (#123).
+        if buttons.started
+            && let Some(p) = ui.input(|i| i.pointer.press_origin()).filter(|p| rect.contains(*p)).or(response.interact_pointer_pos())
         {
             let d = xf.to_doc(p);
             app.ui.canvas_tool_menu = None;
