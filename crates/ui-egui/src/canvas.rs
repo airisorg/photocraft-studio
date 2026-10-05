@@ -1247,7 +1247,7 @@ fn start_screen(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             });
             ui.add_space(22.0);
             ui.horizontal(|ui| {
-                let msg = start_screen_drop_hint(app.services.is_wayland);
+                let msg = tl!("Drop an image or PSD anywhere to open it.");
                 let g = ui.painter().layout_no_wrap(msg.into(), egui::FontId::proportional(12.5), t.text_faint);
                 ui.add_space(((card.width() - g.size().x - 24.0) / 2.0).max(0.0));
                 let (r, _) = ui.allocate_exact_size(egui::vec2(18.0, 18.0), Sense::hover());
@@ -1278,7 +1278,7 @@ fn home_recent(app: &mut PhotocraftApp, ui: &mut egui::Ui, recent: &[String]) {
     ui.horizontal(|ui| {
         // Line the heading up with the file icons.
         ui.add_space(((ui.available_width() - width) / 2.0).max(0.0) + 8.0);
-        ui.label(egui::RichText::new("Recent").font(crate::theme::semibold(12.5)).color(t.text_dim));
+        ui.label(egui::RichText::new(tl!("Recent")).font(crate::theme::semibold(12.5)).color(t.text_dim));
     });
     ui.add_space(4.0);
     let mut open = None;

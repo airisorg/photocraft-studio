@@ -293,7 +293,7 @@ pub fn body(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
             ui.painter().rect_stroke(sw, 0.0, Stroke::new(1.0, t.field_border), StrokeKind::Outside);
             let click_cur = ui.interact(cur, ui.id().with("cp-current"), Sense::click());
             if click_cur.on_hover_text(tl!("Click to restore the current colour")).clicked() {
-                set_rgb(f, orig, Keep::Nothing);
+                set_rgb(f, orig, None);
             }
             ui.label(egui::RichText::new(tl!("current")).size(11.0).color(t.text_dim));
             ui.add_space(10.0);

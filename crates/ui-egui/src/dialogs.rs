@@ -75,7 +75,6 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
         let _language = crate::i18n::language_scope(lang);
         let mut fields = d.fields.clone();
         let mut outcome: Option<bool> = None; // Some(true)=OK, Some(false)=Cancel
-        let mut apply_requested = false;
         let title = display_title(&d);
         let id = egui::Id::new(("dialog", d.id));
         // Opens centred, then its top-left stays put (offset from the window's top-left, moved by
@@ -123,8 +122,8 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
                     }
                 }
                 DialogKind::About => {
-                    ui.label("PhotoCraft — an open-source, native image editor written in Rust.");
-                    ui.label(format!("Version {}", photocraft_engine::build_info::long_version()));
+                    ui.label(tl!("PhotoCraft — an open-source, native image editor written in Rust."));
+                    ui.label(crate::i18n::fmt(tl!("Version {version}"), &[("version", &photocraft_engine::build_info::long_version())]));
                     ui.add_space(12.0);
                     ui.vertical_centered(|ui| {
                         crate::links::discord_button(app, ui, 220.0);

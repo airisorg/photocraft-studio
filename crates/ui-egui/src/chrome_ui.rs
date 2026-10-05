@@ -101,15 +101,8 @@ pub fn status_info_text(doc: &Document, key: &str, tool: &str, profile: &str) ->
 }
 
 fn profile_name(doc: &Document) -> String {
-    let mode = crate::canvas::mode_label(doc);
-    let Some(bytes) = doc.icc_profile.as_ref() else {
-        return crate::i18n::fmt(tl!("Untagged {mode}"), &[("mode", tl!(mode))]);
-    };
-    let Ok(profile) = photocraft_engine::color_cmds::profile_from_bytes(bytes) else {
-        return crate::i18n::fmt(tl!("Invalid {mode} profile"), &[("mode", tl!(mode))]);
-    };
-    if profile.color_space != photocraft_engine::color_cmds::mode_space(doc.mode) {
-        return crate::i18n::fmt(tl!("Invalid {mode} profile"), &[("mode", tl!(mode))]);
+    if doc.icc_profile.is_none() {
+        return crate::i18n::fmt(tl!("Untagged {mode}"), &[("mode", tl!(&crate::canvas::mode_label(doc)))]);
     }
     let name: String = profile.description.chars().filter(|c| !c.is_control()).take(128).collect();
     let name = name.trim();
@@ -166,7 +159,7 @@ pub fn home_button(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let on = app.ui.chrome.shows_home(n, auto);
     // With no documents and auto-show on, Home can't be dismissed (there's nothing behind it).
     let can_toggle = n > 0 || !auto;
-    if icons::button(ui, "house", 26.0, on && can_toggle, "Home").clicked() && can_toggle {
+    if icons::button(ui, "house", 26.0, on && can_toggle, tl!("Home")).clicked() && can_toggle {
         app.ui.chrome.home = if on { None } else { Some(n) };
     }
 }

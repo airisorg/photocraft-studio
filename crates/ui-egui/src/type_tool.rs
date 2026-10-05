@@ -783,7 +783,7 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         Some((f, s, z, _)) => (f.clone(), if s.is_empty() { "Regular".into() } else { s.clone() }, *z),
         None => (o.type_font.clone(), o.type_style.clone(), o.type_size),
     };
-    if crate::icons::button(ui, "text-cursor", 24.0, false, "Toggle text orientation").clicked()
+    if crate::icons::button(ui, "text-cursor", 24.0, false, tl!("Toggle text orientation")).clicked()
         && let Some((layer, _)) = target(app)
     {
         let to = if is_vertical(app, LayerId(layer)) { "horizontal" } else { "vertical" };
@@ -856,7 +856,7 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     ui.painter().rect_filled(rect, 2.0, Color32::from_rgb(q(c[0]), q(c[1]), q(c[2])));
     ui.painter().rect_stroke(rect, 2.0, Stroke::new(1.0, t.field_border), egui::StrokeKind::Outside);
     let resp = resp.on_hover_text(tl!("Set the text color"));
-    crate::widgets::swatch_popup(&resp).show(|ui| {
+    egui::Popup::from_toggle_button_response(&resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
         let mut col = Color32::from_rgb(q(c[0]), q(c[1]), q(c[2]));
         if egui::color_picker::color_picker_color32(ui, &mut col, egui::color_picker::Alpha::Opaque) {
             apply(app, ui.ctx(), json!({"color": format!("#{:02x}{:02x}{:02x}", col.r(), col.g(), col.b())}));
@@ -865,7 +865,15 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     if app.ui.text_edit.is_some() {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.add_space(8.0);
-            if crate::icons::button(ui, "check", 24.0, false, &format!("Commit any current edits ({})", crate::shortcuts::pretty("Cmd+Enter"))).clicked() {
+            if crate::icons::button(
+                ui,
+                "check",
+                24.0,
+                false,
+                &crate::i18n::fmt(tl!("Commit any current edits ({key})"), &[("key", &crate::shortcuts::pretty("Cmd+Enter"))]),
+            )
+            .clicked()
+            {
                 commit(app);
             }
             if crate::icons::button(ui, "ban", 24.0, false, tl!("Cancel any current edits (Esc)")).clicked() {
@@ -1041,7 +1049,7 @@ fn toggle_cell(ui: &mut egui::Ui, w: f32, on: bool, tip: &str, paint: impl FnOnc
     paint(ui, r, if on { t.text } else { t.text_dim });
     let tip = tip.to_string();
     resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, on, &tip));
-    resp.on_hover_text(tip).clicked()
+    resp.on_hover_text(tl!(&tip)).clicked()
 }
 
 /// Width of each of `n` equal cells filling `avail` with 2 pt gaps.
@@ -1062,7 +1070,7 @@ pub fn character_panel(app: &mut PhotocraftApp, ui: &mut egui::Ui, paragraph: bo
     if styles_at(app).is_none() {
         let t = crate::theme::Tokens::get(ui.ctx());
         ui.add_space(8.0);
-        ui.label(egui::RichText::new("Select a type layer to edit its character and paragraph settings.").color(t.text_dim));
+        ui.label(egui::RichText::new(tl!("Select a type layer to edit its character and paragraph settings.")).color(t.text_dim));
         return;
     }
     type_sections(app, ui, !paragraph, paragraph);
@@ -1083,7 +1091,7 @@ fn type_sections(app: &mut PhotocraftApp, ui: &mut egui::Ui, character: bool, pa
         });
         ui.add_space(ROW_GAP);
     };
-    if character && section(ui, "character", "Character") {
+    if character && section(ui, "character", tl!("Character")) {
         let full = ui.available_width();
         let w = field_width(full, 2, LABEL_W);
         let mut fam = c.font_family.clone();
@@ -1091,7 +1099,7 @@ fn type_sections(app: &mut PhotocraftApp, ui: &mut egui::Ui, character: bool, pa
             if font_picker(ui, &mut fam, full) {
                 app.ui.tool_options.type_font = fam.clone();
                 let st = styles(&fam);
-                let style = if st.contains(&c.font_style) { c.font_style.clone() } else { st.first().cloned().unwrap_or_else(|| "Regular".into()) };
+                let style = if st.contains(&c.font_style) { c.font_style.clone() } else { st.first().cloned().unwrap_or_else(|| tl!("Regular").into()) };
                 apply(app, ui.ctx(), json!({"font": fam, "fontStyle": style}));
             }
         });
@@ -1142,7 +1150,7 @@ fn type_sections(app: &mut PhotocraftApp, ui: &mut egui::Ui, character: bool, pa
             // Colour: label + a swatch filling the rest of the second column.
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = LABEL_GAP;
-                let g = ui.painter().layout_no_wrap("Color".into(), egui::FontId::proportional(12.0), t.text_dim);
+                let g = ui.painter().layout_no_wrap(tl!("Color").into(), egui::FontId::proportional(12.0), t.text_dim);
                 let lw = g.size().x.max(LABEL_W);
                 let (lr, _) = ui.allocate_exact_size(egui::vec2(lw, 22.0), egui::Sense::hover());
                 ui.painter().galley(egui::pos2(lr.left(), lr.center().y - g.size().y / 2.0), g, t.text_dim);
@@ -1152,7 +1160,7 @@ fn type_sections(app: &mut PhotocraftApp, ui: &mut egui::Ui, character: bool, pa
                 let (rect, resp) = ui.allocate_exact_size(egui::vec2(sw, 22.0), egui::Sense::click());
                 ui.painter().rect_filled(rect, t.radius_sm, Color32::from_rgb(q(rgb[0]), q(rgb[1]), q(rgb[2])));
                 ui.painter().rect_stroke(rect, t.radius_sm, Stroke::new(1.0, t.field_border), egui::StrokeKind::Inside);
-                let resp = resp.on_hover_text("Text color");
+                let resp = resp.on_hover_text(tl!("Text color"));
                 egui::Popup::from_toggle_button_response(&resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
                     let mut col = Color32::from_rgb(q(rgb[0]), q(rgb[1]), q(rgb[2]));
                     if egui::color_picker::color_picker_color32(ui, &mut col, egui::color_picker::Alpha::Opaque) {
@@ -1168,13 +1176,13 @@ fn type_sections(app: &mut PhotocraftApp, ui: &mut egui::Ui, character: bool, pa
             ("T", "Faux Italic", c.faux_italic, json!({"fauxItalic": !c.faux_italic})),
             (
                 "TT",
-                "All Caps",
+                tl!("All Caps"),
                 caps == photocraft_doc::text::Caps::AllCaps,
                 json!({"caps": if caps == photocraft_doc::text::Caps::AllCaps { "normal" } else { "allCaps" }}),
             ),
             (
                 "Tᴛ",
-                "Small Caps",
+                tl!("Small Caps"),
                 caps == photocraft_doc::text::Caps::SmallCaps,
                 json!({"caps": if caps == photocraft_doc::text::Caps::SmallCaps { "normal" } else { "smallCaps" }}),
             ),
@@ -1214,7 +1222,7 @@ fn type_sections(app: &mut PhotocraftApp, ui: &mut egui::Ui, character: bool, pa
         });
         ui.add_space(ROW_GAP);
     }
-    if paragraph && section(ui, "paragraph", "Paragraph") {
+    if paragraph && section(ui, "paragraph", tl!("Paragraph")) {
         use photocraft_doc::text::TextAlign as A;
         let full = ui.available_width();
         let w = field_width(full, 2, LABEL_W);
@@ -1298,7 +1306,7 @@ fn type_options(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             let t = crate::theme::Tokens::get(ui.ctx());
             let (r, resp) = ui.allocate_exact_size(egui::vec2(crate::props_layout::LABEL_W, 22.0), egui::Sense::hover());
             ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, "aa", crate::theme::semibold(11.0), t.text_dim);
-            resp.on_hover_text("Anti-aliasing method");
+            resp.on_hover_text(tl!("Anti-aliasing method"));
             let mut cur = aa.clone();
             let opts: Vec<(String, &str)> = ["none", "sharp", "crisp", "strong", "smooth", "windowsLcd", "windows"]
                 .into_iter()

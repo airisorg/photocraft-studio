@@ -384,14 +384,20 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool) -> bo
     };
     let o = &mut app.ui.tool_options;
     if tool == Tool::PathSelection {
-        lbl(ui, if app.ui.vector_mask_target { "Drag to move the targeted vector mask" } else { "Drag to move the active shape's path or the Work Path" });
+        lbl(ui, if app.ui.vector_mask_target { "Drag to move the targeted vector mask" } else { tl!("Drag to move the active shape's path or the Work Path") });
         return true;
     }
     if tool == Tool::Pen {
         let opts = [("path".to_string(), tl!("Path")), ("shape".to_string(), tl!("Shape"))];
         crate::widgets::dropdown(ui, "pen-mode", &mut o.vector_mode, &opts, 80.0);
         crate::widgets::vline(ui, 22.0);
-        lbl(ui, &format!("Click: corner · Drag: smooth · Click first point: close · {} finish · Esc cancel", crate::shortcuts::pretty("Enter")));
+        lbl(
+            ui,
+            &crate::i18n::fmt(
+                tl!("Click: corner · Drag: smooth · Click first point: close · {key} finish · Esc cancel"),
+                &[("key", &crate::shortcuts::pretty("Enter"))],
+            ),
+        );
         return true;
     }
     let mut mode = "shape".to_string();
@@ -513,15 +519,15 @@ pub fn shape_properties(app: &mut PhotocraftApp, ui: &mut egui::Ui, id: photocra
     let mut edit: Option<Value> = None;
     let key = |k: &str| format!("shape-{}-{k}", id.0);
     // The shared collapsible section headers (#155).
-    if crate::props_layout::section(ui, "appearance", "Appearance") {
+    if crate::props_layout::section(ui, "appearance", tl!("Appearance")) {
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Fill").color(t.text_dim).size(12.0));
-            if let Some(c) = swatch(ui, sh.fill.as_ref(), "Set shape fill type") {
+            ui.label(egui::RichText::new(tl!("Fill")).color(t.text_dim).size(12.0));
+            if let Some(c) = swatch(ui, sh.fill.as_ref(), tl!("Set shape fill type")) {
                 edit = Some(if c == "none" { json!({"fill": null}) } else { json!({"fill": c, "coalesce": key("fill")}) });
             }
             ui.add_space(12.0);
-            ui.label(egui::RichText::new("Stroke").color(t.text_dim).size(12.0));
-            if let Some(c) = swatch(ui, sh.stroke.as_ref().map(|s| &s.paint), "Set shape stroke type") {
+            ui.label(egui::RichText::new(tl!("Stroke")).color(t.text_dim).size(12.0));
+            if let Some(c) = swatch(ui, sh.stroke.as_ref().map(|s| &s.paint), tl!("Set shape stroke type")) {
                 edit = Some(if c == "none" {
                     json!({"stroke": null})
                 } else {
@@ -547,7 +553,7 @@ pub fn shape_properties(app: &mut PhotocraftApp, ui: &mut egui::Ui, id: photocra
         });
     }
     if let Some(live) = &sh.live
-        && crate::props_layout::section(ui, "liveShape", "Shape")
+        && crate::props_layout::section(ui, "liveShape", tl!("Shape"))
     {
         let num = |ui: &mut egui::Ui, label: &str, v: &mut f32, range: std::ops::RangeInclusive<f32>, unit: &str| -> bool {
             ui.label(egui::RichText::new(tl!(&label)).color(t.text_dim).size(12.0));
@@ -691,7 +697,7 @@ pub fn paths_panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         ui,
         |ui| {
             if rows.is_empty() {
-                ui.label(egui::RichText::new("Draw with the Pen tool (P) or make a work path from a selection.").color(t.text_faint).size(11.5));
+                ui.label(egui::RichText::new(tl!("Draw with the Pen tool (P) or make a work path from a selection.")).color(t.text_faint).size(11.5));
             }
             for PathEntry { name, path, kind } in &rows {
                 let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 36.0), Sense::click());
@@ -712,7 +718,11 @@ pub fn paths_panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                 let mut job = egui::text::LayoutJob::default();
                 // Temporary paths (the work path, the selected layer's shape path or vector mask) are italic.
                 let italics = *kind != PathRow::Saved;
-                job.append(name, 0.0, egui::TextFormat { font_id: egui::FontId::proportional(12.0), color: t.text, italics, ..Default::default() });
+                job.append(
+                    if *kind == PathRow::Work { tl!(name) } else { name },
+                    0.0,
+                    egui::TextFormat { font_id: egui::FontId::proportional(12.0), color: t.text, italics, ..Default::default() },
+                );
                 let g = ui.painter().layout_job(job);
                 ui.painter().galley(pos2(r.left() + 46.0, r.center().y - g.size().y / 2.0), g, t.text);
                 if resp.clicked() {

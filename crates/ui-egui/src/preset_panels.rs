@@ -929,7 +929,10 @@ pub fn clone_source_panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             let set = cs.slots[i].source.is_some();
             let tip = match cs.slots[i].source {
                 Some(s) => format!("Clone source {}: {:.0}, {:.0}", i + 1, s[0], s[1]),
-                None => format!("Clone source {} ({}-click with Clone Stamp to set)", i + 1, crate::shortcuts::pretty("Alt")),
+                None => crate::i18n::fmt(
+                    tl!("Clone source {n} ({key}-click with Clone Stamp to set)"),
+                    &[("n", &(i + 1).to_string()), ("key", &crate::shortcuts::pretty("Alt"))],
+                ),
             };
             let r = crate::icons::button(ui, "stamp", 30.0, cs.active == i, &tip);
             if set {
@@ -946,7 +949,7 @@ pub fn clone_source_panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         match (slot.source, slot.layer.and_then(|l| app.session.active().and_then(|d| d.doc.layer(photocraft_doc::LayerId(l)).map(|x| x.name.clone())))) {
             (Some(_), Some(l)) => format!("Source: {} : {l}", app.session.active().map(|d| d.doc.name.clone()).unwrap_or_default()),
             (Some(_), None) => "Source: set".to_string(),
-            _ => format!("Source: not set ({}-click with Clone Stamp)", crate::shortcuts::pretty("Alt")),
+            _ => crate::i18n::fmt(tl!("Source: not set ({key}-click with Clone Stamp)"), &[("key", &crate::shortcuts::pretty("Alt"))]),
         };
     ui.label(egui::RichText::new(src_line).color(t.text_dim).size(11.0));
     ui.add_space(4.0);

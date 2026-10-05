@@ -181,25 +181,13 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
         ui.add_space(12.0);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 10.0;
-            let mut drawn: Vec<_> = buttons
-                .iter()
-                .rev()
-                .map(|&(label, key, primary, width, a)| {
-                    let label = mnemonic(label, key);
-                    let r = if primary { crate::widgets::primary_button(ui, &label, width) } else { crate::widgets::secondary_button(ui, &label, width) };
-                    if r.clicked() {
-                        answer = Some(a);
-                    }
-                    r
-                })
-                .collect();
-            drawn.reverse();
-            if step != 0 {
-                let n = drawn.len() as i32;
-                let at = drawn.iter().position(|r| r.has_focus()).map_or(if step > 0 { -1 } else { n }, |i| i as i32);
-                if let Some(r) = drawn.get((at + step).rem_euclid(n) as usize) {
-                    r.request_focus();
-                }
+            if reverts {
+                discard_it = crate::widgets::primary_button(ui, tl!("Revert"), 84.0).clicked();
+                cancel = crate::widgets::secondary_button(ui, tl!("Cancel"), 84.0).clicked();
+            } else {
+                save_it = crate::widgets::primary_button(ui, tl!("Save"), 84.0).clicked();
+                cancel = crate::widgets::secondary_button(ui, tl!("Cancel"), 84.0).clicked();
+                discard_it = crate::widgets::secondary_button(ui, tl!("Don't Save"), 100.0).clicked();
             }
         });
     });

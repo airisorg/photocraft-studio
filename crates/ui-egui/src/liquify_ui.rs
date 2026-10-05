@@ -418,7 +418,9 @@ pub fn control(app: &mut PhotocraftApp, ui: &Value) -> Result<Value, String> {
         return Ok(json!({"cancelled": true}));
     }
     let d = app.distort.liquify.as_mut().ok_or(tl!("Liquify is not open"))?;
-    d.opts.apply(ui)?;
+    if let Some(t) = ui.get("tool") {
+        d.opts.tool = serde_json::from_value(t.clone()).map_err(|e| format!("bad tool: {e}"))?;
+    }
     let num = |k: &str| ui.get(k).and_then(Value::as_f64).map(|v| v as f32);
     let flag = |k: &str| ui.get(k).and_then(Value::as_bool);
     if flag("undo") == Some(true) {
@@ -599,11 +601,7 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
         let mut strip = ui.new_child(egui::UiBuilder::new().max_rect(left.shrink2(vec2(6.0, 8.0))));
         strip.spacing_mut().item_spacing.y = 4.0;
         for tool in LiquifyTool::ALL {
-            let tip = match tool {
-                // The lasso works on the same freeze mask as Freeze/Thaw.
-                LiquifyTool::LassoMask => tl!("Freeze Lasso: drag to freeze an area, Alt-drag to thaw it (L)").to_string(),
-                _ => format!("{} ({})", tl!(tool.label()), shortcut(tool)),
-            };
+            let tip = format!("{} ({})", tl!(tool.label()), shortcut(tool));
             if crate::icons::button(&mut strip, tool_icon(tool), 34.0, d.opts.tool == tool, &tip).clicked() {
                 d.opts.tool = tool;
             }

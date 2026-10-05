@@ -407,26 +407,10 @@ fn menu_update(app: &mut PhotocraftApp, ctx: &egui::Context, ui: &Value) -> Opti
 }
 
 fn commit(app: &mut PhotocraftApp) -> Result<Value, String> {
-    let d = app.camera_raw.as_ref().ok_or(tl!("Camera Raw isn't open"))?;
-    let result = match d.target {
-        Target::NewFilter => {
-            let mut p = d.command_params();
-            p["layer"] = json!(d.layer.0);
-            app.run("filter.cameraRaw", p)?
-        }
-        Target::SmartFilter(index) => {
-            d.params.validate_changes(&d.original)?;
-            // Every setting, not just the non-defaults: setParams merges into the stored ones,
-            // so a control reset to its default must overwrite the old value.
-            let mut params = serde_json::to_value(&d.params).map_err(|e| e.to_string())?;
-            if let Value::Object(m) = &mut params {
-                m.remove("pixelScale");
-            }
-            app.run("layer.smartFilter.setParams", json!({"layer": d.layer.0, "index": index, "params": params}))?
-        }
-    };
-    app.camera_raw = None;
-    Ok(result)
+    let d = app.camera_raw.take().ok_or(tl!("Camera Raw isn't open"))?;
+    let mut p = d.command_params();
+    p["layer"] = json!(d.layer.0);
+    app.run("filter.cameraRaw", p)
 }
 
 fn temp_stops() -> Vec<Color32> {
@@ -462,18 +446,15 @@ fn tone_row(ui: &mut egui::Ui, dirty: &mut bool, alt: &mut Option<ToneZone>, zon
 }
 
 fn section(ui: &mut egui::Ui, title: &str, open: bool, body: impl FnOnce(&mut egui::Ui)) {
-    egui::CollapsingHeader::new(egui::RichText::new(crate::i18n::tr_ctx(crate::i18n::current(), "cameraRaw", title)).font(FontId::proportional(13.0)))
-        .id_salt(("camera-raw-section", title))
-        .default_open(open)
-        .show(ui, body);
+    egui::CollapsingHeader::new(egui::RichText::new(tl!(&title)).font(FontId::proportional(13.0))).default_open(open).show(ui, body);
 }
 
 fn wheel(ui: &mut egui::Ui, dirty: &mut bool, title: &str, w: &mut Wheel) {
     widgets::section_label(ui, crate::i18n::tr_ctx(crate::i18n::current(), "cameraRaw", title));
     let hs = widgets::hue_stops();
-    row(ui, dirty, "Hue", &mut w.hue, 0.0..=360.0, Some(&hs));
-    row(ui, dirty, "Saturation", &mut w.sat, 0.0..=100.0, None);
-    row(ui, dirty, "Luminance", &mut w.lum, -100.0..=100.0, None);
+    row(ui, dirty, tl!("Hue"), &mut w.hue, 0.0..=360.0, Some(&hs));
+    row(ui, dirty, tl!("Saturation"), &mut w.sat, 0.0..=100.0, None);
+    row(ui, dirty, tl!("Luminance"), &mut w.lum, -100.0..=100.0, None);
 }
 
 // The shared Curve editor must never produce a curve `CameraRaw::validate` rejects.
@@ -564,65 +545,47 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
             let p = &mut d.params;
             let alt = &mut d.scope.alt_tone;
             let (ts, tn) = (temp_stops(), tint_stops());
-            section(ui, "Light", true, |ui| {
-                tone_row(ui, &mut dirty, alt, ToneZone::Exposure, &mut p.exposure);
-                row(ui, &mut dirty, "Contrast", &mut p.contrast, -100.0..=100.0, None);
-                tone_row(ui, &mut dirty, alt, ToneZone::Highlights, &mut p.highlights);
-                tone_row(ui, &mut dirty, alt, ToneZone::Shadows, &mut p.shadows);
-                tone_row(ui, &mut dirty, alt, ToneZone::Whites, &mut p.whites);
-                tone_row(ui, &mut dirty, alt, ToneZone::Blacks, &mut p.blacks);
-            });
-            section(ui, "Color", false, |ui| {
+            section(ui, tl!("Basic"), true, |ui| {
                 widgets::section_label(ui, tl!("White Balance: As Shot"));
-                row(ui, &mut dirty, "Temperature", &mut p.temperature, -100.0..=100.0, Some(&ts));
-                row(ui, &mut dirty, "Tint", &mut p.tint, -100.0..=100.0, Some(&tn));
-                row(ui, &mut dirty, "Vibrance", &mut p.vibrance, -100.0..=100.0, None);
-                row(ui, &mut dirty, "Saturation", &mut p.saturation, -100.0..=100.0, None);
+                row(ui, &mut dirty, tl!("Temperature"), &mut p.temperature, -100.0..=100.0, Some(&ts));
+                row(ui, &mut dirty, tl!("Tint"), &mut p.tint, -100.0..=100.0, Some(&tn));
+                row(ui, &mut dirty, tl!("Exposure"), &mut p.exposure, -5.0..=5.0, None);
+                row(ui, &mut dirty, tl!("Contrast"), &mut p.contrast, -100.0..=100.0, None);
+                row(ui, &mut dirty, tl!("Highlights"), &mut p.highlights, -100.0..=100.0, None);
+                row(ui, &mut dirty, tl!("Shadows"), &mut p.shadows, -100.0..=100.0, None);
+                row(ui, &mut dirty, tl!("Whites"), &mut p.whites, -100.0..=100.0, None);
+                row(ui, &mut dirty, tl!("Blacks"), &mut p.blacks, -100.0..=100.0, None);
+                widgets::hairline(ui);
+                row(ui, &mut dirty, tl!("Texture"), &mut p.texture, -100.0..=100.0, None);
+                row(ui, &mut dirty, tl!("Clarity"), &mut p.clarity, -100.0..=100.0, None);
+                row(ui, &mut dirty, tl!("Dehaze"), &mut p.dehaze, -100.0..=100.0, None);
+                widgets::hairline(ui);
+                row(ui, &mut dirty, tl!("Vibrance"), &mut p.vibrance, -100.0..=100.0, None);
+                row(ui, &mut dirty, tl!("Saturation"), &mut p.saturation, -100.0..=100.0, None);
             });
-            section(ui, "Effects", false, |ui| {
-                row(ui, &mut dirty, "Texture", &mut p.texture, -100.0..=100.0, None);
-                row(ui, &mut dirty, "Clarity", &mut p.clarity, -100.0..=100.0, None);
-                row(ui, &mut dirty, "Dehaze", &mut p.dehaze, -100.0..=100.0, None);
-                widgets::section_label(ui, tl!("Vignetting"));
-                let mut style = p.vignette_style.clone();
-                if widgets::dropdown(
-                    ui,
-                    "cr-vig-style",
-                    &mut style,
-                    &[
-                        ("highlightPriority".to_string(), tl!("Highlight Priority")),
-                        ("colorPriority".to_string(), tl!("Color Priority")),
-                        ("paintOverlay".to_string(), tl!("Paint Overlay")),
-                    ],
-                    200.0,
-                ) {
-                    p.vignette_style = style;
-                    dirty = true;
-                }
-                row(ui, &mut dirty, "Amount", &mut p.vignette_amount, -100.0..=100.0, None);
-                row(ui, &mut dirty, "Midpoint", &mut p.vignette_midpoint, 0.0..=100.0, None);
-                row(ui, &mut dirty, "Roundness", &mut p.vignette_roundness, -100.0..=100.0, None);
-                row(ui, &mut dirty, "Feather", &mut p.vignette_feather, 0.0..=100.0, None);
-                row(ui, &mut dirty, "Highlights", &mut p.vignette_highlights, 0.0..=100.0, None);
-                widgets::section_label(ui, tl!("Grain"));
-                row(ui, &mut dirty, "Amount", &mut p.grain_amount, 0.0..=100.0, None);
-                row(ui, &mut dirty, "Size", &mut p.grain_size, 0.0..=100.0, None);
-                row(ui, &mut dirty, "Roughness", &mut p.grain_roughness, 0.0..=100.0, None);
+            section(ui, tl!("Curve"), false, |ui| {
+                curve_editor(ui, p, &mut dirty);
+                row(ui, &mut dirty, tl!("Highlights"), &mut p.curve_highlights, -100.0..=100.0, None);
+                row(ui, &mut dirty, tl!("Lights"), &mut p.curve_lights, -100.0..=100.0, None);
+                row(ui, &mut dirty, tl!("Darks"), &mut p.curve_darks, -100.0..=100.0, None);
+                row(ui, &mut dirty, tl!("Shadows"), &mut p.curve_shadows, -100.0..=100.0, None);
             });
-            section(ui, "Curve", false, |ui| {
-                d.curve_rect = Some(curve_editor(ui, p, &mut dirty, &mut d.curve_state));
-                row(ui, &mut dirty, "Highlights", &mut p.curve_highlights, -100.0..=100.0, None);
-                row(ui, &mut dirty, "Lights", &mut p.curve_lights, -100.0..=100.0, None);
-                row(ui, &mut dirty, "Darks", &mut p.curve_darks, -100.0..=100.0, None);
-                row(ui, &mut dirty, "Shadows", &mut p.curve_shadows, -100.0..=100.0, None);
+            section(ui, tl!("Detail"), false, |ui| {
+                widgets::section_label(ui, tl!("Sharpening"));
+                row(ui, &mut dirty, tl!("Amount"), &mut p.sharpen_amount, 0.0..=150.0, None);
+                row(ui, &mut dirty, tl!("Radius"), &mut p.sharpen_radius, 0.5..=3.0, None);
+                row(ui, &mut dirty, tl!("Detail"), &mut p.sharpen_detail, 0.0..=100.0, None);
+                row(ui, &mut dirty, tl!("Masking"), &mut p.sharpen_masking, 0.0..=100.0, None);
+                widgets::section_label(ui, tl!("Noise Reduction"));
+                row(ui, &mut dirty, tl!("Luminance"), &mut p.noise_luminance, 0.0..=100.0, None);
+                row(ui, &mut dirty, tl!("Luminance Detail"), &mut p.noise_luminance_detail, 0.0..=100.0, None);
+                row(ui, &mut dirty, tl!("Color"), &mut p.noise_color, 0.0..=100.0, None);
+                row(ui, &mut dirty, tl!("Color Detail"), &mut p.noise_color_detail, 0.0..=100.0, None);
             });
-            section(ui, "Color Mixer", false, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    for (i, source) in ["Hue", "Saturation", "Luminance"].iter().enumerate() {
-                        let name = crate::i18n::tr_ctx(crate::i18n::current(), "cameraRaw", source);
-                        let response = widgets::pill_tab(ui, name, d.mixer_tab == i);
-                        response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, ui.is_enabled(), d.mixer_tab == i, name));
-                        if response.clicked() {
+            section(ui, tl!("Color Mixer"), false, |ui| {
+                ui.horizontal(|ui| {
+                    for (i, name) in [tl!("Hue"), tl!("Saturation"), tl!("Luminance")].iter().enumerate() {
+                        if widgets::pill_tab(ui, name, d.mixer_tab == i).clicked() {
                             d.mixer_tab = i;
                         }
                     }
@@ -639,25 +602,40 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
                     row(ui, &mut dirty, name, &mut arr[k], -100.0..=100.0, Some(&grad));
                 }
             });
-            section(ui, "Color Grading", false, |ui| {
-                wheel(ui, &mut dirty, "Shadows", &mut p.grade_shadows);
-                wheel(ui, &mut dirty, "Midtones", &mut p.grade_midtones);
-                wheel(ui, &mut dirty, "Highlights", &mut p.grade_highlights);
-                wheel(ui, &mut dirty, "Global", &mut p.grade_global);
-                row(ui, &mut dirty, "Blending", &mut p.grade_blending, 0.0..=100.0, None);
-                row(ui, &mut dirty, "Balance", &mut p.grade_balance, -100.0..=100.0, None);
+            section(ui, tl!("Color Grading"), false, |ui| {
+                wheel(ui, &mut dirty, tl!("Shadows"), &mut p.grade_shadows);
+                wheel(ui, &mut dirty, tl!("Midtones"), &mut p.grade_midtones);
+                wheel(ui, &mut dirty, tl!("Highlights"), &mut p.grade_highlights);
+                wheel(ui, &mut dirty, tl!("Global"), &mut p.grade_global);
+                row(ui, &mut dirty, tl!("Blending"), &mut p.grade_blending, 0.0..=100.0, None);
+                row(ui, &mut dirty, tl!("Balance"), &mut p.grade_balance, -100.0..=100.0, None);
             });
-            section(ui, "Detail", false, |ui| {
-                widgets::section_label(ui, tl!("Sharpening"));
-                row(ui, &mut dirty, "Amount", &mut p.sharpen_amount, 0.0..=150.0, None);
-                row(ui, &mut dirty, "Radius", &mut p.sharpen_radius, 0.5..=3.0, None);
-                row(ui, &mut dirty, "Detail", &mut p.sharpen_detail, 0.0..=100.0, None);
-                row(ui, &mut dirty, "Masking", &mut p.sharpen_masking, 0.0..=100.0, None);
-                widgets::section_label(ui, tl!("Noise Reduction"));
-                row(ui, &mut dirty, "Luminance", &mut p.noise_luminance, 0.0..=100.0, None);
-                row(ui, &mut dirty, "Luminance Detail", &mut p.noise_luminance_detail, 0.0..=100.0, None);
-                row(ui, &mut dirty, "Color", &mut p.noise_color, 0.0..=100.0, None);
-                row(ui, &mut dirty, "Color Detail", &mut p.noise_color_detail, 0.0..=100.0, None);
+            section(ui, tl!("Effects"), false, |ui| {
+                widgets::section_label(ui, tl!("Grain"));
+                row(ui, &mut dirty, tl!("Amount"), &mut p.grain_amount, 0.0..=100.0, None);
+                row(ui, &mut dirty, tl!("Size"), &mut p.grain_size, 0.0..=100.0, None);
+                row(ui, &mut dirty, tl!("Roughness"), &mut p.grain_roughness, 0.0..=100.0, None);
+                widgets::section_label(ui, tl!("Vignetting"));
+                let mut style = p.vignette_style.clone();
+                if widgets::dropdown(
+                    ui,
+                    "cr-vig-style",
+                    &mut style,
+                    &[
+                        ("highlightPriority".to_string(), tl!("Highlight Priority")),
+                        ("colorPriority".to_string(), tl!("Color Priority")),
+                        ("paintOverlay".to_string(), tl!("Paint Overlay")),
+                    ],
+                    200.0,
+                ) {
+                    p.vignette_style = style;
+                    dirty = true;
+                }
+                row(ui, &mut dirty, tl!("Amount"), &mut p.vignette_amount, -100.0..=100.0, None);
+                row(ui, &mut dirty, tl!("Midpoint"), &mut p.vignette_midpoint, 0.0..=100.0, None);
+                row(ui, &mut dirty, tl!("Roundness"), &mut p.vignette_roundness, -100.0..=100.0, None);
+                row(ui, &mut dirty, tl!("Feather"), &mut p.vignette_feather, 0.0..=100.0, None);
+                row(ui, &mut dirty, tl!("Highlights"), &mut p.vignette_highlights, 0.0..=100.0, None);
             });
         });
         super::camera_raw_scope_ui::floating(ctx, d, scope, right);

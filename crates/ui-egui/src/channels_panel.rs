@@ -136,7 +136,7 @@ pub fn show(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             if row != Row::LayerMask || visible || eye_resp.hovered() {
                 icons::paint(ui, eye, if visible { "eye" } else { "eye-off" }, 14.0, if visible { t.icon } else { t.text_faint });
             }
-            let eye_resp = eye_resp.on_hover_text(if row == Row::LayerMask { "Show the layer mask as an overlay" } else { "Toggle visibility" });
+            let eye_resp = eye_resp.on_hover_text(if row == Row::LayerMask { tl!("Show the layer mask as an overlay") } else { tl!("Toggle visibility") });
             eye_resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Visibility {name}")));
             let layer_id = masked.as_ref().map(|l| l.id.0);
             if eye_resp.clicked() {

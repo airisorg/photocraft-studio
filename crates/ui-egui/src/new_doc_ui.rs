@@ -146,7 +146,12 @@ pub fn body(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = vec2(8.0, 6.0);
         for (name, _) in CATEGORIES {
-            if widgets::pill_tab(ui, name, cat == *name).clicked() {
+            let on = cat == *name;
+            let r = ui.add(egui::Label::new(RichText::new(tl!(name)).size(13.0).color(if on { t.text } else { t.text_dim })).sense(Sense::click()));
+            if on {
+                ui.painter().line_segment([r.rect.left_bottom() + vec2(0.0, 3.0), r.rect.right_bottom() + vec2(0.0, 3.0)], Stroke::new(2.0, t.text));
+            }
+            if r.clicked() {
                 f.insert("__category".into(), json!(name));
             }
         }
@@ -159,7 +164,7 @@ pub fn body(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
     ui.with_layout(if compact { egui::Layout::top_down(egui::Align::Min) } else { egui::Layout::left_to_right(egui::Align::Min) }, |ui| {
         // Left: preset grid.
         ui.vertical(|ui| {
-            ui.set_width(grid_width);
+            ui.set_width(520.0);
             ui.label(RichText::new(crate::i18n::fmt(tl!("BLANK DOCUMENT PRESETS ({n})"), &[("n", &presets.len().to_string())])).size(11.0).color(t.text_faint));
             ui.add_space(6.0);
             let columns = if compact { 2 } else { 3 };

@@ -27,13 +27,7 @@ pub fn finish_stroke(app: &mut PhotocraftApp, tool: Tool, points: &[[f64; 3]], m
                 (Some(off), _) => p["offset"] = json!(off),
                 (None, Some(src)) => p["source"] = json!(src),
                 (None, None) => {
-                    // Photoshop says Option-click on the Mac and Alt-click on Windows.
-                    app.ui.status = if cfg!(target_os = "macos") {
-                        tl!("Option-click to define a source point to clone from")
-                    } else {
-                        tl!("Alt-click to define a source point to clone from")
-                    }
-                    .into();
+                    app.ui.status = tl!("Option-click to define a source point to clone from").into();
                     app.ui.status_error = true;
                     return true;
                 }
@@ -198,17 +192,6 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool) -> bo
             crate::widgets::vline(ui, 22.0);
             crate::widgets::checkbox(ui, &mut o.sample_all_layers, tl!("Sample All Layers"));
         }
-        Tool::Patch => {
-            opt(ui, tl!("Patch:"));
-            for (k, l) in [("source", tl!("Source")), ("destination", tl!("Destination"))] {
-                let mut on = o.patch_mode == k;
-                if crate::widgets::checkbox(ui, &mut on, l).clicked() {
-                    o.patch_mode = k.into();
-                }
-            }
-            crate::widgets::vline(ui, 22.0);
-            opt(ui, tl!("Lasso around an area, then drag the selection"));
-        }
         Tool::Healing | Tool::CloneStamp => {
             crate::widgets::checkbox(ui, &mut o.clone_aligned, tl!("Aligned"));
             opt(ui, tl!("Sample:"));
@@ -220,7 +203,7 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool) -> bo
             crate::widgets::dropdown(ui, "clone-sample", &mut o.clone_sample, &opts, 130.0);
             if app.ui.clone_source.is_none() {
                 crate::widgets::vline(ui, 22.0);
-                opt(ui, &format!("{}-click to set the source", crate::shortcuts::pretty("Alt")));
+                opt(ui, &crate::i18n::fmt(tl!("{key}-click to set the source"), &[("key", &crate::shortcuts::pretty("Alt"))]));
             }
         }
         Tool::Dodge | Tool::Burn => {
@@ -248,9 +231,9 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool) -> bo
         }
         Tool::HistoryBrush => opt(ui, "Paints from the document's opening state"),
         Tool::QuickSelection => {
-            crate::widgets::checkbox(ui, &mut o.sample_all_layers, "Sample All Layers");
-            crate::widgets::checkbox(ui, &mut o.enhance_edge, "Enhance Edge");
-            opt(ui, &format!("{} to subtract", crate::shortcuts::pretty("Alt")));
+            crate::widgets::checkbox(ui, &mut o.sample_all_layers, tl!("Sample All Layers"));
+            crate::widgets::checkbox(ui, &mut o.enhance_edge, tl!("Enhance Edge"));
+            opt(ui, &crate::i18n::fmt(tl!("{key} to subtract"), &[("key", &crate::shortcuts::pretty("Alt"))]));
             crate::widgets::vline(ui, 22.0);
             if crate::widgets::secondary_button(ui, tl!("Select Subject"), 0.0).clicked() {
                 let _ = app.run("select.subject", json!({}));

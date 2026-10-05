@@ -60,7 +60,7 @@ pub fn card_ex(ui: &mut Ui, id: &str, tabs: &[&str], selected: &mut usize, colla
             let strip = ui.interact(strip_rect, ui.id().with((id, "strip")), Sense::click_and_drag());
             // Pill tabs left of the menu button; they elide or overflow into a chevron (#151).
             let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), 24.0), Sense::hover());
-            let tip = format!("{} options", tabs.get(*selected).copied().unwrap_or(id));
+            let tip = crate::i18n::fmt(tl!("{name} options"), &[("name", tl!(tabs.get(*selected).copied().unwrap_or(id)))]);
             let menu_rect = Rect::from_min_max(pos2(row.right() - 22.0, row.top() + 1.0), pos2(row.right(), row.bottom() - 1.0));
             let menu = crate::icons::button(&mut ui.new_child(egui::UiBuilder::new().max_rect(menu_rect)), "ellipsis", 22.0, false, &tip);
             let area = Rect::from_min_max(row.min, pos2((menu_rect.left() - 4.0).max(row.left()), row.bottom()));

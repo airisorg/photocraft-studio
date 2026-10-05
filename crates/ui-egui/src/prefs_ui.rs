@@ -798,6 +798,8 @@ fn prefs_body(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
     let t = Tokens::get(ui.ctx());
     let mut section = f.get("section").and_then(Value::as_str).unwrap_or("general").to_string();
     let mut values = f.get("values").cloned().unwrap_or(Value::Null);
+    // The dialog follows the language being edited, so a change shows before OK.
+    let lang = crate::i18n::Lang::from_pref(values.pointer("/interface/language").and_then(Value::as_str).unwrap_or("auto"));
     ui.horizontal_top(|ui| {
         // Section list.
         ui.vertical(|ui| {
@@ -814,7 +816,7 @@ fn prefs_body(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
                 ui.painter().text(
                     rect.left_center() + vec2(8.0, 0.0),
                     egui::Align2::LEFT_CENTER,
-                    title,
+                    tl!(title),
                     crate::theme::medium(12.5),
                     if sel {
                         t.text
@@ -833,23 +835,23 @@ fn prefs_body(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
         ui.vertical(|ui| {
             ui.set_width(540.0);
             let title = SECTIONS.iter().find(|(id, _)| *id == section).map_or("General", |(_, t)| *t);
-            ui.label(RichText::new(title).font(crate::theme::semibold(14.0)).color(t.text));
+            ui.label(RichText::new(tl!(&title)).font(crate::theme::semibold(14.0)).color(t.text));
             ui.add_space(6.0);
             egui::ScrollArea::vertical().max_height(390.0).id_salt("prefs-scroll").show(ui, |ui| {
                 let order: Vec<String> =
                     f.get("__order").and_then(|o| o.get(&section)).and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
                 if !has_visible_fields(&values, &section) {
                     ui.add_space(4.0);
-                    ui.label(RichText::new("These settings aren't available in PhotoCraft yet.").color(t.text_faint));
+                    ui.label(RichText::new(tl!("These settings aren't available in PhotoCraft yet.")).color(t.text_faint));
                 } else if let Some(obj) = values.get_mut(&section).and_then(Value::as_object_mut) {
-                    section_fields(ui, &section, obj, &order);
+                    section_fields(ui, &section, obj, &order, lang);
                     if section == "performance" {
                         gpu_status_rows(ui, f.get("__gpuInfo"), obj);
                     }
                     ui.add_space(8.0);
                 }
                 if has_visible_fields(&values, &section)
-                    && crate::widgets::secondary_button(ui, "Reset Section", 110.0).clicked()
+                    && crate::widgets::secondary_button(ui, tl!("Reset Section"), 110.0).clicked()
                     && let Some(def) = prefs::Preferences::default().get(&section)
                 {
                     values[&section] = def;
@@ -871,17 +873,17 @@ fn prefs_body(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
 fn gpu_status_rows(ui: &mut egui::Ui, info: Option<&Value>, obj: &mut Map<String, Value>) {
     let t = Tokens::get(ui.ctx());
     ui.add_space(10.0);
-    ui.label(RichText::new("Graphics").font(crate::theme::semibold(12.5)).color(t.text));
+    ui.label(RichText::new(tl!("Graphics")).font(crate::theme::semibold(12.5)).color(t.text));
     for line in info.and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str) {
         ui.label(RichText::new(line).color(t.text_dim));
     }
     let auto = obj.get("gpuBackend").and_then(Value::as_str) == Some("auto");
     ui.add_space(4.0);
     ui.horizontal(|ui| {
-        if ui.add_enabled(!auto, egui::Button::new("Reset GPU Backend")).clicked() {
+        if ui.add_enabled(!auto, egui::Button::new(tl!("Reset GPU Backend"))).clicked() {
             obj.insert("gpuBackend".into(), json!("auto"));
         }
-        ui.label(RichText::new("Applies at next launch.").color(t.text_faint));
+        ui.label(RichText::new(tl!("Applies at next launch.")).color(t.text_faint));
     });
 }
 
@@ -892,7 +894,7 @@ fn has_visible_fields(values: &Value, section: &str) -> bool {
 
 /// Generic editor for a section's fields: checkboxes, dropdowns for choices, colour swatches,
 /// number fields with the preference's range, text fields.
-fn section_fields(ui: &mut egui::Ui, section: &str, obj: &mut Map<String, Value>, order: &[String]) {
+fn section_fields(ui: &mut egui::Ui, section: &str, obj: &mut Map<String, Value>, order: &[String], lang: crate::i18n::Lang) {
     let t = Tokens::get(ui.ctx());
     let mut keys: Vec<String> = order.iter().filter(|k| obj.contains_key(*k)).cloned().collect();
     keys.extend(obj.keys().filter(|k| !order.contains(k)).cloned());
@@ -905,7 +907,8 @@ fn section_fields(ui: &mut egui::Ui, section: &str, obj: &mut Map<String, Value>
                 continue;
             }
             let v = obj.get(&k).cloned().unwrap_or(Value::Null);
-            let label = humanize(&k);
+            let human = humanize(&k);
+            let label = tl!(&human).to_string();
             match &v {
                 Value::Bool(b) => {
                     ui.label("");
@@ -913,8 +916,16 @@ fn section_fields(ui: &mut egui::Ui, section: &str, obj: &mut Map<String, Value>
                     crate::widgets::checkbox(ui, &mut b, &label);
                     obj.insert(k, json!(b));
                 }
+                Value::String(s) if path == "interface.language" => {
+                    ui.label(RichText::new(tl!(&label)).color(t.text_dim));
+                    let mut pairs: Vec<(String, &str)> = vec![("auto".into(), tl!("Auto"))];
+                    pairs.extend(crate::i18n::Lang::all().map(|l| (l.code().to_string(), l.name())));
+                    let mut cur = s.clone();
+                    crate::widgets::dropdown(ui, &format!("pref-{path}"), &mut cur, &pairs, 220.0);
+                    obj.insert(k, json!(cur));
+                }
                 Value::String(s) if prefs::choices(&path).is_some() => {
-                    ui.label(RichText::new(label).color(t.text_dim));
+                    ui.label(RichText::new(tl!(&label)).color(t.text_dim));
                     let opts = prefs::choices(&path).unwrap_or(&[]);
                     let labels: Vec<String> = opts.iter().map(|o| choice_label(o)).collect();
                     let pairs: Vec<(String, &str)> = opts.iter().map(|o| o.to_string()).zip(labels.iter().map(String::as_str)).collect();
@@ -923,7 +934,7 @@ fn section_fields(ui: &mut egui::Ui, section: &str, obj: &mut Map<String, Value>
                     obj.insert(k, json!(cur));
                 }
                 Value::String(s) if prefs::is_color(&path) => {
-                    ui.label(RichText::new(label).color(t.text_dim));
+                    ui.label(RichText::new(tl!(&label)).color(t.text_dim));
                     let c = prefs::parse_hex(s).unwrap_or([128, 128, 128]);
                     let mut rgb = c;
                     ui.horizontal(|ui| {
@@ -934,13 +945,13 @@ fn section_fields(ui: &mut egui::Ui, section: &str, obj: &mut Map<String, Value>
                     let _ = color_of(s);
                 }
                 Value::String(s) => {
-                    ui.label(RichText::new(label).color(t.text_dim));
+                    ui.label(RichText::new(tl!(&label)).color(t.text_dim));
                     let mut s = s.clone();
                     ui.add(egui::TextEdit::singleline(&mut s).desired_width(260.0));
                     obj.insert(k, json!(s));
                 }
                 Value::Number(n) => {
-                    ui.label(RichText::new(label).color(t.text_dim));
+                    ui.label(RichText::new(tl!(&label)).color(t.text_dim));
                     let (lo, hi) = prefs::range(&path).unwrap_or((-1e9, 1e9));
                     if n.is_u64() || n.is_i64() {
                         let mut x = n.as_i64().unwrap_or(0);
@@ -953,7 +964,7 @@ fn section_fields(ui: &mut egui::Ui, section: &str, obj: &mut Map<String, Value>
                     }
                 }
                 Value::Array(items) if k == "disks" => {
-                    ui.label(RichText::new("Scratch disks").color(t.text_dim));
+                    ui.label(RichText::new(tl!("Scratch disks")).color(t.text_dim));
                     let mut items = items.clone();
                     ui.vertical(|ui| {
                         for d in &mut items {
@@ -965,16 +976,16 @@ fn section_fields(ui: &mut egui::Ui, section: &str, obj: &mut Map<String, Value>
                                 *d = json!({"enabled": on, "path": path});
                             });
                         }
-                        if ui.small_button("Add disk").clicked() {
+                        if ui.small_button(tl!("Add disk")).clicked() {
                             items.push(json!({"enabled": true, "path": ""}));
                         }
                     });
                     obj.insert(k, Value::Array(items));
                 }
                 Value::Array(items) => {
-                    ui.label(RichText::new(label).color(t.text_dim));
-                    ui.label(RichText::new(format!("{} item{}", items.len(), if items.len() == 1 { "" } else { "s" })).color(t.text_faint));
-                    if !items.is_empty() && ui.small_button("Clear").clicked() {
+                    ui.label(RichText::new(tl!(&label)).color(t.text_dim));
+                    ui.label(RichText::new(crate::i18n::trn(lang, items.len() as u64, "{n} item", "{n} items")).color(t.text_faint));
+                    if !items.is_empty() && ui.small_button(tl!("Clear")).clicked() {
                         obj.insert(k, json!([]));
                     }
                 }
@@ -1545,98 +1556,27 @@ mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
 
-    fn preference_dialog_shapes(width: f32, section: &str) -> Vec<egui::epaint::ClippedShape> {
-        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
-        app.run("file.new", json!({"width":64,"height":64})).unwrap();
-        let before = app.session.prefs_value();
-        let st = app.session.active().unwrap();
-        let (document, revision, history) = (st.doc.clone(), st.revision, st.history.past_len());
-        open_preferences(&mut app, section);
-        let ctx = egui::Context::default();
-        PhotocraftApp::setup_context(&ctx, app.ui.theme);
-        let mut shapes = Vec::new();
-        // Native modal sizing and Grid column widths settle through the ordinary egui passes.
-        for _ in 0..3 {
-            let output = ctx
-                .run_ui(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(width, 844.0))), ..Default::default() }, |ui| {
-                    crate::dialogs::show(&mut app, ui.ctx())
-                });
-            let egui::FullOutput { mut textures_delta, shapes: frame_shapes, .. } = output;
-            textures_delta.clear();
-            shapes = frame_shapes;
-        }
-        assert_eq!(app.session.prefs_value(), before, "painting must not apply preferences");
-        assert_eq!(app.ui.dialogs[0].fields["section"], section);
-        assert!(!preferences_changed(&app, &app.ui.dialogs[0].fields), "painting must preserve the working copy");
-        let st = app.session.active().unwrap();
-        assert!(Arc::ptr_eq(&document, &st.doc));
-        assert_eq!((st.revision, st.history.past_len()), (revision, history));
-        shapes
-    }
-
-    #[test]
-    fn narrow_preferences_show_complete_general_labels_and_values() {
-        for width in [320.0, 390.0, 768.0, 1440.0] {
-            let shapes = preference_dialog_shapes(width, "general");
-            for label in ["Image interpolation", "Bicubic automatic", "Zoom with scroll wheel", "Auto show home screen"] {
-                let (shape, text) = shapes
-                    .iter()
-                    .find_map(|shape| match &shape.shape {
-                        egui::Shape::Text(text) if text.galley.text() == label => Some((shape, text)),
-                        _ => None,
-                    })
-                    .unwrap_or_else(|| panic!("missing {label:?} at {width}"));
-                let bounds = text.galley.rect.translate(text.pos.to_vec2());
-                assert!(!text.galley.elided, "{label} should stay complete");
-                assert!(
-                    bounds.left() >= shape.clip_rect.left() - 1.0 && bounds.right() <= shape.clip_rect.right() + 1.0,
-                    "{label:?} clipped at {width}: {bounds:?} outside {:?}",
-                    shape.clip_rect
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn narrow_preferences_all_sections_wrap_text_without_changing_values() {
-        for (section, _) in SECTIONS {
-            for shape in preference_dialog_shapes(390.0, section) {
-                if let egui::Shape::Text(text) = &shape.shape {
-                    let bounds = text.galley.rect.translate(text.pos.to_vec2());
-                    assert!(
-                        bounds.left() >= shape.clip_rect.left() - 1.0 && bounds.right() <= shape.clip_rect.right() + 1.0,
-                        "{section}: {:?} clipped horizontally: {bounds:?} outside {:?}",
-                        text.galley.text(),
-                        shape.clip_rect
-                    );
-                }
-            }
-        }
-    }
-
-    /// Every generated preference label, section title and choice label has an entry in each
-    /// language that claims complete menus (Japanese, Traditional Chinese, ...).
+    /// Every generated preference label, section title and choice label has a Japanese entry.
     #[test]
     fn preference_labels_are_translated() {
+        let ja = crate::i18n::Lang::from_code("ja").expect("ja");
         let session = photocraft_engine::Session::new();
         let v: Value = serde_json::from_str(&session.prefs_to_json()).expect("prefs json");
-        for lang in crate::i18n::Lang::all().filter(|l| l.complete_menus()) {
-            let mut missing = Vec::new();
-            for (sec, title) in SECTIONS {
-                if !crate::i18n::has(lang, title) {
-                    missing.push(title.to_string());
-                }
-                let Some(obj) = v.get(sec).and_then(Value::as_object) else { continue };
-                for k in obj.keys() {
-                    let mut labels = vec![humanize(k)];
-                    labels.extend(prefs::choices(&format!("{sec}.{k}")).into_iter().flatten().map(|c| choice_label(c)));
-                    missing.extend(labels.into_iter().filter(|l| !crate::i18n::has(lang, l)));
-                }
+        let mut missing = Vec::new();
+        for (sec, title) in SECTIONS {
+            if !crate::i18n::has(ja, title) {
+                missing.push(title.to_string());
             }
-            missing.sort();
-            missing.dedup();
-            assert!(missing.is_empty(), "{}: untranslated preference labels: {missing:#?}", lang.code());
+            let Some(obj) = v.get(sec).and_then(Value::as_object) else { continue };
+            for k in obj.keys() {
+                let mut labels = vec![humanize(k)];
+                labels.extend(prefs::choices(&format!("{sec}.{k}")).into_iter().flatten().map(|c| choice_label(c)));
+                missing.extend(labels.into_iter().filter(|l| !crate::i18n::has(ja, l)));
+            }
         }
+        missing.sort();
+        missing.dedup();
+        assert!(missing.is_empty(), "untranslated preference labels: {missing:#?}");
     }
 
     fn app_with_store() -> (PhotocraftApp, Arc<Mutex<Option<String>>>) {

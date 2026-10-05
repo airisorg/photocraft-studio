@@ -405,7 +405,7 @@ pub fn body(app: &mut PhotocraftApp, ui: &mut egui::Ui, f: &mut Map<String, Valu
         ui.painter().rect_stroke(frame, 0.0, Stroke::new(1.0, t.field_border), StrokeKind::Outside);
         let label = match app.color_range.as_ref().and_then(|p| p.error.as_deref()) {
             Some(e) => format!("Color Range preview unavailable: {e}"),
-            None => "Color Range preview".to_string(),
+            None => tl!("Color Range preview").to_string(),
         };
         resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Image, ui.is_enabled(), &label));
         ui.add_space(10.0);

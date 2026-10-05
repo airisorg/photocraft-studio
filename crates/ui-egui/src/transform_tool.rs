@@ -1304,14 +1304,16 @@ fn transform_fields(app: &mut PhotocraftApp, ui: &mut egui::Ui, t: &TransformSes
     }
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
         ui.add_space(8.0);
-        if crate::icons::button(ui, "check", 24.0, false, &format!("Commit transform ({})", crate::shortcuts::pretty("Enter"))).clicked() {
+        if crate::icons::button(ui, "check", 24.0, false, &crate::i18n::fmt(tl!("Commit transform ({key})"), &[("key", &crate::shortcuts::pretty("Enter"))]))
+            .clicked()
+        {
             commit(app);
         }
-        if crate::icons::button(ui, "ban", 24.0, false, "Cancel transform (Esc)").clicked() {
+        if crate::icons::button(ui, "ban", 24.0, false, tl!("Cancel transform (Esc)")).clicked() {
             cancel(app);
         }
         crate::widgets::vline(ui, 22.0);
-        if crate::icons::button(ui, "grid-3x3", 24.0, false, "Switch between free transform and warp modes").clicked() {
+        if crate::icons::button(ui, "grid-3x3", 24.0, false, tl!("Switch between free transform and warp modes")).clicked() {
             enter_warp(app);
         }
     });
@@ -1360,11 +1362,11 @@ fn warp_fields(app: &mut PhotocraftApp, ui: &mut egui::Ui, w: &Warp) {
     } else {
         crate::widgets::vline(ui, 22.0);
         lbl(ui, tl!("Split:"));
-        let armed = app.transform_preview.as_ref().and_then(|p| p.split_tool);
-        for (tool, tip) in [
-            (SplitTool::Cross, tl!("Split Warp Crosswise")),
-            (SplitTool::Vertical, tl!("Split Warp Vertically")),
-            (SplitTool::Horizontal, tl!("Split Warp Horizontally")),
+        for (id, label) in [
+            ("edit.transform.splitWarpCrosswise", "Crosswise"),
+            ("edit.transform.splitWarpVertically", "Vertical"),
+            ("edit.transform.splitWarpHorizontally", "Horizontal"),
+            ("edit.transform.removeWarpSplit", tl!("Remove")),
         ] {
             let on = armed == Some(tool);
             if split_icon(ui, tool.icon(), tip, on).clicked()
@@ -1379,33 +1381,17 @@ fn warp_fields(app: &mut PhotocraftApp, ui: &mut egui::Ui, w: &Warp) {
     }
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
         ui.add_space(8.0);
-        if crate::icons::button(ui, "check", 24.0, false, &format!("Commit warp ({})", crate::shortcuts::pretty("Enter"))).clicked() {
+        if crate::icons::button(ui, "check", 24.0, false, &crate::i18n::fmt(tl!("Commit warp ({key})"), &[("key", &crate::shortcuts::pretty("Enter"))]))
+            .clicked()
+        {
             commit(app);
         }
-        if crate::icons::button(ui, "ban", 24.0, false, "Cancel warp (Esc)").clicked() {
+        if crate::icons::button(ui, "ban", 24.0, false, tl!("Cancel warp (Esc)")).clicked() {
             cancel(app);
         }
         crate::widgets::vline(ui, 22.0);
-        lbl(ui, tl!("Grid:"));
-        let mesh = w.mesh.clone().unwrap_or_else(|| BezierMesh::identity(w.bounds, 1, 1));
-        let mut grid = warp_grid_id(&mesh).to_string();
-        let opts = [
-            ("custom".to_string(), tl!("Custom")),
-            ("default".to_string(), tl!("Default")),
-            ("3".to_string(), tl!("3 x 3")),
-            ("4".to_string(), tl!("4 x 4")),
-            ("5".to_string(), tl!("5 x 5")),
-        ];
-        if crate::widgets::dropdown(ui, "warp-grid", &mut grid, &opts, 92.0)
-            && let Some(n) = match grid.as_str() {
-                "default" => Some(1),
-                "3" => Some(3),
-                "4" => Some(4),
-                "5" => Some(5),
-                _ => None,
-            }
-        {
-            let _ = edit_session_warp(app, "edit.transform.warpGrid", &json!({ "size": n }));
+        if crate::icons::button(ui, "grid-3x3", 24.0, true, tl!("Switch between free transform and warp modes")).clicked() {
+            leave_warp(app);
         }
     }
 }
