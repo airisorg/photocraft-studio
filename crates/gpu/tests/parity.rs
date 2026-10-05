@@ -20,6 +20,7 @@ struct Gpu {
     /// The same device with a simulated texture limit of [`PAGED_LIMIT`]: every check also runs
     /// through layer pages and per-cell effect maps.
     paged: Compositor,
+    _lock: std::sync::MutexGuard<'static, ()>,
 }
 
 /// Simulated texture limit (pages and chunks of 256 px).
@@ -51,7 +52,7 @@ fn gpu() -> Option<Gpu> {
     };
     let mut paged = Compositor::try_new_with_format(&device, wgpu::TextureFormat::Rgba32Float).ok()?;
     paged.set_texture_limit(PAGED_LIMIT);
-    Some(Gpu { device, queue, comp, paged })
+    Some(Gpu { device, queue, comp, paged, _lock: lock })
 }
 
 /// Any adapter and device, for the fallback-path tests (which don't need 32-bit float targets).
@@ -139,6 +140,14 @@ fn diff_rect(g: &mut Gpu, doc: &Document, rect: Rect, what: &str) -> Result<phot
 
 fn check(g: &mut Gpu, doc: &Document, what: &str) {
     diff_rect(g, doc, doc.bounds(), what).unwrap_or_else(|e| panic!("{e}"));
+}
+
+#[test]
+fn first_frame_renders() {
+    // Regression: the first submission after device creation is dropped on some drivers
+    // (RADV), which used to make the very first render come back all zeroes.
+    let Some(mut g) = gpu() else { return };
+    check(&mut g, &base_doc(64, 48), "first frame");
 }
 
 #[test]
