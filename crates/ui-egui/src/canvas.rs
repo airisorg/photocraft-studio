@@ -2175,77 +2175,13 @@ fn draw_drag_preview(app: &mut PhotocraftApp, painter: &egui::Painter, xf: &View
     }
 }
 
-/// Tools on which holding ⌥ (Alt) switches to the Eyedropper: a click or drag sets the
-/// foreground colour, as with the Eyedropper itself (#417).
-fn alt_samples(tool: Tool, mods: egui::Modifiers) -> bool {
-    // Control+Alt is the brush-resize drag (`brush_resize`), not sampling.
-    mods.alt && !mods.ctrl && matches!(tool, Tool::Brush | Tool::Pencil | Tool::Gradient | Tool::PaintBucket)
-}
-
-/// Decided when the press starts, so ⌥ pressed or released mid-stroke never switches between
-/// painting and sampling.
-fn alt_eyedropper(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers) -> bool {
-    if matches!(ev, ToolEvent::Down { .. }) {
-        app.alt_sampling = alt_samples(app.ui.tool, mods);
-    }
-    if !app.alt_sampling {
-        return false;
-    }
-    match ev {
-        // Without ⌥: the sample sets the foreground colour, whatever the Eyedropper would do.
-        ToolEvent::Down { x, y, .. } | ToolEvent::Move { x, y, .. } => sample_eyedropper(app, x, y, egui::Modifiers::NONE),
-        ToolEvent::Up { .. } => app.alt_sampling = false,
-    }
-    true
-}
-
 fn sample_eyedropper(app: &mut PhotocraftApp, x: f64, y: f64, mods: egui::Modifiers) {
-    if let Some([r, g, b]) = composite_color(app, x, y) {
-        let key = if mods.alt { "background" } else { "foreground" };
-        let _ = app.run("tools.setColors", json!({ key: [r, g, b, 1.0] }));
-    }
-}
-
-/// The active document's composite colour at document point (x, y): what the Eyedropper picks.
-/// `None` off the image or over transparency.
-pub(crate) fn composite_color(app: &mut PhotocraftApp, x: f64, y: f64) -> Option<[f32; 3]> {
-    if !(x.is_finite() && y.is_finite()) {
-        return None;
-    }
-    let v = app.run("document.pixel", json!({"x": x.floor(), "y": y.floor()})).ok()?;
-    match serde_json::from_value::<Vec<f32>>(v).ok()?[..] {
-        [r, g, b, a] if a > 0.0 => Some([r, g, b]),
-        _ => None,
-    }
-}
-
-/// The body of a `Move` for every tool: tracked position, ⇧ constraint, the moving layer, and so
-/// on. It does not feed the live stroke, so the canvas can push a whole frame's recovered samples
-/// and update the live stroke once (see `canvas_view`).
-fn tool_move(app: &mut PhotocraftApp, x: f64, y: f64, pressure: f32, mods: egui::Modifiers) {
-    let tool = app.ui.tool;
-    if tool == Tool::Type && app.drag.is_none() {
-        crate::type_tool::pointer_move(app, x, y);
-    }
-    if tool == Tool::Pen {
-        crate::vector_ui::pen_move(app, x, y);
-    }
-    let zoom = app.current_zoom();
-    if let Some(d) = app.drag.as_mut().filter(|d| d.reposition) {
-        d.track(mods);
-        d.shift_to([x, y]);
-    } else if let Some(d) = &mut app.drag {
-        d.track(mods);
-        // ⇧: straight 0/45/90° strokes, 45° gradient angles (stroke_constraint.rs).
-        let last = d.points.last().map_or(d.start, |p| [p[0], p[1]]);
-        let [x, y] = crate::stroke_constraint::constrain(d.tool, &mut d.constrain, d.start, last, [x, y], mods.shift, zoom);
-        if d.points.last().is_none_or(|p| (p[0] - x).abs() + (p[1] - y).abs() > 0.25) {
-            d.points.push([x, y, pressure as f64]);
-            app.stylus.record_point();
+    if let Ok(v) = app.run("document.pixel", json!({"x": x.floor(), "y": y.floor()})) {
+        let color: Vec<f32> = serde_json::from_value(v).unwrap_or_default();
+        if color.len() == 4 && color[3] > 0.0 {
+            let key = if mods.alt { "background" } else { "foreground" };
+            let _ = app.run("tools.setColors", json!({ key: [color[0], color[1], color[2], 1.0] }));
         }
-    }
-    if tool == Tool::Move {
-        crate::collaboration::progress(app, None);
     }
 }
 
@@ -2337,12 +2273,6 @@ pub fn tool_event(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers)
     }
     match ev {
         ToolEvent::Down { x, y, pressure } => {
-            // Painting a type, shape, Smart Object or fill layer asks to rasterize it first
-            // (⌥-click with the Clone Stamp or Healing Brush only sets the source).
-            let sets_source = matches!(tool, Tool::CloneStamp | Tool::Healing) && mods.alt;
-            if !sets_source && crate::rasterize_prompt::intercept(app, tool, x, y, pressure) {
-                return;
-            }
             match tool {
                 Tool::Pen => {
                     crate::vector_ui::pen_down(app, x, y);
@@ -2804,48 +2734,6 @@ mod tests {
 
         tool_event(&mut app, ToolEvent::Move { x: 30.0, y: 10.0, pressure: 1.0 }, egui::Modifiers::NONE);
         assert!(app.session.tools.foreground[1] > 0.99 && app.session.tools.foreground[0] < 0.01);
-    }
-
-    #[test]
-    fn alt_with_a_painting_tool_samples_the_foreground_instead_of_painting() {
-        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
-        app.run("file.new", json!({"width": 40, "height": 20, "background": "transparent"})).unwrap();
-        app.run("shape.create", json!({"kind": "rect", "rect": [0, 0, 20, 20], "fill": "#ff0000"})).unwrap();
-        app.run("shape.create", json!({"kind": "rect", "rect": [20, 0, 20, 20], "fill": "#00ff00"})).unwrap();
-        let alt = egui::Modifiers::ALT;
-        for tool in [Tool::Brush, Tool::Pencil, Tool::Gradient, Tool::PaintBucket] {
-            app.ui.tool = tool;
-            app.run("tools.setColors", json!({"foreground": [0.0, 0.0, 1.0, 1.0], "background": [1.0, 1.0, 1.0, 1.0]})).unwrap();
-            let rev = app.session.active().unwrap().revision;
-            tool_event(&mut app, ToolEvent::Down { x: 10.0, y: 10.0, pressure: 1.0 }, alt);
-            assert_eq!(app.session.tools.foreground, [1.0, 0.0, 0.0, 1.0], "{tool:?}: ⌥-click sets the foreground");
-            // A drag keeps sampling, even after ⌥ is let go; the background is untouched.
-            tool_event(&mut app, ToolEvent::Move { x: 30.0, y: 10.0, pressure: 1.0 }, egui::Modifiers::NONE);
-            assert_eq!(app.session.tools.foreground, [0.0, 1.0, 0.0, 1.0], "{tool:?}");
-            tool_event(&mut app, ToolEvent::Up { x: 30.0, y: 10.0 }, egui::Modifiers::NONE);
-            assert_eq!(app.session.tools.background, [1.0, 1.0, 1.0, 1.0]);
-            assert_eq!(app.session.active().unwrap().revision, rev, "{tool:?}: sampling must not edit the document");
-            assert!(app.drag.is_none() && !app.alt_sampling);
-        }
-        // Agents get the same through `ui.pointer` (MCP `ui_pointer`).
-        app.ui.tool = Tool::Brush;
-        let ctx = egui::Context::default();
-        let events = json!([{"kind": "down", "x": 10, "y": 10}, {"kind": "up", "x": 10, "y": 10}]);
-        let (req, _rx) = crate::control::ControlRequest::new("ui.pointer", json!({"modifiers": {"alt": true}, "events": events}));
-        let _ = crate::control::handle(&mut app, &ctx, &req);
-        assert_eq!(app.session.tools.foreground, [1.0, 0.0, 0.0, 1.0]);
-        app.run("tools.setColors", json!({"foreground": [0.0, 1.0, 0.0, 1.0]})).unwrap();
-        // Without ⌥ the Brush paints again, and ⌥ pressed mid-stroke doesn't switch to sampling.
-        app.run("layer.new.layer", json!({})).unwrap();
-        let rev = app.session.active().unwrap().revision;
-        tool_event(&mut app, ToolEvent::Down { x: 5.0, y: 5.0, pressure: 1.0 }, egui::Modifiers::NONE);
-        tool_event(&mut app, ToolEvent::Move { x: 30.0, y: 5.0, pressure: 1.0 }, alt);
-        tool_event(&mut app, ToolEvent::Up { x: 30.0, y: 5.0 }, alt);
-        assert_eq!(app.session.tools.foreground, [0.0, 1.0, 0.0, 1.0]);
-        assert!(app.session.active().unwrap().revision > rev, "the stroke was painted");
-        // Control+Alt stays the brush-resize gesture, never a sample.
-        assert!(!alt_samples(Tool::Brush, egui::Modifiers { alt: true, ctrl: true, ..Default::default() }));
-        assert!(!alt_samples(Tool::Eraser, alt), "⌥ with the Eraser is not the Eyedropper");
     }
 
     #[test]
