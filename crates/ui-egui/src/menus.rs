@@ -737,12 +737,8 @@ fn menu_tint(name: &str) -> Option<egui::Color32> {
 
 /// Draws the menu bar; returns the right edge of the last menu title (the bar itself fills the row).
 pub fn menu_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) -> f32 {
-    // Built only while a menu is open: every item's enabled/checked state scales with the
-    // document (layer lookups), which cost milliseconds per frame on large layouts (#125).
-    let items: std::cell::OnceCell<Vec<MenuItem>> = std::cell::OnceCell::new();
-    let app_ref: &PhotocraftApp = app;
+    let items = menu_items(app);
     let mut right = ui.cursor().left();
-    let lang = crate::i18n::current();
     let mut clicked: Option<String> = None;
     let t = crate::theme::Tokens::get(ui.ctx());
     let mut nav = crate::menu_nav::Nav::load(ui.ctx());
@@ -784,13 +780,6 @@ pub fn menu_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) -> f32 {
         }
     }
     right
-}
-
-/// True only when the pointer can actually reach a menu title. A tall submenu can be
-/// repositioned upward by egui and overlap the menu bar; in that case the popup's layer is
-/// top-most and hovering it must not switch the open top-level menu.
-fn pointer_reaches_title(ctx: &egui::Context, response: &egui::Response, p: egui::Pos2) -> bool {
-    response.interact_rect.contains(p) && ctx.layer_id_at(p) == Some(response.layer_id)
 }
 
 /// True only when the pointer can actually reach a menu title. A tall submenu can be
@@ -1067,7 +1056,12 @@ mod tests {
         use egui_kittest::Harness;
 
         let app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
-        let mut harness = Harness::builder().with_size(egui::vec2(900.0, 240.0)).build_ui_state(|ui, app| menu_bar(app, ui), app);
+        let mut harness = Harness::builder().with_size(egui::vec2(900.0, 240.0)).build_ui_state(
+            |ui, app| {
+                menu_bar(app, ui);
+            },
+            app,
+        );
         PhotocraftApp::setup_context(&harness.ctx, crate::theme::ThemeKind::ALL[0]);
         harness.run_steps(3);
         // Opening a top-level menu with many entries must not grow its popup past the viewport.
@@ -1090,7 +1084,12 @@ mod tests {
         use egui_kittest::{Harness, kittest::Queryable};
 
         let app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
-        let mut harness = Harness::builder().with_size(egui::vec2(900.0, 220.0)).build_ui_state(|ui, app| menu_bar(app, ui), app);
+        let mut harness = Harness::builder().with_size(egui::vec2(900.0, 220.0)).build_ui_state(
+            |ui, app| {
+                menu_bar(app, ui);
+            },
+            app,
+        );
         PhotocraftApp::setup_context(&harness.ctx, crate::theme::ThemeKind::ALL[0]);
         harness.run_steps(3);
         harness.get_by_label("Filter").click();

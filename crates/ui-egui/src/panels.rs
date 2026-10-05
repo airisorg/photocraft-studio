@@ -316,30 +316,27 @@ pub fn title_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                         ui.spacing_mut().item_spacing.x = 6.0;
                         let mut ws = app.ui.workspace.clone();
                         let opts = [
-                            // Keys stay English (`apply_workspace` matches them); the dropdown
-                            // shows the labels in the UI language.
-                            ("Essentials".to_string(), tl!("Essentials")),
-                            ("Photography".to_string(), tl!("Photography")),
-                            ("Painting".to_string(), tl!("Painting")),
-                            ("Graphic and Web".to_string(), tl!("Graphic and Web")),
+                            ("Essentials".to_string(), "Essentials"),
+                            ("Photography".to_string(), "Photography"),
+                            ("Painting".to_string(), "Painting"),
+                            ("Graphic and Web".to_string(), "Graphic and Web"),
                         ];
                         if widgets::dropdown(ui, "workspace", &mut ws, &opts, 130.0) {
                             app.ui.workspace = ws;
                             crate::menus::apply_workspace(app);
                         }
-                        if icons::button(ui, "search", 28.0, app.ui.palette_open, &crate::shortcuts::tip_label(app, "Search commands", "edit.search")).clicked()
-                        {
+                        if icons::button(ui, "search", 28.0, app.ui.palette_open, "Search commands (⌘K)").clicked() {
                             app.ui.palette_open = !app.ui.palette_open;
                         }
                         let theme_icon = if t.dark() { "sun" } else { "moon" };
-                        if icons::button(ui, theme_icon, 28.0, false, tl!("Switch theme")).clicked() {
+                        if icons::button(ui, theme_icon, 28.0, false, "Switch theme").clicked() {
                             let next = app.ui.theme.next();
                             app.set_theme(ui.ctx(), next);
                         }
                         // Always one click away: the community Discord.
                         let discord = egui::Button::image_and_text(
                             icons::image("message-square", 14.0, t.text_dim),
-                            egui::RichText::new(tl!("Discord")).color(t.text_dim).size(12.0),
+                            egui::RichText::new("Discord").color(t.text_dim).size(12.0),
                         )
                         .frame(false);
                         if ui.add(discord).on_hover_text(format!("Join the ArtCraft Discord ({})", crate::links::DISCORD)).clicked() {
