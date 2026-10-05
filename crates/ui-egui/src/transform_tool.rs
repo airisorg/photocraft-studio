@@ -1302,6 +1302,19 @@ fn transform_fields(app: &mut PhotocraftApp, ui: &mut egui::Ui, t: &TransformSes
     {
         s.interpolation = interp;
     }
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        ui.add_space(8.0);
+        if crate::icons::button(ui, "check", 24.0, false, &format!("Commit transform ({})", crate::shortcuts::pretty("Enter"))).clicked() {
+            commit(app);
+        }
+        if crate::icons::button(ui, "ban", 24.0, false, "Cancel transform (Esc)").clicked() {
+            cancel(app);
+        }
+        crate::widgets::vline(ui, 22.0);
+        if crate::icons::button(ui, "grid-3x3", 24.0, false, "Switch between free transform and warp modes").clicked() {
+            enter_warp(app);
+        }
+    });
 }
 
 /// Options bar fields in Warp mode: style, bend, the split icons and the grid menu.
@@ -1362,6 +1375,15 @@ fn warp_fields(app: &mut PhotocraftApp, ui: &mut egui::Ui, w: &Warp) {
                 pv.split_pointer = None;
                 pv.split_quick = false;
             }
+        }
+    }
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        ui.add_space(8.0);
+        if crate::icons::button(ui, "check", 24.0, false, &format!("Commit warp ({})", crate::shortcuts::pretty("Enter"))).clicked() {
+            commit(app);
+        }
+        if crate::icons::button(ui, "ban", 24.0, false, "Cancel warp (Esc)").clicked() {
+            cancel(app);
         }
         crate::widgets::vline(ui, 22.0);
         lbl(ui, tl!("Grid:"));

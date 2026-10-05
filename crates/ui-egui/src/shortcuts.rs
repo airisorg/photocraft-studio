@@ -58,17 +58,15 @@ pub fn shortcut_label(app: &PhotocraftApp, command: &str) -> Option<String> {
     effective_shortcut(app, command, default_shortcut(command).as_deref()).map(|s| pretty(&s))
 }
 
-/// `label` (English, shown in the UI language) followed by the command's effective shortcut
-/// (`New document…     Ctrl+N`); bare `label` when the binding was removed.
+/// `label` followed by the command's effective shortcut (`New document…     Ctrl+N`); bare
+/// `label` when the binding was removed.
 pub fn command_label(app: &PhotocraftApp, label: &str, command: &str) -> String {
-    let label = tl!(label);
     shortcut_label(app, command).map_or_else(|| label.to_string(), |sc| format!("{label}     {sc}"))
 }
 
-/// `label` (English, shown in the UI language) with the command's effective shortcut in
-/// parentheses (`Rulers  (Ctrl+R)`); bare `label` when the binding was removed.
+/// `label` with the command's effective shortcut in parentheses (`Rulers  (Ctrl+R)`); bare
+/// `label` when the binding was removed.
 pub fn tip_label(app: &PhotocraftApp, label: &str, command: &str) -> String {
-    let label = tl!(label);
     shortcut_label(app, command).map_or_else(|| label.to_string(), |sc| format!("{label}  ({sc})"))
 }
 
@@ -85,7 +83,6 @@ pub fn default_shortcut(id: &str) -> Option<String> {
         .and_then(|c| c.3)
         .or_else(|| photocraft_engine::commands::find(id).and_then(|c| c.shortcut))
         .or_else(|| crate::menu_catalog::CATALOG.iter().find(|c| c.3 == id).and_then(|c| c.2))
-        .or_else(|| photocraft_engine::prefs::TEMPORARY_TOOLS.iter().find(|t| t.0 == id).map(|t| t.2))
         .map(str::to_string)
 }
 

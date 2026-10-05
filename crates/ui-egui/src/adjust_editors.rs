@@ -450,12 +450,9 @@ fn curves(ui: &mut egui::Ui, v: &mut Value, cx: &EditorCx) -> Edit {
     });
     let t2 = Tokens::get(ui.ctx());
     ui.label(
-        RichText::new(crate::i18n::fmt(
-            tl!("Click to add a point · drag off or {key}-click or Delete to remove"),
-            &[("key", &crate::shortcuts::pretty("Cmd"))],
-        ))
-        .color(t2.text_faint)
-        .size(11.0),
+        RichText::new(format!("Click to add a point · drag off or {}-click or Delete to remove", crate::shortcuts::pretty("Cmd")))
+            .color(t2.text_faint)
+            .size(11.0),
     );
     ui.data_mut(|d| d.insert_temp(state_id, st));
     if changed {

@@ -325,7 +325,8 @@ pub fn title_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                             app.ui.workspace = ws;
                             crate::menus::apply_workspace(app);
                         }
-                        if icons::button(ui, "search", 28.0, app.ui.palette_open, "Search commands (⌘K)").clicked() {
+                        if icons::button(ui, "search", 28.0, app.ui.palette_open, &crate::shortcuts::tip_label(app, "Search commands", "edit.search")).clicked()
+                        {
                             app.ui.palette_open = !app.ui.palette_open;
                         }
                         let theme_icon = if t.dark() { "sun" } else { "moon" };
@@ -529,13 +530,10 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                     Tool::RectMarquee | Tool::EllipseMarquee if t.pro => {
                         ui.spacing_mut().item_spacing.x = 2.0;
                         for (i, (icon, tip)) in [
-                            ("square", tl!("New selection").to_string()),
-                            ("plus", crate::i18n::fmt(tl!("Add to selection  ({key})"), &[("key", &crate::shortcuts::pretty("Shift"))])),
-                            ("minus", crate::i18n::fmt(tl!("Subtract from selection  ({key})"), &[("key", &crate::shortcuts::pretty("Alt"))])),
-                            (
-                                "squares-subtract",
-                                crate::i18n::fmt(tl!("Intersect with selection  ({key})"), &[("key", &crate::shortcuts::pretty("Shift+Alt"))]),
-                            ),
+                            ("square", "New selection".to_string()),
+                            ("plus", format!("Add to selection  ({})", crate::shortcuts::pretty("Shift"))),
+                            ("minus", format!("Subtract from selection  ({})", crate::shortcuts::pretty("Alt"))),
+                            ("squares-subtract", format!("Intersect with selection  ({})", crate::shortcuts::pretty("Shift+Alt"))),
                         ]
                         .iter()
                         .enumerate()
@@ -588,13 +586,7 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                             let _ = crate::menus::invoke(app, ui.ctx(), "select.selectAndMask", json!({}));
                         }
                         if app.ui.tool == Tool::PolygonLasso && !app.ui.polygon.is_empty() {
-                            hint(
-                                ui,
-                                &crate::i18n::fmt(
-                                    tl!("Click the first point or press {key} to close · Esc cancels"),
-                                    &[("key", &crate::shortcuts::pretty("Enter"))],
-                                ),
-                            );
+                            hint(ui, &format!("Click the first point or press {} to close · Esc cancels", crate::shortcuts::pretty("Enter")));
                         }
                     }
                     Tool::MagicWand => {
@@ -687,14 +679,8 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                         let _ = icons::button(ui, "grid-3x3", 24.0, true, tl!("Overlay: Rule of Thirds"));
                         widgets::checkbox(ui, &mut o.crop_delete, tl!("Delete Cropped Pixels"));
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if icons::button(
-                                ui,
-                                "check",
-                                26.0,
-                                false,
-                                &crate::i18n::fmt(tl!("Commit current crop operation  ({key})"), &[("key", &crate::shortcuts::pretty("Enter"))]),
-                            )
-                            .clicked()
+                            if icons::button(ui, "check", 26.0, false, &format!("Commit current crop operation  ({})", crate::shortcuts::pretty("Enter")))
+                                .clicked()
                             {
                                 crate::canvas::commit_crop(app);
                             }
@@ -755,17 +741,13 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                             crate::shortcuts::pretty("Shift+Alt")
                         ),
                     ),
-                    Tool::Move => hint(ui, tl!("Drag to move the active layer")),
-                    Tool::Eyedropper => hint(
-                        ui,
-                        &crate::i18n::fmt(
-                            tl!("Click to sample the foreground colour  ·  {key}-click for background"),
-                            &[("key", &crate::shortcuts::pretty("Alt"))],
-                        ),
-                    ),
+                    Tool::Move => hint(ui, "Drag to move the active layer"),
+                    Tool::Eyedropper => {
+                        hint(ui, &format!("Click to sample the foreground colour  ·  {}-click for background", crate::shortcuts::pretty("Alt")))
+                    }
                     Tool::Zoom => {
                         widgets::checkbox(ui, &mut app.ui.tool_options.zoom_scrubby, "Scrubby Zoom");
-                        hint(ui, "Click to zoom in  ·  ⌥-click to zoom out  ·  drag right/left to zoom in/out");
+                        hint(ui, &format!("Click to zoom in  ·  {}-click to zoom out  ·  drag right/left to zoom in/out", crate::shortcuts::pretty("Alt")));
                         if widgets::secondary_button(ui, "Fit Screen", 0.0).clicked()
                             && let Some(i) = app.session.active_index()
                         {
@@ -778,10 +760,22 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                         }
                     }
                     Tool::Hand => hint(ui, "Drag to pan  ·  hold Space with any tool"),
-                    Tool::Lasso | Tool::PolygonLasso => hint(ui, "Drag (lasso) or click points (polygonal) · ⇧ add · ⌥ subtract"),
+                    Tool::Lasso | Tool::PolygonLasso => hint(
+                        ui,
+                        &format!(
+                            "Drag (lasso) or click points (polygonal) · {} add · {} subtract",
+                            crate::shortcuts::pretty("Shift"),
+                            crate::shortcuts::pretty("Alt")
+                        ),
+                    ),
                     Tool::Crop => hint(
                         ui,
-                        "Drag a crop box · drag inside to move · edges resize (⇧ ratio, ⌥ centre) · Space moves while drawing · ↵ commits · Esc cancels",
+                        &format!(
+                            "Drag a crop box · drag inside to move · edges resize ({} ratio, {} centre) · Space moves while drawing · {} commits · Esc cancels",
+                            crate::shortcuts::pretty("Shift"),
+                            crate::shortcuts::pretty("Alt"),
+                            crate::shortcuts::pretty("Enter")
+                        ),
                     ),
                     Tool::Gradient => hint(ui, "Drag to draw a gradient"),
                     Tool::PaintBucket => hint(ui, "Click to fill similar colours"),
@@ -1444,14 +1438,7 @@ fn layers(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                     ui.close();
                 }
             });
-            if icons::button(
-                ui,
-                "square-dot",
-                26.0,
-                false,
-                &crate::i18n::fmt(tl!("Add a mask  (from the selection; {key} inverts)"), &[("key", &crate::shortcuts::pretty("Alt"))]),
-            )
-            .clicked()
+            if icons::button(ui, "square-dot", 26.0, false, &format!("Add a mask  (from the selection; {} inverts)", crate::shortcuts::pretty("Alt"))).clicked()
             {
                 let alt = ui.input(|i| i.modifiers.alt);
                 actions.push((crate::layer_menu_ui::add_mask_command(doc.selection.is_some(), alt).into(), json!({})));
@@ -2336,10 +2323,10 @@ fn effect_rows(app: &mut PhotocraftApp, ui: &mut egui::Ui, l: &Layer, depth: usi
 fn selection_mode_buttons(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     ui.spacing_mut().item_spacing.x = 2.0;
     for (i, (icon, tip)) in [
-        ("square", tl!("New selection").to_string()),
-        ("plus", crate::i18n::fmt(tl!("Add to selection  ({key})"), &[("key", &crate::shortcuts::pretty("Shift"))])),
-        ("minus", crate::i18n::fmt(tl!("Subtract from selection  ({key})"), &[("key", &crate::shortcuts::pretty("Alt"))])),
-        ("squares-subtract", crate::i18n::fmt(tl!("Intersect with selection  ({key})"), &[("key", &crate::shortcuts::pretty("Shift+Alt"))])),
+        ("square", "New selection".to_string()),
+        ("plus", format!("Add to selection  ({})", crate::shortcuts::pretty("Shift"))),
+        ("minus", format!("Subtract from selection  ({})", crate::shortcuts::pretty("Alt"))),
+        ("squares-subtract", format!("Intersect with selection  ({})", crate::shortcuts::pretty("Shift+Alt"))),
     ]
     .iter()
     .enumerate()

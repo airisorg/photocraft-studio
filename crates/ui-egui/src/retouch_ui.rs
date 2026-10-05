@@ -220,7 +220,7 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool) -> bo
             crate::widgets::dropdown(ui, "clone-sample", &mut o.clone_sample, &opts, 130.0);
             if app.ui.clone_source.is_none() {
                 crate::widgets::vline(ui, 22.0);
-                opt(ui, &crate::i18n::fmt(tl!("{key}-click to set the source"), &[("key", &crate::shortcuts::pretty("Alt"))]));
+                opt(ui, &format!("{}-click to set the source", crate::shortcuts::pretty("Alt")));
             }
         }
         Tool::Dodge | Tool::Burn => {
@@ -248,9 +248,9 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool) -> bo
         }
         Tool::HistoryBrush => opt(ui, "Paints from the document's opening state"),
         Tool::QuickSelection => {
-            crate::widgets::checkbox(ui, &mut o.sample_all_layers, tl!("Sample All Layers"));
-            crate::widgets::checkbox(ui, &mut o.enhance_edge, tl!("Enhance Edge"));
-            opt(ui, &crate::i18n::fmt(tl!("{key} to subtract"), &[("key", &crate::shortcuts::pretty("Alt"))]));
+            crate::widgets::checkbox(ui, &mut o.sample_all_layers, "Sample All Layers");
+            crate::widgets::checkbox(ui, &mut o.enhance_edge, "Enhance Edge");
+            opt(ui, &format!("{} to subtract", crate::shortcuts::pretty("Alt")));
             crate::widgets::vline(ui, 22.0);
             if crate::widgets::secondary_button(ui, tl!("Select Subject"), 0.0).clicked() {
                 let _ = app.run("select.subject", json!({}));
