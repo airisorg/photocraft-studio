@@ -366,6 +366,7 @@ impl GpuCanvas {
                 }
             },
         };
+        comp.set_health(self.health.clone());
         if let Some(b) = res.compositor_budget {
             comp.set_memory_budget(b);
         }
@@ -598,29 +599,10 @@ impl GpuCanvas {
         }
     }
 
-    pub(crate) fn display_lut_signature(&self, doc: u64, output: u32) -> Option<(u64, u8)> {
-        let renderer = self.rs.renderer.read();
-        renderer.callback_resources.get::<Resources>()?.display_lut_signatures.get(&(doc, output)).copied()
-    }
-
-    /// Whether document `doc` has a display LUT for display `output` (tests).
-    #[cfg(test)]
-    pub(crate) fn has_display_lut(&self, doc: u64, output: u32) -> bool {
-        let renderer = self.rs.renderer.read();
-        renderer.callback_resources.get::<Resources>().is_some_and(|r| r.luts.contains_key(&(doc, output)))
-    }
-
-    pub(crate) fn cache_display_lut_signature(&self, doc: u64, output: u32, signature: u64, mode: u8) {
-        let mut renderer = self.rs.renderer.write();
-        if let Some(res) = renderer.callback_resources.get_mut::<Resources>() {
-            res.display_lut_signatures.insert((doc, output), (signature, mode));
-        }
-    }
-
-    /// Set (or clear with `None`) the display LUT of document `doc` on display `output`:
-    /// `size`³ RGBA8 texels, red fastest. RGB is the display colour for each lattice input;
-    /// alpha 255 marks out-of-gamut colours for the gamut warning.
-    pub fn set_display_lut(&self, doc: u64, output: u32, size: u32, rgba: Option<&[u8]>) {
+    /// Set (or clear with `None`) the display LUT of document `doc`: `size`³ RGBA8 texels, red
+    /// fastest. RGB is the display colour for each lattice input; alpha 255 marks out-of-gamut
+    /// colours for the gamut warning.
+    pub fn set_display_lut(&self, doc: u64, size: u32, rgba: Option<&[u8]>) {
         if !self.health.is_ok() {
             return;
         }
@@ -792,6 +774,8 @@ pub struct Perf {
     pub gpu_uploads: u64,
     /// Why the last refresh fell back to the CPU compositor (None = GPU composited).
     pub gpu_fallback: Option<String>,
+    /// Adapter, backend, driver and fallback state (Help › System Info).
+    pub gpu_info: GpuInfo,
     /// GPU memory the compositor may hold for layer pages and effect maps (MB; see
     /// [`memory_budget`]).
     pub gpu_budget_mb: u64,
@@ -858,17 +842,7 @@ impl GpuInfo {
             format!("Driver: {}", or(&self.driver, "unknown")),
             format!("GPU backend preference: {}", or(&self.preference, "auto")),
             format!("Selected at launch: {}", or(&self.selected, "auto")),
-            format!("Image compositor: {}", if self.canvas == "gpu" { "GPU" } else { "CPU" }),
-            format!(
-                "Window renderer: {}",
-                if self.device_type == "cpu" {
-                    "Software adapter"
-                } else if self.adapter.is_empty() {
-                    "Unknown"
-                } else {
-                    "Graphics adapter"
-                }
-            ),
+            format!("Canvas renderer: {}", if self.canvas == "gpu" { "GPU" } else { "CPU" }),
         ];
         if let Some(f) = &self.fallback {
             v.push(format!("Fallback: {f}"));
@@ -1114,6 +1088,8 @@ struct Resources {
     compositor: Option<photocraft_gpu::Compositor>,
     /// Why the wgpu compositor couldn't be created (then the CPU compositor is used).
     compositor_failed: Option<photocraft_gpu::Unsupported>,
+    /// The device's health: the paint callback issues no GPU work once it's lost.
+    health: photocraft_gpu::DeviceHealth,
     /// GPU memory the compositor may hold (`None`: its default), and the document area the
     /// view shows; applied before every composite.
     compositor_budget: Option<u64>,
@@ -1377,6 +1353,7 @@ impl Resources {
             out_linear: target.is_srgb(),
             compositor: None,
             compositor_failed: None,
+            health: photocraft_gpu::DeviceHealth::new(),
             compositor_budget: None,
             compositor_focus: None,
             encode_bgl,

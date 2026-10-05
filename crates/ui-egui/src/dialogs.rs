@@ -110,18 +110,26 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
             ui.add_space(4.0);
             crate::widgets::hairline(ui);
             ui.add_space(8.0);
-            // Keep the original forms and widgets; constrain only their viewport. Actions stay
-            // outside the scroll area, so even the widest native dialog can be cancelled on a phone.
-            egui::ScrollArea::both()
-                .id_salt(("dialog-body", d.id))
-                .max_width(viewport_width)
-                .max_height((ctx.content_rect().height() - 160.0).max(120.0))
-                .auto_shrink([true, true])
-                .show(ui, |ui| {
-                    ui.set_min_width(if d.kind == DialogKind::NewDocument || crate::prefs_ui::is_preferences(&fields) {
-                        min_width.min(viewport_width)
-                    } else {
-                        min_width
+            match d.kind {
+                DialogKind::NewDocument => crate::new_doc_ui::body(ui, &mut fields),
+                DialogKind::About if fields.get("systemInfo").and_then(Value::as_bool) == Some(true) => {
+                    let lines = crate::gpu_status::system_info(app);
+                    for l in &lines {
+                        ui.add(egui::Label::new(egui::RichText::new(l).font(crate::theme::mono(12.0))).selectable(true));
+                    }
+                    ui.add_space(8.0);
+                    if crate::widgets::secondary_button(ui, "Copy", 84.0).clicked() {
+                        ui.ctx().copy_text(lines.join("\n"));
+                    }
+                }
+                DialogKind::About => {
+                    ui.label("PhotoCraft — an open-source, native image editor written in Rust.");
+                    ui.label(format!("Version {}", photocraft_engine::build_info::long_version()));
+                    ui.add_space(12.0);
+                    ui.vertical_centered(|ui| {
+                        crate::links::discord_button(app, ui, 220.0);
+                        ui.add_space(8.0);
+                        crate::links::link_row(app, ui);
                     });
                     ui.set_max_width(if d.kind == DialogKind::NewDocument || crate::prefs_ui::is_preferences(&fields) {
                         max_width.min(viewport_width)

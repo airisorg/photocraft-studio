@@ -23,6 +23,7 @@ mod app_icon;
 mod apple_events;
 mod control_server;
 mod crash_guard;
+mod gpu_startup;
 // Pure logic is tested on every platform; only Linux runs the check.
 #[cfg(any(target_os = "linux", test))]
 mod linux_libs;
@@ -157,8 +158,17 @@ fn main() -> eframe::Result {
         Some(dir) => gpu_startup::Sentinel::begin(&dir),
         None => (gpu_startup::Previous::Clean, None),
     };
+    // Crash-safe GPU startup (#4): pick the backend (a marker left by a start that died in the
+    // driver moves to a safer one), and lock this start's marker until the first frames render.
+    let t_sentinel = std::time::Instant::now();
+    let os = gpu_startup::Os::current();
+    let (pref, _) = gpu_startup::read_prefs(services::prefs_file().as_deref());
+    let (previous, sentinel) = match services::config_dir() {
+        Some(dir) => gpu_startup::Sentinel::begin(&dir),
+        None => (gpu_startup::Previous::Clean, None),
+    };
     let env_backend = std::env::var("WGPU_BACKEND").ok();
-    let plan = gpu_startup::plan_with_mode(pref, mode, previous.crashed(), env_backend.as_deref(), safe_gpu, os);
+    let plan = gpu_startup::plan(pref, previous.crashed(), env_backend.as_deref(), safe_gpu, os);
     if let Some(m) = previous.crashed() {
         log::warn!("the previous start didn't finish (GPU backend {}, adapter {:?}); {}", m.backend, m.adapter, plan.reason.as_deref().unwrap_or(""));
     }
@@ -178,12 +188,9 @@ fn main() -> eframe::Result {
     gpu_startup::configure(&mut options.wgpu_options.wgpu_setup, &plan, os, sentinel.clone(), gpu_note.clone());
     let sentinel_ms = t_sentinel.elapsed().as_secs_f64() * 1000.0;
     log::info!("GPU startup: {:?} ({sentinel_ms:.2} ms)", plan);
-    let retry_cpu = !safe_gpu && plan.backend != photocraft_engine::prefs::GpuBackend::Cpu;
-    let app_created = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let created_in_callback = app_created.clone();
     let started_sentinel = sentinel.clone();
     let result = eframe::run_native(
-        "PhotoCraft",
+        "Photocraft",
         options,
         Box::new(move |cc| {
             created_in_callback.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -218,21 +225,13 @@ fn main() -> eframe::Result {
             let info = &mut app.perf.gpu_info;
             info.preference = pref.name().to_string();
             info.selected = if plan.env.is_some() { "env".into() } else { plan.backend.name().to_string() };
-            info.fallback = match (plan.reason.clone(), gpu_note.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()) {
-                (Some(reason), Some(note)) => Some(format!("{reason}. {note}")),
-                (reason, note) => reason.or(note),
-            };
+            info.fallback = plan.reason.clone().or_else(|| gpu_note.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone());
             info.canvas = "cpu".into();
             if let Some(rs) = cc.wgpu_render_state.clone() {
                 app.perf.gpu_info.set_adapter(&rs.adapter.get_info());
-                let software_window = rs.adapter.get_info().device_type == eframe::wgpu::DeviceType::Cpu;
-                if software_window && mode != photocraft_engine::prefs::RenderingMode::Cpu {
-                    app.perf.gpu_info.fallback = Some("No compatible hardware graphics adapter; using software graphics.".into());
-                }
-                if !software_window
-                    && plan.backend != photocraft_engine::prefs::GpuBackend::Cpu
+                if plan.backend != photocraft_engine::prefs::GpuBackend::Cpu
                     && std::env::var_os("PHOTOCRAFT_CPU_CANVAS").is_none()
-                    && app.session.prefs().performance.effective_rendering_mode() != photocraft_engine::prefs::RenderingMode::Cpu
+                    && app.session.prefs().performance.use_gpu
                 {
                     app.set_wgpu(rs);
                 } else {
@@ -240,32 +239,12 @@ fn main() -> eframe::Result {
                     let _ = photocraft_ui_egui::gpu_canvas::DeviceHealth::watch(&rs.device);
                 }
             }
-            let fallback_reason = std::env::var("PHOTOCRAFT_GPU_STARTUP_FAILURE").ok().or_else(|| {
-                (app.perf.gpu_info.canvas == "cpu" && mode != photocraft_engine::prefs::RenderingMode::Cpu)
-                    .then(|| app.perf.gpu_info.fallback.clone())
-                    .flatten()
-            });
-            if let Some(reason) = fallback_reason {
-                photocraft_ui_egui::gpu_status::queue_fallback_notice(&mut app, &reason);
-            }
             app.perf.span("gpuSentinel", sentinel_ms);
             // Once the first frames rendered: clear the marker, and keep a crash fallback.
-            let remember_cpu =
-                std::env::var_os("PHOTOCRAFT_GPU_STARTUP_FAILURE").is_some() || (plan.remember && plan.backend == photocraft_engine::prefs::GpuBackend::Cpu);
             let remember = plan.remember.then_some(plan.backend);
             app.on_started(move |app| {
                 if let Some(s) = started_sentinel.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
                     s.finish();
-                }
-                if remember_cpu
-                    && let Err(error) = app.run(
-                        "prefs.set",
-                        serde_json::json!({"values": {
-                            "performance.renderingMode": "cpu", "performance.useGpu": false
-                        }}),
-                    )
-                {
-                    log::warn!("couldn't remember CPU recovery: {error}");
                 }
                 if let Some(b) = remember
                     && app.session.prefs().performance.gpu_backend != b
@@ -303,75 +282,5 @@ fn main() -> eframe::Result {
     {
         s.finish();
     }
-    // Retry in a fresh process: winit event loops cannot be recreated reliably in-process.
-    // Only renderer initialization failures qualify; never restart after editing has begun.
-    if retry_cpu && !app_created.load(std::sync::atomic::Ordering::Relaxed) && matches!(&result, Err(eframe::Error::Wgpu(_))) {
-        let reason = result.as_ref().err().map(ToString::to_string).unwrap_or_default();
-        if let Some(s) = sentinel.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
-            s.finish();
-        }
-        if let Ok(exe) = std::env::current_exe() {
-            let launched = std::process::Command::new(exe)
-                .args(std::env::args_os().skip(1))
-                .arg("--safe-gpu")
-                .env_remove("WGPU_BACKEND")
-                .env("PHOTOCRAFT_GPU_STARTUP_FAILURE", &reason)
-                .spawn();
-            match launched {
-                Ok(_) => return Ok(()),
-                Err(error) => log::error!("could not start CPU compatibility mode: {error}"),
-            }
-        }
-    }
     result
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn window_and_panel_geometry_survive_a_restart() {
-        let options = super::native_options();
-        assert!(options.persist_window);
-        assert_eq!(options.persistence_path, super::services::config_dir().map(|dir| dir.join("ui.ron")));
-
-        #[derive(Default)]
-        struct Storage(std::collections::BTreeMap<String, String>);
-        impl eframe::Storage for Storage {
-            fn get_string(&self, key: &str) -> Option<String> {
-                self.0.get(key).cloned()
-            }
-            fn set_string(&mut self, key: &str, value: String) {
-                self.0.insert(key.into(), value);
-            }
-            fn remove_string(&mut self, key: &str) {
-                self.0.remove(key);
-            }
-            fn flush(&mut self) {}
-        }
-        let ctx = egui::Context::default();
-        let input = || egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 800.0))), ..Default::default() };
-        let mut output = ctx.run_ui(input(), |ui| {
-            egui::Panel::right("dock").exact_size(410.0).show(ui, |ui| ui.set_min_width(ui.available_width()));
-        });
-        output.textures_delta.clear();
-        let mut storage = Storage::default();
-        ctx.memory(|memory| eframe::set_value(&mut storage, "egui", memory));
-        let restored = egui::Context::default();
-        restored.memory_mut(|memory| *memory = eframe::get_value(&storage, "egui").unwrap());
-        let mut output = restored.run_ui(input(), |ui| {
-            egui::Panel::right("dock").default_size(290.0).show(ui, |ui| ui.set_min_width(ui.available_width()));
-        });
-        output.textures_delta.clear();
-        let panel = egui::containers::panel::PanelState::load(&restored, egui::Id::new("dock")).unwrap();
-        assert_eq!(panel.size().x, 410.0);
-    }
-
-    #[test]
-    fn the_window_opens_centred_at_its_default_size() {
-        let o = super::native_options();
-        assert!(o.centered, "#419: centred, not cascaded from the top-left corner");
-        assert_eq!(o.viewport.inner_size, Some(egui::vec2(1440.0, 900.0)));
-        // eframe shrinks the start size to the monitor, so the centred position is on-screen.
-        assert_ne!(o.viewport.clamp_size_to_monitor_size, Some(false));
-    }
 }

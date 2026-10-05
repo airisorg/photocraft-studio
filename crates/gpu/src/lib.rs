@@ -818,6 +818,9 @@ impl Compositor {
         sink: &mut dyn FnMut(&mut wgpu::CommandEncoder, ChunkOut<'_>),
         flush: bool,
     ) -> Result<Stats, Unsupported> {
+        if let Some(f) = self.fault() {
+            return Err(Unsupported(f.to_string()));
+        }
         // CMYK layers convert through the document's own CMYK profile (uploads and plan colours).
         let space = photocraft_compose::cmyk_space(doc);
         self.cmyk = space.as_ref().map_or(0, |s| s.id);
@@ -909,7 +912,14 @@ impl Compositor {
                 let index = queue.submit([done.finish()]);
                 #[cfg(not(target_arch = "wasm32"))]
                 if let Some(prev) = last_submit.replace(index) {
-                    let _ = device.poll(wgpu::PollType::Wait { submission_index: Some(prev), timeout: None });
+                    match &self.health {
+                        Some(h) => {
+                            h.wait(device, Some(prev));
+                        }
+                        None => {
+                            let _ = device.poll(wgpu::PollType::Wait { submission_index: Some(prev), timeout: None });
+                        }
+                    }
                 }
                 #[cfg(target_arch = "wasm32")]
                 let _ = index;
@@ -917,6 +927,10 @@ impl Compositor {
                 work = 0;
                 freed = 0;
                 stats.flushes += 1;
+                // The device was lost mid-refresh: issue no more work.
+                if let Some(f) = self.fault() {
+                    return Err(Unsupported(f.to_string()));
+                }
             }
         }
 
