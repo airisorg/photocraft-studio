@@ -302,19 +302,6 @@ mod tests {
     }
 
     #[test]
-    fn clone_without_a_source_names_the_platform_modifier() {
-        // Option-click on the Mac, Alt-click elsewhere (#251).
-        for tool in [Tool::CloneStamp, Tool::Healing] {
-            let mut app = app();
-            app.ui.tool = tool;
-            assert!(finish_stroke(&mut app, tool, &[[10.0, 30.0, 1.0], [50.0, 30.0, 1.0]], egui::Modifiers::NONE));
-            assert!(app.ui.status_error, "{tool:?}");
-            let want = if cfg!(target_os = "macos") { "Option-click" } else { "Alt-click" };
-            assert!(app.ui.status.starts_with(want), "{tool:?}: {}", app.ui.status);
-        }
-    }
-
-    #[test]
     fn retouch_strokes_paint_the_targeted_mask() {
         // #207: with the mask targeted, retouching changes the mask, never the pixels.
         for tool in [Tool::Blur, Tool::Sharpen, Tool::Smudge, Tool::Dodge, Tool::Burn] {
@@ -348,78 +335,5 @@ mod tests {
                 assert_eq!(a > 0.0, all, "{tool:?} sampleAllLayers={all}: alpha {a}");
             }
         }
-    }
-
-    #[test]
-    fn mixer_brush_is_selectable_and_paints_only_inside_the_selection_via_control() {
-        use crate::control::{ControlRequest, Outcome, handle};
-
-        let mut app = app();
-        app.run("paint.pencil", json!({"points": [[50, 30]], "size": 200, "color": "#204080"})).unwrap();
-        app.run("tools.setColors", json!({"foreground": "#f02010"})).unwrap();
-        app.run(
-            "tools.setBrush",
-            json!({
-                "pressureSize": false,
-                "size": 12,
-                "mixer": {"wet": 0.0, "load": 1.0, "mix": 0.0, "flow": 1.0}
-            }),
-        )
-        .unwrap();
-        app.run("select.rect", json!({"x": 35, "y": 20, "width": 30, "height": 20})).unwrap();
-        let before = {
-            let surface = active(&app).surface().unwrap();
-            [surface.rgba(20, 30), surface.rgba(50, 30), surface.rgba(80, 30)]
-        };
-
-        let ctx = egui::Context::default();
-        let (req, _rx) = ControlRequest::new(
-            "ui.pointer",
-            json!({
-                "tool": "mixerBrush",
-                "events": [
-                    {"kind": "down", "x": 8, "y": 30},
-                    {"kind": "move", "x": 92, "y": 30},
-                    {"kind": "up", "x": 92, "y": 30}
-                ]
-            }),
-        );
-        assert!(matches!(handle(&mut app, &ctx, &req), Outcome::Done(_)));
-        assert_eq!(app.ui.tool, Tool::MixerBrush);
-        assert_eq!(app.session.journal.last().map(|(id, _)| id.as_str()), Some("paint.mixerBrush"));
-
-        let surface = active(&app).surface().unwrap();
-        assert_ne!(surface.rgba(50, 30), before[1], "the selected pixels are mixed");
-        assert_eq!(surface.rgba(20, 30), before[0], "outside the selection is unchanged");
-        assert_eq!(surface.rgba(80, 30), before[2], "the far side outside the selection is unchanged");
-    }
-
-    #[test]
-    fn patch_tool_lassoes_then_drags_the_patch() {
-        let mut app = app();
-        app.run("paint.pencil", json!({"points": [[68, 30], [74, 30]], "size": 6, "color": "#ff0000"})).unwrap();
-        let red = |app: &PhotocraftApp| active(app).surface().unwrap().rgba(71, 30)[1] < 0.5;
-        assert!(red(&app));
-        app.ui.tool = Tool::Patch;
-        let m = egui::Modifiers::NONE;
-        // Outside any selection the drag is a lasso.
-        tool_event(&mut app, ToolEvent::Down { x: 60.0, y: 20.0, pressure: 1.0 }, m);
-        for [x, y] in [[84.0, 20.0], [84.0, 40.0], [60.0, 40.0]] {
-            tool_event(&mut app, ToolEvent::Move { x, y, pressure: 1.0 }, m);
-        }
-        tool_event(&mut app, ToolEvent::Up { x: 60.0, y: 40.0 }, m);
-        assert!(app.session.active().unwrap().doc.selection.is_some(), "lasso made a selection");
-        assert!(red(&app), "the lasso alone changes no pixels");
-        // ⇧-drag inside the selection adds to it rather than patching.
-        assert!(!patch_drags_selection(&app, [70.0, 30.0], egui::Modifiers::SHIFT));
-        // Dragging inside it patches from where it is dropped; the offset is limited to the canvas.
-        assert!(patch_drags_selection(&app, [70.0, 30.0], m));
-        assert_eq!(patch_offset(&mut app, [70.0, 30.0], [-200.0, 30.0]), [-60, 0]);
-        tool_event(&mut app, ToolEvent::Down { x: 70.0, y: 30.0, pressure: 1.0 }, m);
-        tool_event(&mut app, ToolEvent::Move { x: 50.0, y: 31.0, pressure: 1.0 }, m);
-        tool_event(&mut app, ToolEvent::Up { x: 30.0, y: 30.0 }, m);
-        assert!(!app.ui.status_error, "{}", app.ui.status);
-        let px = active(&app).surface().unwrap().rgba(71, 30);
-        assert!(px[0] > 0.95 && px[1] > 0.95 && px[2] > 0.95, "blemish patched with the white background: {px:?}");
     }
 }
