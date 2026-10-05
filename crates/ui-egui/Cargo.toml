@@ -20,8 +20,6 @@ photocraft-plugins = { workspace = true }
 photocraft-algo = { workspace = true }
 photocraft-text = { workspace = true }
 photocraft-vector = { workspace = true }
-# Reading files to open them (bounded reads, a clear error for files larger than memory).
-photocraft-format = { workspace = true }
 egui = { workspace = true }
 egui_extras = { version = "0.36", default-features = false, features = ["svg"] }
 eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit"] }

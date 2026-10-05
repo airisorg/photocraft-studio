@@ -678,47 +678,6 @@ pub fn paths_footer(ctx: &egui::Context) -> Option<Rect> {
     ctx.data(|d| d.get_temp(footer_id()))
 }
 
-/// Commands offered by a Paths row's context menu. The row's path is passed explicitly so a
-/// right-click acts on that row even when another path is selected in the panel.
-fn path_context_actions(entry: &PathEntry, doc: &Document) -> Vec<(&'static str, &'static str, Value)> {
-    let key = match entry.kind {
-        PathRow::Work => "work".to_string(),
-        PathRow::Layer => "layer".to_string(),
-        PathRow::Saved => entry.name.clone(),
-    };
-    let mut actions = vec![
-        ("Make Selection", "path.toSelection", json!({"name": key})),
-        ("Fill Path", "path.fill", json!({"name": key})),
-        ("Stroke Path", "path.stroke", json!({"name": key, "tool": "brush"})),
-    ];
-    if entry.kind == PathRow::Work {
-        let mut n = doc.paths.len().saturating_add(1);
-        while doc.paths.iter().any(|p| p.name == format!("Path {n}")) {
-            n = n.saturating_add(1);
-            if n == usize::MAX {
-                break;
-            }
-        }
-        actions.push(("Save Path", "path.rename", json!({"name": "work", "to": format!("Path {n}")})));
-    } else {
-        let mut n = 1usize;
-        while doc.paths.iter().any(|p| p.name == format!("{} copy {n}", entry.name)) {
-            n = n.saturating_add(1);
-            if n == usize::MAX {
-                break;
-            }
-        }
-        let copy_name = format!("{} copy {n}", entry.name);
-        actions.push(("Duplicate Path", "path.set", json!({"name": copy_name, "path": photocraft_engine::vector_cmds::path_json(&entry.path)})));
-    }
-    if entry.kind != PathRow::Layer {
-        actions.push(("Delete Path", "path.delete", json!({"name": key})));
-    } else if entry.name.ends_with(" Vector Mask") {
-        actions.push(("Delete Vector Mask", "layer.vectorMask.delete", json!({})));
-    }
-    actions
-}
-
 pub fn paths_panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
     let Some(st) = app.session.active() else {
@@ -737,7 +696,7 @@ pub fn paths_panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         ui,
         |ui| {
             if rows.is_empty() {
-                ui.label(egui::RichText::new(tl!("Draw with the Pen tool (P) or make a work path from a selection.")).color(t.text_faint).size(11.5));
+                ui.label(egui::RichText::new("Draw with the Pen tool (P) or make a work path from a selection.").color(t.text_faint).size(11.5));
             }
             for PathEntry { name, path, kind } in &rows {
                 let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 36.0), Sense::click());
@@ -758,11 +717,7 @@ pub fn paths_panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                 let mut job = egui::text::LayoutJob::default();
                 // Temporary paths (the work path, the selected layer's shape path or vector mask) are italic.
                 let italics = *kind != PathRow::Saved;
-                job.append(
-                    if *kind == PathRow::Work { tl!(name) } else { name },
-                    0.0,
-                    egui::TextFormat { font_id: egui::FontId::proportional(12.0), color: t.text, italics, ..Default::default() },
-                );
+                job.append(name, 0.0, egui::TextFormat { font_id: egui::FontId::proportional(12.0), color: t.text, italics, ..Default::default() });
                 let g = ui.painter().layout_job(job);
                 ui.painter().galley(pos2(r.left() + 46.0, r.center().y - g.size().y / 2.0), g, t.text);
                 if resp.clicked() {
@@ -773,18 +728,6 @@ pub fn paths_panel(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                     let n = doc.paths.len() + 1;
                     action = Some(("path.rename", json!({"name": "work", "to": format!("Path {n}")})));
                 }
-                resp.context_menu(|ui| {
-                    ui.set_min_width(190.0);
-                    let entry = PathEntry { name: name.clone(), path: path.clone(), kind: *kind };
-                    let can_paint = app.session.active().and_then(|s| s.active_layer.and_then(|id| s.doc.layer(id))).is_some_and(|l| l.surface().is_some());
-                    for (label, cmd, params) in path_context_actions(&entry, &doc) {
-                        let enabled = !matches!(cmd, "path.fill" | "path.stroke") || can_paint;
-                        if ui.add_enabled(enabled, egui::Button::new(tl!(label))).clicked() {
-                            action = Some((cmd, params));
-                            ui.close();
-                        }
-                    }
-                });
                 ui.painter().line_segment([r.left_bottom(), r.right_bottom()], Stroke::new(1.0, t.separator));
             }
         },

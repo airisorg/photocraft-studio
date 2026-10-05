@@ -302,7 +302,7 @@ pub struct PhotocraftApp {
     pub last_canvas_rect: egui::Rect,
     pub fps: f32,
     last_frame_time: f64,
-    thumbs: HashMap<(photocraft_doc::LayerId, bool), (u64, egui::TextureHandle)>,
+    thumbs: HashMap<(photocraft_doc::LayerId, u8), (u64, egui::TextureHandle)>,
     /// Snapshots whose live layer/mask keys were last used to prune thumbnail handles.
     thumb_documents: Vec<(DocId, std::sync::Weak<Document>)>,
     /// Content bounds cached per (key, revision): scanning a 36 MP layer every frame cost ~77 ms.
@@ -1002,9 +1002,12 @@ impl PhotocraftApp {
             let mut live = std::collections::HashSet::new();
             let mut pending: Vec<_> = documents.iter().flat_map(|st| &st.doc.layers).collect();
             while let Some(layer) = pending.pop() {
-                live.insert((layer.id, false));
+                live.insert((layer.id, mask_thumbs_ui::THUMB_LAYER));
                 if layer.mask.is_some() {
-                    live.insert((layer.id, true));
+                    live.insert((layer.id, mask_thumbs_ui::THUMB_MASK));
+                }
+                if layer.vector_mask.is_some() {
+                    live.insert((layer.id, mask_thumbs_ui::THUMB_VECTOR));
                 }
                 if let Some(children) = layer.children() {
                     pending.extend(children);
