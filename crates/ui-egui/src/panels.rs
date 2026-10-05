@@ -767,15 +767,9 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                         ),
                     ),
                     Tool::Zoom => {
-                        widgets::checkbox(ui, &mut app.ui.tool_options.zoom_scrubby, tl!("Scrubby Zoom"));
-                        hint(
-                            ui,
-                            &crate::i18n::fmt(
-                                tl!("Click to zoom in  ·  {key}-click to zoom out  ·  drag right/left to zoom in/out"),
-                                &[("key", &crate::shortcuts::pretty("Alt"))],
-                            ),
-                        );
-                        if widgets::secondary_button(ui, tl!("Fit Screen"), 0.0).clicked()
+                        widgets::checkbox(ui, &mut app.ui.tool_options.zoom_scrubby, "Scrubby Zoom");
+                        hint(ui, "Click to zoom in  ·  ⌥-click to zoom out  ·  drag right/left to zoom in/out");
+                        if widgets::secondary_button(ui, "Fit Screen", 0.0).clicked()
                             && let Some(i) = app.session.active_index()
                         {
                             app.ui.views[i].fit_pending = true;

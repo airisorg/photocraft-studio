@@ -103,12 +103,12 @@ pub mod smart_ui;
 pub mod snap_ui;
 pub mod state;
 pub mod stroke_constraint;
-pub mod stroke_trail;
 pub mod stylus;
 mod tab_strip;
 pub mod theme;
 mod timeline_ui;
 pub mod tone;
+pub mod tool_feedback;
 pub mod transform_tex;
 pub mod transform_tool;
 pub mod type_panels_ui;
@@ -268,21 +268,8 @@ pub struct PhotocraftApp {
     pub(crate) patch_preview: Option<patch_preview::PatchPreview>,
     /// The next tool `Down` is a right-button drag that erases (see `paint_mouse`).
     secondary_erase: bool,
-    /// While a batch of recovered pointer samples is replayed, defer the live-stroke update to one
-    /// call for the whole frame (see `canvas::canvas_view`).
-    defer_live_stroke: bool,
     /// End of the last painting stroke: ⇧-click draws a straight line from it (#178).
     last_stroke_end: Option<(DocId, [f64; 2])>,
-    /// Control+Alt-drag brush resize in progress (`brush_resize`, #231).
-    pub(crate) brush_resize: Option<brush_resize::Resize>,
-    /// The next tool `Down` is an Alt+right-drag that resizes the brush (#297). `tool_event`
-    /// takes it on every event, so a press another handler consumes can't leave it set.
-    pub(crate) brush_resize_armed: bool,
-    /// This press began with ⌥ (Alt) held on a painting tool, so it samples colours instead of
-    /// painting until it is released (`canvas::alt_eyedropper`, #417).
-    pub(crate) alt_sampling: bool,
-    /// The first digit of a two-digit opacity typed on the number keys (`opacity_keys`, #352).
-    pub(crate) opacity_keys: opacity_keys::Pending,
     control_rx: Option<Receiver<ControlRequest>>,
     pending_screenshots: Vec<(u64, Option<String>, Sender<ControlResponse>)>,
     /// Screenshots not yet requested from the viewport: (token, earliest time in ms, frames seen).
@@ -407,12 +394,7 @@ impl PhotocraftApp {
             move_preview: None,
             patch_preview: None,
             secondary_erase: false,
-            defer_live_stroke: false,
             last_stroke_end: None,
-            brush_resize: None,
-            brush_resize_armed: false,
-            alt_sampling: false,
-            opacity_keys: None,
             control_rx: None,
             pending_screenshots: Vec::new(),
             queued_screenshots: Vec::new(),

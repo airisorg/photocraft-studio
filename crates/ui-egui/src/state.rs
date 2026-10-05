@@ -442,9 +442,6 @@ pub struct ToolOptions {
     /// Zoom tool › Scrubby Zoom: dragging left/right zooms continuously (else a zoom rectangle).
     #[serde(default = "yes")]
     pub zoom_scrubby: bool,
-    /// Pencil › Auto Erase: a stroke that starts on the foreground colour paints the background colour.
-    #[serde(default)]
-    pub pencil_auto_erase: bool,
 }
 
 fn yes() -> bool {
@@ -516,7 +513,6 @@ impl Default for ToolOptions {
             bg_tolerance: 50.0,
             bg_protect_fg: false,
             zoom_scrubby: true,
-            pencil_auto_erase: false,
         }
     }
 }
