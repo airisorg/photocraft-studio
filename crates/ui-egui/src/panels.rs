@@ -1612,7 +1612,9 @@ fn layer_row(
     // Link chains and pixel / vector mask thumbnails (#153).
     let masks = crate::mask_thumbs_ui::paint(app, ctx, ui, &painter, doc, l, &mut x, rect.center().y, ts, actions);
     let mask_rect = masks.thumb(crate::mask_thumbs_ui::MaskKind::Pixel);
-    // Photoshop frames the targeted thumbnail (pixels or mask) of the active layer with corner brackets.
+    let vector_rect = masks.thumb(crate::mask_thumbs_ui::MaskKind::Vector);
+    // Photoshop frames the targeted thumbnail (pixels, mask or vector mask) of the active layer
+    // with corner brackets.
     if row.primary {
         let target = if app.ui.vector_mask_target && vector_rect.is_some() {
             vector_rect
@@ -1649,8 +1651,8 @@ fn layer_row(
         crate::layer_row_ui::label(&painter, x, rect.center().y + 8.0, name_right, &sub, egui::FontId::proportional(11.0), t.text_faint);
     }
     crate::layer_row_ui::record(ctx, crate::layer_row_ui::RowRects { layer: l.id.0, row: rect, name: name_rect, indicators });
-    // ⌘-click a layer or mask thumbnail loads its transparency / mask as a selection (⇧ add,
-    // ⌥ subtract, ⇧⌥ intersect) instead of changing the layer selection.
+    // ⌘-click a layer, mask or vector-mask thumbnail loads its transparency / mask / path as a
+    // selection (⇧ add, ⌥ subtract, ⇧⌥ intersect) instead of changing the layer selection.
     let thumb_load = resp.clicked().then(|| (ui.input(|i| i.modifiers), resp.interact_pointer_pos())).and_then(|(m, pos)| {
         let p = pos.filter(|_| m.command)?;
         if let Some(kind) = masks.hit(p) {
@@ -1659,11 +1661,6 @@ fn layer_row(
         thumb.expand(2.0).contains(p).then(|| json!({"channel": "transparency", "layer": l.id.0, "operation": crate::channels_panel::load_operation(m)}))
     });
     // ⇧-click a mask thumbnail: disable / enable that mask; ⌥-click a layer mask: view it.
-    let mask_toggle = resp.clicked().then(|| (ui.input(|i| i.modifiers), resp.interact_pointer_pos())).and_then(|(m, pos)| {
-        let kind = masks.hit(pos?)?;
-        crate::mask_thumbs_ui::click_command(l, kind, m)
-    });
-    // ⇧-click a mask thumbnail: disable / enable that mask.
     let mask_toggle = resp.clicked().then(|| (ui.input(|i| i.modifiers), resp.interact_pointer_pos())).and_then(|(m, pos)| {
         let kind = masks.hit(pos?)?;
         crate::mask_thumbs_ui::click_command(l, kind, m)
@@ -1679,9 +1676,11 @@ fn layer_row(
         let pos = resp.interact_pointer_pos();
         let on_mask = mask_rect.zip(pos).is_some_and(|(r, p)| r.expand(2.0).contains(p));
         let on_thumb = pos.is_some_and(|p| thumb.expand(2.0).contains(p));
-        // The vector mask thumbnail picks the layer's path in the Paths panel.
-        if pos.and_then(|p| masks.hit(p)) == Some(crate::mask_thumbs_ui::MaskKind::Vector) {
-            app.ui.selected_path = Some("layer".into());
+        let on_vector = pos.and_then(|p| masks.hit(p)) == Some(crate::mask_thumbs_ui::MaskKind::Vector);
+        // Clicking the layer thumbnail leaves mask view (#196).
+        let viewing = app.session.active().and_then(photocraft_engine::mask_view_cmds::current).is_some_and(|v| v.layer == l.id);
+        if on_thumb && viewing {
+            actions.push((photocraft_engine::mask_view_cmds::ID.into(), json!({"layer": l.id.0, "mode": "off"})));
         }
         let content_less = matches!(l.content, LayerContent::Adjustment(_) | LayerContent::Fill(_));
         if on_vector {

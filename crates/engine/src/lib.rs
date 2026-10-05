@@ -368,6 +368,10 @@ impl Session {
         self.coalesce_request = None;
         self.color_restrict = None;
         let r = r?;
+        // A layer-mask view ends when another layer becomes active (#196).
+        if let Some(st) = self.active_mut() {
+            mask_view_cmds::fix(st);
+        }
         edit_menu_cmds::after_command(self, id);
         automate_cmds::after_command(self, id);
         self.sync_preset_store();
