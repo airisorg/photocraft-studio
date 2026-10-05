@@ -32,13 +32,7 @@ note = "release.yml:204-216 (#163)"
 id = "DIST-5"
 target = "Web build (wasm32, trunk)"
 status = "done"
-note = "release.yml:312"
-
-[[item]]
-id = "DIST-6"
-target = "FreeBSD 14 x86_64 tar.gz (/usr/local tree) built in a FreeBSD VM"
-status = "partial"
-note = "release.yml:242-283 (freebsd job) + packaging/freebsd/package.sh; layout checked with --dry-run, not yet produced by a release run"
+note = "release.yml:255"
 
 [[item]]
 id = "DIST-220-1"
@@ -64,9 +58,9 @@ note = "No bug report dialog in crates"
 [[item]]
 id = "DIST-220-4"
 target = "Translation coverage per language reported by xtask; RTL layout for Arabic and Hebrew"
-status = "partial"
+status = "missing"
 issue = 220
-note = "`cargo xtask i18n-coverage` reports per-language coverage (#427); no RTL layout yet"
+note = "No i18n in crates or xtask (waits on #169)"
 
 [[item]]
 id = "DIST-220-5"

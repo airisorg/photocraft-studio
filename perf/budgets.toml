@@ -36,12 +36,6 @@ args = ["--no-cpu", "--reps", "5"]
 note = "36 MP document with layer effects, GPU compositor"
 
 [[bench]]
-name = "camera_raw_bench"
-package = "photocraft-ui-egui"
-quick_args = ["--quick"]
-note = "36 MP dense RGB layer: CPU develop, histogram, ICC vectorscope, clipping, nine Lab probes and egui tessellation; excludes GPU upload/presentation"
-
-[[bench]]
 name = "type_bench"
 package = "photocraft-ui-egui"
 quick_args = ["--size", "2000x1500", "--layers", "20", "--steps", "15"]
@@ -239,7 +233,7 @@ id = "P20"
 title = "Open a 2 GB PSD / 4–5 GB PSB"
 issue = 210
 target = "opens with progress, editable, never blank"
-not_measurable = "opens run in the background with progress (#210), but there are no generated large-file fixtures yet (#216)"
+not_measurable = "no progress or background open (#210) and no generated large-file fixtures (#216)"
 
 [[scenario]]
 id = "P21"
@@ -266,38 +260,17 @@ not_measurable = "the previews run inside the UI tools; no headless frame harnes
 
 [[scenario]]
 id = "P24"
-title = "Import 500 brushes (longest UI-thread step)"
+title = "Import 500 brushes"
 issue = 210
-bench = "perf_scenarios"
-row = "import 500 brushes: longest UI-thread step"
-metric = "max"
-budget_ms = 100
+target = "no UI pause over 100 ms"
+not_measurable = "import runs synchronously on the UI thread (no job system, #210)"
 
 [[scenario]]
 id = "P25"
-title = "Cancel a Gaussian Blur job on 24 MP (until the worker exits)"
+title = "Cancel any long job"
 issue = 210
-bench = "perf_scenarios"
-row = "cancel Gaussian Blur r 50 job on 24 MP"
-metric = "max"
-budget_ms = 200
-
-[[scenario]]
-id = "P49"
-title = "Cancel a Content-Aware Fill job on 24 MP (until the worker exits)"
-issue = 210
-bench = "perf_scenarios"
-row = "cancel Content-Aware Fill job on 24 MP"
-metric = "max"
-budget_ms = 200
-
-[[scenario]]
-id = "P50"
-title = "App frame time while a 24 MP Gaussian Blur job runs"
-issue = 210
-bench = "perf_scenarios"
-row = "app frame during 24 MP Gaussian Blur r 50 job"
-budget_ms = 16
+target = "takes effect within 200 ms, document unchanged"
+not_measurable = "no operation can be cancelled yet (#210)"
 
 # ---- #211: slow algorithms ---------------------------------------------------------------------
 
@@ -308,7 +281,7 @@ issue = 211
 bench = "perf_scenarios"
 row = "Select > Modify > Smooth r 50 on 24 MP"
 budget_ms = 100
-enforce = false  # #211: fastest samples 30-33 ms; p95 still over budget at load avg > 100
+enforce = false  # over budget in the 2026-10-05 baseline
 
 [[scenario]]
 id = "P27"
@@ -317,7 +290,7 @@ issue = 211
 bench = "perf_scenarios"
 row = "Select > Modify > Feather r 50 on 24 MP"
 budget_ms = 100
-enforce = false  # #211: fastest samples 30-33 ms; p95 still over budget at load avg > 100
+enforce = false  # over budget in the 2026-10-05 baseline
 
 [[scenario]]
 id = "P28"
@@ -349,10 +322,7 @@ id = "P31"
 title = "Camera Raw exposure change (proxy)"
 issue = 211
 target = "≤ 10 ms"
-bench = "camera_raw_bench"
-row = "exposure proxy update"
-budget_ms = 10
-enforce = false  # not in the 2026-10-05 baseline yet; contributor M4 run 2026-10-06: p95 5.4 ms
+not_measurable = "the proxy is built inside the dialog; no headless entry point yet"
 
 [[scenario]]
 id = "P32"
@@ -383,15 +353,6 @@ title = "Marquee drag on 24 MP with Alt/Shift"
 issue = 211
 target = "≤ 17 ms p95"
 not_measurable = "Shift/Alt marquee modifiers don't exist yet (#208) and the drag preview is UI-side"
-
-[[scenario]]
-id = "P36"
-title = "Camera Raw exposure change with all SDR scopes (CPU)"
-issue = 211
-bench = "camera_raw_bench"
-row = "interactive scope update"
-budget_ms = 10
-enforce = false  # not in the 2026-10-05 baseline yet; contributor M4 run 2026-10-06: p95 8.0 ms
 
 # ---- tracked (no budget yet): regressions only -------------------------------------------------
 

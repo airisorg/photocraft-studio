@@ -1,6 +1,5 @@
 # Scorecard checklist: reliability (#212, #203, never-crash).
-# Statuses must be true on main. REL-4 verified against 47f9306 on 2026-10-07; the rest
-# against 4b53f62 on 2026-10-05.
+# Statuses must be true on main. Verified against 4b53f62 on 2026-10-05.
 area = "reliability"
 title = "Reliability"
 order = 7
@@ -26,9 +25,9 @@ note = "engine lib.rs:336 dispatch; crash_guard.rs:21 import/export; the dispatc
 [[item]]
 id = "REL-4"
 target = "Atomic save (temp, fsync, rename) for every document write"
-status = "done"
+status = "missing"
 issue = 203
-note = "photocraft_format::atomic_write (format/src/atomic.rs, #230): same-dir temp, sync_all, rename with Windows PermissionDenied retry, Unix dir fsync; every document write site routes through it and format/src/atomic/tests.rs failure-injects write, rename and read-only-dir errors"
+note = "Documents use fs::write in place; prefs/presets/bundles use tmp + rename without fsync"
 
 [[item]]
 id = "REL-212-1"
@@ -40,9 +39,9 @@ note = "try_reserve only in io/flat.rs:221; codec max_alloc limits cover decode 
 [[item]]
 id = "REL-212-2"
 target = "Export switches to PSB when the estimated file size exceeds 2 GB"
-status = "done"
+status = "missing"
 issue = 212
-note = "PSD export uses checked size estimates for raster, masks, channels, and retained metadata"
+note = "io/psd_export.rs:558 switches only when a side exceeds 30000 px"
 
 [[item]]
 id = "REL-212-3"
