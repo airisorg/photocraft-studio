@@ -182,7 +182,7 @@ translations do not affect the denominator. Unregistered locale TSV files are ig
   - byte-exact round trips
   - malformed-input sweeps (truncate at every offset)
   - fuzz targets (`crates/*/fuzz`)
-- **Real-file corpus** in `corpus/` (gitignored). `corpus/psd` holds MIT-licensed test PSDs, listed with their sources in `corpus/psd/SOURCES.md`, `cargo xtask corpus --download` fetches PngSuite, and `cargo xtask corpus --psd-tools` fetches the complete psd-tools test set (MIT, 309 PSD/PSB files at a pinned commit, sha256-verified) into `corpus/psd-tools`. Tests skip silently when a corpus is absent.
+- **Real-file corpora** in `corpus/` (gitignored, fetched at pinned commits, sha256-verified): opt-in locally through the `corpus` cargo feature, always run in CI. See [Test corpora](#test-corpora).
 - **Composite oracle:** a PSD's embedded merged image is compared with our compositor's output. The pass rate is tracked in the roadmap.
 - **UI:** unit tests for widgets and state, plus screenshot checks through the control channel.
 
@@ -306,13 +306,12 @@ against committed **sha256 manifests**. All pins are in one place:
 | `corpus/photoshop/` | 256 PSDs we authored with Photoshop: smart filters, layer-style effect shapes, the text engine, adjustments in every mode and depth | https://github.com/storytold/photocraft-corpus (ours, MIT OR Apache-2.0) | `xtask/photoshop-corpus.sha256` |
 | `corpus/psd/` | 170 small psd-tools and ag-psd files, the mix most PSD tests use | psd-tools and ag-psd upstreams (MIT) | `xtask/psd-corpus.sha256` |
 | `corpus/psd-tools/` | the complete psd-tools test set (309 files) | psd-tools upstream (MIT) | `xtask/psd-tools-corpus.sha256` |
-| `corpus/heif/` | 9 small HEIC/HEIF files (checkerboards, RGB strips, a grid-tiled photo with EXIF/XMP, each with Apple's decode as `.ref.png`; a 10-bit RGBA file with its source PNG), for the `heif` feature | heic-rs (MIT OR Apache-2.0) and pillow-heif (BSD-3-Clause) upstreams | `xtask/heif-corpus.sha256` |
 | `corpus/pngsuite/` | PngSuite | schaik.com release archive (public domain) | (fixed archive) |
 
 ```sh
 cargo xtask corpus                 # where each corpus lives, its pin, present or missing
 cargo xtask corpus --all           # fetch everything missing or stale (cold: about 15 s; verified copies are left alone)
-cargo xtask test-corpus            # fetch, then cargo test --release --features corpus (+ heif on codecs, io) on psd, codecs, io, engine
+cargo xtask test-corpus            # fetch, then cargo test --release --features corpus on psd, codecs, io, engine
 cargo xtask test-corpus -p io      # narrow to one crate (repeat -p for more)
 cargo xtask test-corpus --changed  # only if psd, io, codecs, compose, gpu, text or format changed vs origin/main
 cargo xtask test-corpus -- --nocapture   # pass arguments to the test binaries (per-file tables)
@@ -323,8 +322,6 @@ scripts/fetch-corpus.sh            # the same as cargo xtask corpus --all
 
 - The corpus tests sit behind the `corpus` cargo feature of `photocraft-psd`, `photocraft-codecs`,
   `photocraft-io` and `photocraft-engine`, so plain `cargo test` neither compiles nor needs them.
-  The HEIF ones also need the `heif` feature of `photocraft-codecs`/`photocraft-io` (test-corpus
-  turns it on).
 - With the feature on, a missing corpus is a failure ("run `cargo xtask corpus --all`"), never a
   silent skip, and every floor is enforced.
 - If you touch psd, io, codecs, compose, gpu, text or format, run `cargo xtask test-corpus` before
@@ -357,12 +354,14 @@ scripts/fetch-corpus.sh            # the same as cargo xtask corpus --all
 
 ## Rendering fidelity (PSD oracle)
 
-`cargo test --release -p photocraft-io --test corpus -- --nocapture` compares our composite of every
-corpus PSD with Photoshop's own merged image (PASS ≤ 2/255) and checks that export → re-import renders
-the same, per source with its own floors: `corpus/psd` (enforced with `PHOTOCRAFT_CORPUS=1`) and the
-psd-tools set (`cargo xtask corpus --psd-tools`, enforced with `PHOTOCRAFT_PSDTOOLS_CORPUS=1`, which
-also runs a truncation/corruption sweep over every file that must never panic). A panic is reported
-as `CRASH` and fails an enforced run. Files without a real merged image (Maximize Compatibility off)
+`cargo xtask test-corpus -p io -- --nocapture` compares our composite of every corpus PSD with
+Photoshop's own merged image (PASS ≤ 2/255) and checks that export → re-import renders the same,
+per source with its own floors: `corpus/psd`, the psd-tools set (also a truncation/corruption sweep
+over every file that must never panic) and our Photoshop set `corpus/photoshop` (per-feature-group
+totals: `smart-filters`, `effects`, `text`, `adjustments/<mode><bits>`). Smart objects and type
+layers composite Photoshop's cached pixels there; `cargo xtask test-corpus -p engine -- --nocapture`
+(`crates/engine/tests/photoshop_oracles.rs`) re-renders them with our smart-filter stack and text
+engine and is the failure map for both. A panic is reported as `CRASH` and fails the run. Files without a real merged image (Maximize Compatibility off)
 are judged against their embedded thumbnail instead (`PASS (thumbnail)`, a strict low-resolution
 check); a file only SKIPs when it has no oracle at all. Raise the floors in `crates/io/tests/corpus.rs` when they
 improve; never lower them. Synthetic reproductions of corpus findings live in

@@ -1,7 +1,7 @@
-//! Optional corpus test: iterates `corpus/psd/**/*.{psd,psb}` and
-//! `corpus/psd-tools/**/*.{psd,psb}` (the full psd-tools set, fetched by
-//! `cargo xtask corpus --psd-tools`) at the workspace root when present
-//! (never committed). Skips silently when neither directory exists.
+//! Corpus test (feature `corpus`; run with `cargo xtask test-corpus`): iterates
+//! `corpus/psd/**/*.{psd,psb}` and `corpus/psd-tools/**/*.{psd,psb}` at the workspace root
+//! (gitignored, fetched and verified by `cargo xtask corpus --all`). A missing corpus fails.
+#![cfg(feature = "corpus")]
 
 use std::path::{Path, PathBuf};
 
@@ -27,12 +27,6 @@ const KNOWN_BAD: &[(&str, &str)] = &[("group-divider-blend-mode.psd", "psd-tools
 fn corpus_parse_and_byte_stable() {
     for dir in ["corpus/psd", "corpus/psd-tools"] {
         parse_and_byte_stable(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").join(dir));
-    }
-}
-
-fn parse_and_byte_stable(root: &Path) {
-    if !root.is_dir() {
-        return;
     }
 }
 
