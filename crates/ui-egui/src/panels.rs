@@ -660,8 +660,8 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                         widgets::dropdown(ui, "gradient-blend-mode", &mut app.ui.tool_options.gradient_blend_mode, &opts, 96.0);
                         opt_label(ui, tl!("Opacity"));
                         widgets::value_field(ui, &mut app.ui.tool_options.fill_opacity, 1.0..=100.0, "%", 62.0);
-                        widgets::checkbox(ui, &mut app.ui.tool_options.gradient_reverse, tl!("Reverse"));
-                        widgets::checkbox(ui, &mut app.ui.tool_options.gradient_dither, tl!("Dither"));
+                        widgets::checkbox(ui, &mut app.ui.tool_options.gradient_reverse, "Reverse");
+                        widgets::checkbox(ui, &mut app.ui.tool_options.gradient_dither, "Dither");
                         // Live mode: the options also change a selected gradient fill layer.
                         crate::gradient_ui::options_changed(app, &before);
                     }
@@ -2030,6 +2030,10 @@ fn properties_body(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         // Transform, Align, the kind's sections and Quick Actions.
         crate::layer_props_ui::properties(app, ui, layer);
     } else {
+        if matches!(layer.content, LayerContent::Fill(photocraft_doc::Fill::Gradient { .. })) {
+            crate::gradient_ui::properties(app, ui, layer);
+            ui.add_space(6.0);
+        }
         layer_controls(app, ui, layer);
         if matches!(layer.content, LayerContent::Text(_)) {
             crate::type_tool::type_properties(app, ui);

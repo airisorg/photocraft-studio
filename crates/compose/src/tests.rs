@@ -1169,7 +1169,7 @@ fn small_gradient_fill_matches_photoshop_at_all_depths() {
     let stops = vec![(0.0, Color::rgb(0.0, 0.0, 0.0)), (1.0, Color::rgb(1.0, 1.0, 1.0))];
     for depth in [SampleType::U8, SampleType::U16, SampleType::F32] {
         let mut d = Document::new("g", Size::new(4, 4), ColorMode::Rgb, depth);
-        let fill = Fill::Gradient { stops: stops.clone(), angle: 30.0, scale: 1.0, style: photocraft_doc::GradientStyle::Reflected, reverse: false };
+        let fill = Fill::gradient(stops.clone(), 30.0, 1.0, photocraft_doc::GradientStyle::Reflected, false);
         d.layers.push(Layer::new("g", LayerContent::Fill(fill)));
         let out = flatten(&d);
         for y in 0..4usize {

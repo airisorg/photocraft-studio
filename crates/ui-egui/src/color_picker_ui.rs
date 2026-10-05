@@ -406,11 +406,7 @@ pub fn confirm(app: &mut PhotocraftApp, f: &Map<String, Value>) -> Result<Value,
         p["color"] = json!(color);
         return app.run(cmd, p);
     }
-    let r = app.run("tools.setColors", json!({ target: color }))?;
-    if target == "foreground" {
-        crate::type_tool::foreground_changed(app);
-    }
-    Ok(r)
+    app.run("tools.setColors", json!({ target: color }))
 }
 
 #[cfg(test)]

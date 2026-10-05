@@ -18,7 +18,7 @@ use photocraft_geom::Rect;
 use serde_json::{Value, json};
 
 use crate::commands::{CommandSpec, blend_from_str, layer_param};
-use crate::presets::gradients::{GradientPreset, transparency_param};
+use crate::presets::gradients::GradientPreset;
 use crate::{EngineError, Result, Session};
 
 pub const CREATE: &str = "gradient.fill.create";
@@ -110,8 +110,8 @@ fn hex(c: &Color) -> String {
     }
 }
 
-/// The gradient a `gradient.fill.create` uses: a preset (`"gradient"`), explicit `"stops"`,
-/// else the current gradient (Gradients panel); explicit `"transparency"` stops replace its own.
+/// The gradient a `gradient.fill.create` uses: a preset (`"gradient"`), explicit `"stops"`
+/// (+ `"transparency"`), else the current gradient (Gradients panel).
 fn preset_param(s: &Session, p: &Value, cmd: &str) -> Result<GradientPreset> {
     if let Some(name) = p.get("gradient").and_then(Value::as_str) {
         let groups = &s.presets.gradients;
@@ -120,13 +120,12 @@ fn preset_param(s: &Session, p: &Value, cmd: &str) -> Result<GradientPreset> {
             .flat_map(|g| g.items.iter())
             .find(|g| g.name.eq_ignore_ascii_case(name))
             .cloned()
-            .ok_or_else(|| bad(cmd, format!("no gradient preset \"{name}\" (see gradient.presets.list)")))?
-            .with_transparency(p, cmd);
+            .ok_or_else(|| bad(cmd, format!("no gradient preset \"{name}\" (see gradient.presets.list)")));
     }
     if p.get("stops").is_some() {
         return GradientPreset::from_params("Custom", p, cmd);
     }
-    s.presets.gradient.clone().with_transparency(p, cmd)
+    Ok(s.presets.gradient.clone())
 }
 
 /// The fill and frame of gradient fill layer `id`.
@@ -249,7 +248,19 @@ pub fn apply_set(layer: &Layer, f: &Fill, canvas: Rect, p: &Value, fg: [f32; 4],
         }
         *stops = new;
     }
-    if let Some(new) = transparency_param(p, CMD)? {
+    if let Some(v) = p.get("transparency") {
+        let arr = v.as_array().ok_or_else(|| bad(CMD, "`transparency` is [[location, opacity %], …]"))?;
+        let mut new = Vec::with_capacity(arr.len());
+        for s in arr {
+            let pair = s.as_array().filter(|a| a.len() == 2).ok_or_else(|| bad(CMD, "an opacity stop is [location 0..1, opacity 0..100]"))?;
+            let f = |i: usize| pair.get(i).and_then(Value::as_f64).map(|v| v as f32).filter(|v| v.is_finite());
+            let (Some(t), Some(o)) = (f(0), f(1)) else { return Err(bad(CMD, "opacity stops are numbers")) };
+            new.push((t.clamp(0.0, 1.0), (o / 100.0).clamp(0.0, 1.0)));
+        }
+        if new.len() > 1024 {
+            return Err(bad(CMD, "too many opacity stops (max 1024)"));
+        }
+        new.sort_by(|a, b| a.0.total_cmp(&b.0));
         *opacity_stops = new;
     }
     if let Some(v) = p.get("midpoints") {

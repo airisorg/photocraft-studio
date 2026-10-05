@@ -135,7 +135,7 @@ pub fn properties(app: &mut PhotocraftApp, ui: &mut egui::Ui, layer: &Layer) {
     if matches!(layer.content, LayerContent::Fill(photocraft_doc::Fill::Gradient { .. })) {
         crate::gradient_ui::properties(app, ui, layer);
     }
-    if section(ui, "align", tl!("Align and Distribute")) {
+    if section(ui, "align", "Align and Distribute") {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
             for (i, kind) in ["leftEdges", "horizontalCenters", "rightEdges", "topEdges", "verticalCenters", "bottomEdges"].into_iter().enumerate() {

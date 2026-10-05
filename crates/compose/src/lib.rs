@@ -20,6 +20,7 @@ pub mod adjust;
 pub mod bounds;
 pub mod effects;
 pub mod fill_layout;
+pub mod gradient_fill;
 pub mod masks;
 pub mod multichannel;
 pub mod pattern;
@@ -773,27 +774,8 @@ fn render_fill(f: &Fill, rect: Rect, canvas: Rect, patterns: &pattern::PreparedP
             let rgb = c.to_rgb();
             Buffer::filled(rect, [rgb[0], rgb[1], rgb[2], c.alpha])
         }
-        Fill::Gradient { stops, angle, scale, style, reverse } => {
-            // Convert once per render call, while its document CMYK profile is active.
-            let stops: Vec<_> = stops
-                .iter()
-                .map(|(p, c)| {
-                    let rgb = c.to_rgb();
-                    (*p, [rgb[0], rgb[1], rgb[2], c.alpha])
-                })
-                .collect();
-            // Gradient geometry relative to the layer's frame, independent of the render rect.
-            let (angle, scale, offset) = fill_layout::fill_gradient_layout(*style, *angle, *scale, canvas);
-            let mut b = Buffer::transparent(rect);
-            for y in rect.y0..rect.y1 {
-                for x in rect.x0..rect.x1 {
-                    let t = effects::gradient_t(*style, angle, scale, *reverse, offset, canvas, x as f32 + 0.5, y as f32 + 0.5);
-                    let i = ((y - rect.y0) as usize) * rect.width() as usize + (x - rect.x0) as usize;
-                    b.px[i] = sample_stops(&stops, t);
-                }
-            }
-            b
-        }
+        // Gradient geometry relative to the layer's frame, independent of the render rect.
+        Fill::Gradient { .. } => Buffer { rect, px: gradient_fill::render(f, rect, canvas) },
         // Laid out from the layer's frame when linked; transparent if the pattern is missing.
         Fill::Pattern { name, scale, id, angle, link, phase } => match patterns.get(id, name) {
             Some(tile) => Buffer { rect, px: pattern::render(&tile, &pattern::Placement::new(canvas, *link, *phase, *scale, *angle), rect) },

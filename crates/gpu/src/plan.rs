@@ -811,19 +811,13 @@ impl<'a> Planner<'a> {
             Fill::Gradient { angle, scale, style, reverse, offset, dither, .. } => {
                 p.gradient = true;
                 // compose::render_fill: whole-pixel end points (fill_layout).
-                let (angle, scale, offset) = photocraft_compose::fill_layout::fill_gradient_layout(*style, *angle, *scale, frame);
+                let (angle, scale, offset) = photocraft_compose::fill_layout::gradient_layout(*style, *angle, *scale, *offset, frame);
                 p.params[0] = [angle, scale, if *reverse { 1.0 } else { 0.0 }, style_index(*style)];
                 let c = frame;
                 p.params[1] = [c.x0 as f32, c.y0 as f32, c.width() as f32, c.height() as f32];
-                p.params[2][0] = offset.0;
-                p.params[2][1] = offset.1;
-                let conv: Vec<(f32, [f32; 4])> = stops
-                    .iter()
-                    .map(|(t, c)| {
-                        let r = c.to_rgb();
-                        (*t, [r[0], r[1], r[2], c.alpha])
-                    })
-                    .collect();
+                // p2.xy: centre offset; p2.w: dither (the shared position hash, see the shader).
+                p.params[2] = [offset.0, offset.1, 0.0, if *dither { 1.0 } else { 0.0 }];
+                let ramp = photocraft_compose::gradient_fill::Ramp::new(f);
                 let mut rows = vec![[0.0f32; 4096]; 4];
                 for k in 0..4096 {
                     let v = ramp.as_ref().map_or([0.0; 4], |r| r.sample(k as f32 / 4095.0));
