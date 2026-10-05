@@ -352,6 +352,9 @@ pub fn handle(app: &mut PhotocraftApp, ctx: &egui::Context) {
             let _ = app.run("tools.setBrush", serde_json::json!({ "brush": { "hardness": next } }));
         }
     }
+    if pressed(Key::D) {
+        let _ = app.run("tools.defaultColors", json!({}));
+    }
     // [ and ] resize the brush through `tools.setBrush` (journaled, drivable).
     let size = app.session.tools.brush.size;
     let next = if pressed(Key::OpenBracket) {

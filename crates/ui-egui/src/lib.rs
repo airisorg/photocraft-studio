@@ -25,6 +25,7 @@ pub mod artboard_ui;
 pub mod brush_panel;
 pub mod brush_preview;
 pub mod brush_sections;
+pub mod brushes_tab;
 pub mod camera_raw_ui;
 pub mod canvas;
 pub mod canvas_tool_menu;
