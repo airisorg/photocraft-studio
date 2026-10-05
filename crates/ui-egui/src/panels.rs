@@ -789,28 +789,15 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                             app.ui.views[i].zoom = 1.0;
                         }
                     }
-                    Tool::Hand => hint(ui, tl!("Drag to pan  ·  hold Space with any tool")),
-                    Tool::Lasso | Tool::PolygonLasso => hint(
-                        ui,
-                        &crate::i18n::fmt(
-                            tl!("Drag (lasso) or click points (polygonal) · {add} add · {sub} subtract"),
-                            &[("add", &crate::shortcuts::pretty("Shift")), ("sub", &crate::shortcuts::pretty("Alt"))],
-                        ),
-                    ),
+                    Tool::Hand => hint(ui, "Drag to pan  ·  hold Space with any tool"),
+                    Tool::Lasso | Tool::PolygonLasso => hint(ui, "Drag (lasso) or click points (polygonal) · ⇧ add · ⌥ subtract"),
                     Tool::Crop => hint(
                         ui,
-                        &crate::i18n::fmt(
-                            tl!("Drag a crop box · drag inside to move · edges resize ({ratio} ratio, {centre} centre) · Space moves while drawing · {commit} commits · Esc cancels"),
-                            &[
-                                ("ratio", &crate::shortcuts::pretty("Shift")),
-                                ("centre", &crate::shortcuts::pretty("Alt")),
-                                ("commit", &crate::shortcuts::pretty("Enter")),
-                            ],
-                        ),
+                        "Drag a crop box · drag inside to move · edges resize (⇧ ratio, ⌥ centre) · Space moves while drawing · ↵ commits · Esc cancels",
                     ),
-                    Tool::Gradient => hint(ui, tl!("Drag to draw a gradient")),
-                    Tool::PaintBucket => hint(ui, tl!("Click to fill similar colours")),
-                    Tool::Type => hint(ui, tl!("Click to add text")),
+                    Tool::Gradient => hint(ui, "Drag to draw a gradient"),
+                    Tool::PaintBucket => hint(ui, "Click to fill similar colours"),
+                    Tool::Type => hint(ui, "Click to add text"),
                     // Retouching and smart-selection tools draw their bar in `retouch_ui::options_bar`.
                     _ => {}
                 }

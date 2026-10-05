@@ -1607,18 +1607,10 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
     // Use Tablet Pressure is off; the pen's eraser end selects the Eraser.
     app.stylus.use_pressure = app.session.prefs().tools.use_tablet_pressure;
     app.stylus.update(&ui.input(|i| i.events.clone()));
-    crate::stylus::Stylus::sync_eraser_tool(app);
-    // Held keys (hold_keys.rs): Space repositions a crop frame, marquee, lasso or shape being
-    // drawn; otherwise Space is the Hand and ⌘Space / ⌘⌥Space the Zoom tool while held.
-    let reposition = crate::hold_keys::reposition_held(app, &ctx);
-    crate::crop_ui::set_space(app, reposition);
-    let mut drawing = crate::crop_ui::active(app);
-    if let Some(d) = app.drag.as_mut().filter(|d| crate::hold_keys::repositions(d.tool)) {
-        d.reposition = reposition;
-        drawing = true;
-    }
-    let temporary = crate::hold_keys::for_frame(app, &ctx, drawing);
-    let space_pan = temporary == Some(crate::hold_keys::Temporary::Hand);
+    let space_down = ui.input(|i| i.key_down(egui::Key::Space));
+    // Space while drawing a crop frame moves it instead of panning.
+    crate::crop_ui::set_space(app, space_down);
+    let space_pan = space_down && !crate::crop_ui::active(app);
     let middle = ui.input(|i| i.pointer.middle_down());
     let tool = match temporary {
         Some(t) => t.tool(),
@@ -1815,6 +1807,8 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
         if let Some((vertical, _)) = guide_hover {
             ui.ctx().set_cursor_icon(if vertical { egui::CursorIcon::ResizeHorizontal } else { egui::CursorIcon::ResizeVertical });
         } else if let Some(c) = response.hover_pos().and_then(|p| crate::transform_tool::cursor(app, xf.to_doc(p), ui.input(|i| i.modifiers.alt))) {
+            ui.ctx().set_cursor_icon(c);
+        } else if let Some(c) = response.hover_pos().filter(|_| tool == Tool::Crop).and_then(|p| crate::crop_ui::cursor(app, xf.to_doc(p))) {
             ui.ctx().set_cursor_icon(c);
         } else if let Some(c) = response.hover_pos().filter(|_| tool == Tool::Crop).and_then(|p| crate::crop_ui::cursor(app, xf.to_doc(p))) {
             ui.ctx().set_cursor_icon(c);
@@ -2103,14 +2097,11 @@ fn draw_transform_controls(app: &mut PhotocraftApp, painter: &egui::Painter, xf:
 
 fn draw_drag_preview(app: &mut PhotocraftApp, painter: &egui::Painter, xf: &ViewXform) {
     draw_tool_state(app, painter, xf, painter.ctx().input(|i| i.pointer.hover_pos()));
-    let Some(d) = &app.drag else {
-        app.trail = None;
-        return;
-    };
-    let last = d.points.last().map(|p| [p[0], p[1]]).unwrap_or(d.start);
-    let marquee = matches!(d.tool, Tool::RectMarquee | Tool::EllipseMarquee).then(|| marquee_corners(&app.ui.tool_options, d, last));
-    if let Some((a, b)) = marquee {
-        draw_marquee_readout(painter.ctx(), xf.to_screen(last[0] as f32, last[1] as f32), marquee_readout(marquee_px(a, b)));
+    let Some(d) = &app.drag else { return };
+    let mut last = d.points.last().map(|p| [p[0], p[1]]).unwrap_or(d.start);
+    if matches!(d.tool, Tool::RectMarquee | Tool::EllipseMarquee) {
+        let o = &app.ui.tool_options;
+        last = crate::chrome_ui::marquee_end(&o.marquee_style, o.marquee_width as f64, o.marquee_height as f64, false, d.start, last);
     }
     match d.tool {
         // The canvas shows the live stroke itself (`LiveStroke`).
@@ -2298,10 +2289,6 @@ pub fn tool_event(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers)
     }
     // Crop tool: draw, move and resize the frame.
     if crate::crop_ui::pointer(app, ev, mods) {
-        return;
-    }
-    // Gradient tool, live mode: draw and edit Gradient Fill layers.
-    if crate::gradient_ui::pointer(app, ev, mods) {
         return;
     }
     let tool = app.ui.tool;
@@ -2518,6 +2505,7 @@ fn finish_gesture(app: &mut PhotocraftApp, d: Drag) {
                     "paint.gradient",
                     json!({"from": [d.start[0], d.start[1]], "to": [end[0], end[1]], "style": o.gradient_style, "reverse": o.gradient_reverse, "dither": o.gradient_dither, "colors": [hex(fg), hex(bg)], "opacity": o.fill_opacity, "mode": o.gradient_blend_mode.label(), "target": paint_target(app)}),
                 );
+            }
         }
         Tool::Move => {
             let (dx, dy) = ((end[0] - d.start[0]).round(), (end[1] - d.start[1]).round());
