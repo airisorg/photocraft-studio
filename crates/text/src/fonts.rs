@@ -379,8 +379,23 @@ fn system_font_dirs() -> Vec<std::path::PathBuf> {
     v
 }
 
+/// A platform-private family (macOS names its UI faces with a leading '.'): never listed or
+/// picked by default.
+pub fn is_hidden_family(name: &str) -> bool {
+    name.starts_with('.')
+}
+
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
+    #[test]
+    fn hidden_families_sort_last_and_are_not_listed() {
+        assert!(super::is_hidden_family(".Hiragino Kaku Gothic Interface"));
+        assert!(!super::is_hidden_family("Hiragino Sans"));
+        let mut v = [".Hiragino Kaku Gothic Interface".to_string(), "Hiragino Kaku Gothic ProN".to_string()];
+        v.sort_by_key(|n| (super::is_hidden_family(n), n.to_lowercase()));
+        assert_eq!(v[0], "Hiragino Kaku Gothic ProN");
+    }
+
     #[test]
     #[cfg(target_os = "linux")]
     fn scans_flatpak_host_fonts() {
