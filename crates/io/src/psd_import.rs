@@ -53,13 +53,6 @@ pub(crate) struct Ctx<'a> {
     pub dpi: f32,
     /// The parsed `Txt2` block (type settings EngineData lacks, e.g. optical kerning).
     pub txt2: Option<photocraft_text::engine_data::Value>,
-    /// Smart-filter caches from the global `FEid`/`FXid` blocks (filter masks, by placed id).
-    pub filter_effects: Vec<photocraft_psd::filter_effects::FilterEffectsItem>,
-    /// Cancellation and progress for background opens (checked per layer record).
-    pub ctl: photocraft_raster::Interrupt<'a>,
-    /// Layer records decoded so far, out of `total` (progress).
-    pub done: usize,
-    pub total: usize,
 }
 
 fn doc_mode(m: PsdMode) -> Option<ColorMode> {
@@ -543,10 +536,6 @@ pub fn psd_to_document_with(file: &PsdFile, ctl: &photocraft_raster::Interrupt) 
         warnings,
         dpi: doc.resolution_dpi,
         txt2: file.global_blocks.iter().find(|b| &b.key == b"Txt2").and_then(|b| photocraft_text::psd::parse_txt2(&b.data)),
-        filter_effects: Vec::new(),
-        ctl: *ctl,
-        done: 0,
-        total: file.layers().len(),
     };
     for b in file.global_blocks.iter().filter(|b| matches!(&b.key, b"FEid" | b"FXid")) {
         // Smart-filter caches can be large: a cancelled open stops between blocks.

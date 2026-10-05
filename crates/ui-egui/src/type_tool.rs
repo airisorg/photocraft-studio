@@ -286,6 +286,18 @@ fn insert(app: &mut PhotocraftApp, s: &str) {
     }
 }
 
+/// Alt+←/→: kern the pair before the caret by `by` (1/1000 em). No pair (caret at a text or line
+/// edge): nothing happens, like Photoshop. Not coalesced: one history step per press.
+fn kern_pair(app: &mut PhotocraftApp, id: LayerId, caret: usize, by: f32) {
+    let Some(text) = current_text(app, id) else { return };
+    let before = caret.checked_sub(1).and_then(|i| text.chars().nth(i));
+    let after = text.chars().nth(caret);
+    if before.is_none_or(|c| c == '\n') || after.is_none_or(|c| c == '\n') {
+        return;
+    }
+    let _ = app.run("type.edit", json!({"layer": id.0, "kernPair": {"at": caret, "by": by}}));
+}
+
 /// IME composition. The preedit text is written into the layer (so it lays out and reflows like
 /// typed text) and replaced by every update; `commit` makes the result final.
 fn ime_update(app: &mut PhotocraftApp, s: &str, commit: bool) {
@@ -1103,23 +1115,12 @@ fn type_sections(app: &mut PhotocraftApp, ui: &mut egui::Ui, character: bool, pa
             }
         });
         row(ui, &mut |ui| {
-            let mut k = match c.kerning {
-                photocraft_doc::text::Kerning::Metrics => "metrics",
-                photocraft_doc::text::Kerning::Optical => "optical",
-                photocraft_doc::text::Kerning::Off => "off",
-            }
-            .to_string();
+            let shown = kerning_label(kerning_at(app).unwrap_or((c.kerning, c.kern)));
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = LABEL_GAP;
-                icon_label(ui, "text-cursor", "Kerning");
-                if crate::widgets::dropdown(
-                    ui,
-                    "props-kern",
-                    &mut k,
-                    &[("metrics".to_string(), "Metrics"), ("optical".to_string(), "Optical"), ("off".to_string(), "0")],
-                    w,
-                ) {
-                    apply(app, ui.ctx(), json!({"kerning": k}));
+                icon_label(ui, "text-cursor", "Kerning: Metrics, Optical or a value in 1/1000 em (Alt+←/→ at the caret)");
+                if let Some(v) = kerning_field(ui, &shown, w) {
+                    apply_kerning(app, ui.ctx(), v);
                 }
             });
             if let Some(v) = num_field(ui, "VA", "Tracking (1/1000 em)", c.tracking, -1000.0..=10000.0, "", w) {

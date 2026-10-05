@@ -595,6 +595,7 @@ fn clusters_sit_on_rendered_glyphs() {
         ("plain", styled("HOHOH", big.clone())),
         ("tracking", styled("HOHOH", CharStyle { tracking: 300.0, ..big.clone() })),
         ("hscale", styled("HOHOH", CharStyle { horizontal_scale: 1.6, ..big.clone() })),
+        ("kerned", styled("HOHOH", CharStyle { kern: 250.0, kerning: photocraft_doc::text::Kerning::Optical, ..big.clone() })),
         ("mixed", mixed),
         ("box", boxed),
     ];
@@ -619,4 +620,91 @@ fn clusters_sit_on_rendered_glyphs() {
             assert!((cx - c.x).abs() < 1e-3 && top < y && bottom > y, "{name}: caret at {:?}", c.range);
         }
     }
+}
+
+fn runs_of(text: &str, styles: &[(usize, CharStyle)]) -> TextLayer {
+    TextLayer { text: text.into(), runs: styles.iter().map(|(len, style)| TextRun { len: *len, style: style.clone() }).collect(), ..Default::default() }
+}
+
+/// Manual kerning (1/1000 em) after a character moves everything after it by kern × size.
+#[test]
+fn manual_kerning_moves_the_next_glyph() {
+    use photocraft_doc::text::Kerning;
+    let mut e = TextEngine::new();
+    let s = CharStyle { size_pt: 100.0, ..Default::default() };
+    let plain = e.layout(&styled("HOH", s.clone()), 72.0);
+    let kerned = e.layout(&runs_of("HOH", &[(1, CharStyle { kern: 100.0, ..s.clone() }), (2, s.clone())]), 72.0);
+    let x = |l: &crate::TextLayout, i: usize| l.glyphs[i].x;
+    assert_eq!(x(&kerned, 0), x(&plain, 0));
+    // 100/1000 em at 100 px = 10 px, for the next glyph and everything after it.
+    assert!((x(&kerned, 1) - x(&plain, 1) - 10.0).abs() < 1e-3, "{} vs {}", x(&kerned, 1), x(&plain, 1));
+    assert!((x(&kerned, 2) - x(&plain, 2) - 10.0).abs() < 1e-3);
+    assert!((width(&kerned) - width(&plain) - 10.0).abs() < 1e-3);
+    // Carets follow: the cluster after the kerned pair starts 10 px later.
+    assert!((kerned.caret(1).0 - plain.caret(1).0 - 10.0).abs() < 1e-3);
+    // Negative kerning tightens; kerning on the last character doesn't move anything.
+    let tight = e.layout(&runs_of("HOH", &[(1, CharStyle { kern: -50.0, ..s.clone() }), (2, s.clone())]), 72.0);
+    assert!((x(&tight, 1) - x(&plain, 1) + 5.0).abs() < 1e-3);
+    let last = e.layout(&runs_of("HOH", &[(2, s.clone()), (1, CharStyle { kern: 500.0, ..s.clone() })]), 72.0);
+    assert!((width(&last) - width(&plain)).abs() < 1e-3);
+    // Off replaces the font's pair kerning: "AV" with Off is wider than with Metrics.
+    let mut av = |st: CharStyle| e.layout(&styled("AV", st), 72.0).glyphs[1].x;
+    let metric = av(s.clone());
+    let off = av(CharStyle { kerning: Kerning::Off, ..s.clone() });
+    assert!(off > metric + 1.0, "Inter kerns AV: {off} vs {metric}");
+    // Centred point text stays centred around the anchor with kerning.
+    let centred = with_para(
+        runs_of("HOH", &[(1, CharStyle { kern: 300.0, ..s.clone() }), (2, s.clone())]),
+        ParagraphStyle { align: TextAlign::Center, ..Default::default() },
+    );
+    let l = e.layout(&centred, 72.0);
+    assert!((l.lines[0].x0 + l.lines[0].x1).abs() < 0.5, "{:?}", l.lines[0]);
+}
+
+/// Optical kerning computes pair spacing from the outlines: tighter for open pairs ("AV", "To")
+/// than the unkerned advance, about neutral for straight stems, and never absurd.
+#[test]
+fn optical_kerning_tightens_open_pairs() {
+    use photocraft_doc::text::Kerning;
+    let mut e = TextEngine::new();
+    let s = CharStyle { size_pt: 100.0, ..Default::default() };
+    let gap = |e: &mut TextEngine, text: &str, k: Kerning| {
+        let l = e.layout(&styled(text, CharStyle { kerning: k, ..s.clone() }), 72.0);
+        l.glyphs[1].x - l.glyphs[0].x
+    };
+    for pair in ["AV", "To", "LT", "Ty"] {
+        let off = gap(&mut e, pair, Kerning::Off);
+        let optical = gap(&mut e, pair, Kerning::Optical);
+        assert!(optical < off - 3.0, "{pair}: optical {optical} vs unkerned {off}");
+    }
+    for pair in ["HH", "nn", "oo", "HO"] {
+        let off = gap(&mut e, pair, Kerning::Off);
+        let optical = gap(&mut e, pair, Kerning::Optical);
+        assert!((optical - off).abs() < 6.0, "{pair}: optical {optical} vs unkerned {off}");
+    }
+    // A space breaks the pair; a manual kern replaces the automatic one (as in Photoshop).
+    assert_eq!(gap(&mut e, "A V", Kerning::Optical), gap(&mut e, "A V", Kerning::Off));
+    for mode in [Kerning::Optical, Kerning::Metrics] {
+        let l = e.layout(&styled("AV", CharStyle { kerning: mode, kern: 100.0, ..s.clone() }), 72.0);
+        let off = gap(&mut e, "AV", Kerning::Off);
+        assert!((l.glyphs[1].x - l.glyphs[0].x - off - 10.0).abs() < 1e-3, "{mode:?}");
+    }
+}
+
+/// A mode change splits shaping runs: the pairs on both sides of a manually kerned character
+/// lose their automatic kerning (Photoshop renders it the same way).
+#[test]
+fn kerning_modes_split_pairs() {
+    use photocraft_doc::text::Kerning;
+    let mut e = TextEngine::new();
+    let s = CharStyle { size_pt: 100.0, ..Default::default() };
+    let off = CharStyle { kerning: Kerning::Off, ..s.clone() };
+    let xs = |e: &mut TextEngine, t: &TextLayer| e.layout(t, 72.0).glyphs.iter().map(|g| g.x).collect::<Vec<_>>();
+    let metric = xs(&mut e, &styled("AVAV", s.clone()));
+    let plain = xs(&mut e, &styled("AVAV", off.clone()));
+    let mixed = xs(&mut e, &runs_of("AVAV", &[(2, s.clone()), (1, off.clone()), (1, s.clone())]));
+    let adv = |v: &[f32], i: usize| v[i + 1] - v[i];
+    assert!((adv(&mixed, 0) - adv(&metric, 0)).abs() < 1e-3, "AV before stays kerned");
+    assert!((adv(&mixed, 1) - adv(&plain, 1)).abs() < 1e-3, "VA into the manual character");
+    assert!((adv(&mixed, 2) - adv(&plain, 2)).abs() < 1e-3, "AV out of it");
 }

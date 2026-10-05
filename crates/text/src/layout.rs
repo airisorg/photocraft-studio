@@ -603,8 +603,8 @@ impl Layouter {
                     0.0
                 };
                 let dx = if is_box {
-                    let base = line_origin + indent_start;
-                    let slack = avail.unwrap_or(0.0) - adv;
+                    let base = line_origin + indent_start - kern_align;
+                    let slack = avail.unwrap_or(0.0) - adv - line_kern;
                     base + if last_line {
                         match ps.align {
                             TextAlign::JustifyCenter => slack * 0.5 - m.offset,
@@ -628,7 +628,7 @@ impl Layouter {
                 let g0 = out.glyphs.len();
                 let c0 = out.clusters.len();
                 let mut vinfo: Vec<VGlyph> = Vec::new();
-                let mut extra = 0.0f32; // horizontal-scale growth along the line
+                let mut extra = 0.0f32; // horizontal-scale growth and kerning along the line
                 let mut seen_runs: Vec<usize> = Vec::new();
                 for item in line.items() {
                     let PositionedLayoutItem::GlyphRun(gr) = item else {
@@ -672,6 +672,16 @@ impl Layouter {
                     let mut pen = gr.offset();
                     let mut cursor = cursors.iter_mut().find(|c| c.0 == run.index());
                     for g in gr.glyphs() {
+                        // Kerning of the clusters before this glyph's cluster.
+                        if let Some(c) = cursor.as_deref_mut() {
+                            if let Some(&slot) = c.1.get(c.2) {
+                                while c.3 < slot {
+                                    extra += kern_px.get(c.3).copied().unwrap_or(0.0);
+                                    c.3 += 1;
+                                }
+                            }
+                            c.2 += 1;
+                        }
                         out.glyphs.push(PlacedGlyph {
                             face,
                             id: g.id,
