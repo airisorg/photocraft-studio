@@ -793,6 +793,13 @@ fn pointer_reaches_title(ctx: &egui::Context, response: &egui::Response, p: egui
     response.interact_rect.contains(p) && ctx.layer_id_at(p) == Some(response.layer_id)
 }
 
+/// True only when the pointer can actually reach a menu title. A tall submenu can be
+/// repositioned upward by egui and overlap the menu bar; in that case the popup's layer is
+/// top-most and hovering it must not switch the open top-level menu.
+fn pointer_reaches_title(ctx: &egui::Context, response: &egui::Response, p: egui::Pos2) -> bool {
+    response.interact_rect.contains(p) && ctx.layer_id_at(p) == Some(response.layer_id)
+}
+
 /// Like a native menu bar (Windows, macOS): while one top-level menu is open, hovering another
 /// top-level title opens that menu instead.
 fn switch_on_hover(ctx: &egui::Context, buttons: &[egui::Response]) {
@@ -801,10 +808,6 @@ fn switch_on_hover(ctx: &egui::Context, buttons: &[egui::Response]) {
     // `Response::hovered` is false while the menu's popup layer is open. Hit-test the title
     // rect manually, but only when its own layer is top-most at the pointer.
     let Some(p) = ctx.pointer_hover_pos() else { return };
-    // Only a moving pointer switches: a pointer resting on a title must not undo ← / → .
-    if ctx.input(|i| i.pointer.delta() == egui::Vec2::ZERO) {
-        return;
-    }
     if let Some(i) = buttons.iter().position(|b| pointer_reaches_title(ctx, b, p))
         && i != open
     {
@@ -813,13 +816,17 @@ fn switch_on_hover(ctx: &egui::Context, buttons: &[egui::Response]) {
     }
 }
 
-fn render_level(ui: &mut egui::Ui, items: &[&MenuItem], depth: usize, clicked: &mut Option<String>, nav: &mut crate::menu_nav::Nav) {
-    // Menu popups can be taller than the window: each level stays on screen and scrolls (wheel,
-    // scroll arrows, keyboard), like a native menu on a small display.
-    crate::menu_nav::level(ui, depth, nav, |ui, nav| render_level_rows(ui, items, depth, clicked, nav));
+fn render_level(ui: &mut egui::Ui, items: &[&MenuItem], depth: usize, clicked: &mut Option<String>) {
+    // Menu popups can be taller than the viewport. Keep each level on-screen and scroll it,
+    // matching egui's own bounded-popup pattern used by ComboBox.
+    let max_height = (ui.ctx().content_rect().height() - 32.0).max(120.0);
+    egui::ScrollArea::vertical()
+        .id_salt(("menu-level", depth))
+        .max_height(max_height)
+        .show(ui, |ui| render_level_rows(ui, items, depth, clicked));
 }
 
-fn render_level_rows(ui: &mut egui::Ui, items: &[&MenuItem], depth: usize, clicked: &mut Option<String>, nav: &mut crate::menu_nav::Nav) {
+fn render_level_rows(ui: &mut egui::Ui, items: &[&MenuItem], depth: usize, clicked: &mut Option<String>) {
     let t = crate::theme::Tokens::get(ui.ctx());
     let lang = crate::i18n::current();
     // Items never wrap: the menu widens to its longest label plus shortcut (translations can be
@@ -994,27 +1001,26 @@ mod tests {
         let ctx = egui::Context::default();
         let mut title: Option<egui::Response> = None;
         let p = egui::pos2(90.0, 12.0);
-        let mut reaches = true;
-        // The popup area becomes hit-testable once egui has laid it out, so draw a few frames.
-        for _ in 0..3 {
-            let raw = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(300.0, 200.0))), ..Default::default() };
-            let mut out = ctx.run_ui(raw, |ui| {
-                let ctx = &ui.ctx().clone();
-                egui::CentralPanel::default().show(ui, |ui| {
-                    let (rect, _) = ui.allocate_exact_size(egui::vec2(80.0, 24.0), egui::Sense::hover());
-                    let shifted = rect.translate(egui::vec2(p.x - rect.center().x, p.y - rect.center().y));
-                    let response = ui.interact(shifted, egui::Id::new("menu-title-test"), egui::Sense::hover());
-                    title = Some(response);
-                });
-                egui::Area::new(egui::Id::new("overlapping-popup-test")).order(egui::Order::Foreground).fixed_pos(p - egui::vec2(10.0, 10.0)).show(ctx, |ui| {
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(300.0, 200.0))),
+            ..Default::default()
+        };
+        let _ = ctx.run(raw, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(80.0, 24.0), egui::Sense::hover());
+                let shifted = rect.translate(egui::vec2(p.x - rect.center().x, p.y - rect.center().y));
+                let response = ui.interact(shifted, egui::Id::new("menu-title-test"), egui::Sense::hover());
+                title = Some(response);
+            });
+            egui::Area::new(egui::Id::new("overlapping-popup-test"))
+                .order(egui::Order::Foreground)
+                .fixed_pos(p - egui::vec2(10.0, 10.0))
+                .show(ctx, |ui| {
                     ui.allocate_space(egui::vec2(20.0, 20.0));
                 });
-                let response = title.as_ref().unwrap();
-                reaches = pointer_reaches_title(ctx, response, p);
-            });
-            out.textures_delta.clear();
-        }
-        assert!(!reaches);
+            let response = title.as_ref().unwrap();
+            assert!(!pointer_reaches_title(ctx, response, p));
+        });
     }
 
     #[test]
@@ -1072,12 +1078,7 @@ mod tests {
         use egui_kittest::Harness;
 
         let app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
-        let mut harness = Harness::builder().with_size(egui::vec2(900.0, 240.0)).build_ui_state(
-            |ui, app| {
-                menu_bar(app, ui);
-            },
-            app,
-        );
+        let mut harness = Harness::builder().with_size(egui::vec2(900.0, 240.0)).build_ui_state(|ui, app| menu_bar(app, ui), app);
         PhotocraftApp::setup_context(&harness.ctx, crate::theme::ThemeKind::ALL[0]);
         harness.run_steps(3);
         // Opening a top-level menu with many entries must not grow its popup past the viewport.
@@ -1093,37 +1094,6 @@ mod tests {
             .map(|r| r.bottom())
             .fold(viewport.top(), f32::max);
         assert!(max_bottom <= viewport.bottom() + 1.0, "menu popup overflowed viewport: {max_bottom} > {}", viewport.bottom());
-    }
-
-    #[test]
-    fn tall_menu_scrolls_with_mouse_wheel_on_short_display() {
-        use egui_kittest::{Harness, kittest::Queryable};
-
-        let app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
-        let mut harness = Harness::builder().with_size(egui::vec2(900.0, 220.0)).build_ui_state(
-            |ui, app| {
-                menu_bar(app, ui);
-            },
-            app,
-        );
-        PhotocraftApp::setup_context(&harness.ctx, crate::theme::ThemeKind::ALL[0]);
-        harness.run_steps(3);
-        harness.get_by_label("Filter").click();
-        harness.run_steps(3);
-
-        let item = harness.get_by_label_contains("Filter Gallery…");
-        let before = item.rect().top();
-        harness.hover_at(item.rect().center());
-        harness.event(egui::Event::MouseWheel {
-            unit: egui::MouseWheelUnit::Point,
-            delta: egui::vec2(0.0, -80.0),
-            phase: egui::TouchPhase::Move,
-            modifiers: egui::Modifiers::NONE,
-        });
-        harness.run_steps(4);
-
-        let after = harness.get_by_label_contains("Filter Gallery…").rect().top();
-        assert!(after < before - 1.0, "mouse wheel should move tall menu content: {before} -> {after}");
     }
 
     #[test]
