@@ -74,12 +74,9 @@ Priorities: important infrastructure first, then low-hanging parity, then the lo
    where PhotoCraft is lacking and the priority order of where we're going. `docs/parity.md`
    (menu wiring) is not a measure of behaviour. When your work moves a measured number (PSD oracle,
    round trips, workflow tests, performance), update that section with the dated figure.
-1. **Check `docs/scorecard.md`** before picking work: each area's `missing` and `partial` rows,
-   the performance scenarios that are over budget or not measurable yet, and the count of
-   settings that do nothing. Its numbers are measured; prefer them to estimates.
-2. `docs/roadmap.md` → **Current focus**.
-3. `cargo xtask parity` → `docs/parity.md` lists every missing menu item, grouped by menu. Low-hanging fruit is usually a missing command whose algorithm already exists in `algo`, `paint`, `vector` or `text`.
-4. `log/devlog.md` → the "Still open" bullets of recent entries.
+1. `docs/roadmap.md` → **Current focus**.
+2. `cargo xtask parity` → `docs/parity.md` lists every missing menu item, grouped by menu. Low-hanging fruit is usually a missing command whose algorithm already exists in `algo`, `paint`, `vector` or `text`.
+3. `log/devlog.md` → the "Still open" bullets of recent entries.
 
 When parity rises, raise `FLOOR` in `crates/ui-egui/src/parity.rs` (never lower it).
 
