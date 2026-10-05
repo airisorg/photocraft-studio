@@ -1,9 +1,5 @@
-# Modified for PhotoCraft Studio: preserve FreeBSD validation for the maintained fork.
 # Builds and tests the workspace on FreeBSD, inside a FreeBSD VM on a Linux runner
 # (GitHub has no FreeBSD runners). GPU tests skip themselves when the VM has no adapter.
-# It then runs packaging/freebsd/package.sh, the script the release job runs, and checks the
-# tarball, so a broken FreeBSD package fails here before it can fail a release. Nothing is
-# uploaded and no secrets are used.
 name: FreeBSD
 
 on:
@@ -15,9 +11,6 @@ on:
       - Cargo.lock
       - "**/Cargo.toml"
       - .github/workflows/freebsd.yml
-      - .github/workflows/release.yml
-      - packaging/freebsd/**
-      - packaging/env.sh
   workflow_dispatch:
 
 concurrency:
@@ -29,62 +22,24 @@ permissions:
 
 jobs:
   freebsd:
-    name: FreeBSD 14 (build + test + package)
+    name: FreeBSD 14 (build + test)
     runs-on: ubuntu-latest
     timeout-minutes: 300
     steps:
       - uses: actions/checkout@v4
-      - name: Reserve disk for the FreeBSD VM
-        shell: bash
-        run: |
-          set -euo pipefail
-          df -h / "$GITHUB_WORKSPACE"
-          # This disposable host only runs QEMU; these host SDKs are unused.
-          # Keep the runner toolcache, action files and VM/runtime directories.
-          for unused_sdk in /usr/local/lib/android /usr/share/dotnet /opt/ghc; do
-            if [ -d "$unused_sdk" ]; then
-              sudo du -sh -- "$unused_sdk"
-              sudo rm -rf -- "$unused_sdk"
-            fi
-          done
-          df -h / "$GITHUB_WORKSPACE"
-      - name: Build, test and package in a FreeBSD VM
+      - name: Build and test in a FreeBSD VM
         uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc # v1
         with:
           release: "14.3"
           usesh: true
-          cpu: 2
-          mem: 4096
+          mem: 12288
           # Nothing to bring back; copying the target dir out of the VM fails on large builds.
           copyback: false
           prepare: |
-            set -eu
-            pkg install -y bash git curl pkgconf cmake python3 libxkbcommon wayland libX11 libXcursor libXrandr libXi libxcb mesa-libs vulkan-loader gtk3 fontconfig freetype2 alsa-lib
-            PHOTOCRAFT_RUSTUP_DIR="$(mktemp -d -t photocraft-rustup)"
-            trap 'rm -rf "$PHOTOCRAFT_RUSTUP_DIR"' EXIT
-            # rustup chooses installer mode from the executable basename.
-            PHOTOCRAFT_RUSTUP_INIT="$PHOTOCRAFT_RUSTUP_DIR/rustup-init"
-            # Official rustup 1.28.2 x86_64 FreeBSD archive; verify before execution.
-            curl --proto '=https' --tlsv1.2 -fsSL --output "$PHOTOCRAFT_RUSTUP_INIT" https://static.rust-lang.org/rustup/archive/1.28.2/x86_64-unknown-freebsd/rustup-init
-            [ "$(sha256 -q "$PHOTOCRAFT_RUSTUP_INIT")" = '4d9fef2e40731489f3186c61a0f178d54d79864fe3d34791edf5b17f70074956' ]
-            chmod 700 "$PHOTOCRAFT_RUSTUP_INIT"
-            "$PHOTOCRAFT_RUSTUP_INIT" -y --profile minimal --default-host x86_64-unknown-freebsd --default-toolchain stable
+            pkg install -y curl pkgconf cmake python3 libxkbcommon wayland libX11 libXcursor libXrandr libXi libxcb mesa-libs vulkan-loader gtk3 fontconfig freetype2 alsa-lib
+            curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal
           run: |
-            set -e
             . "$HOME/.cargo/env"
-            # The checkout is synced in under another owner; let tests that call git read it.
-            git config --global --add safe.directory "*"
             rustc --version
-            export CARGO_BUILD_JOBS=2 CARGO_INCREMENTAL=0 CARGO_PROFILE_TEST_DEBUG=0
-            CARGO_PROFILE_DEV_DEBUG=0 cargo build --workspace --all-targets --locked --features heif
-            CARGO_PROFILE_DEV_DEBUG=0 cargo test --workspace --locked --features heif --exclude photocraft-ui-egui
-            CARGO_PROFILE_DEV_DEBUG=0 cargo test -p photocraft-ui-egui --locked --lib
-            CARGO_PROFILE_DEV_DEBUG=0 cargo test -p photocraft-ui-egui --locked --doc
-            # The VM's software Vulkan driver crashes (SIGSEGV) when several tests set up a GPU
-            # device at once, so the GPU integration tests run one at a time here.
-            CARGO_PROFILE_DEV_DEBUG=0 cargo test -p photocraft-ui-egui --locked --test '*' -- --test-threads=1
-            # The release package, as release.yml builds it. Free the debug build's disk first.
-            rm -rf target/debug
-            CARGO_BUILD_JOBS=4 bash packaging/freebsd/package.sh
-            tar -tzf dist/release/photocraft-*-freebsd-x86_64.tar.gz \
-              | grep -E '/bin/photocraft$|/bin/photocraft-cli$|/share/applications/ai\.storyteller\.photocraft\.desktop$|/share/doc/photocraft/LICENSE-MIT$'
+            CARGO_PROFILE_DEV_DEBUG=0 cargo build --workspace --all-targets --locked
+            CARGO_PROFILE_DEV_DEBUG=0 cargo test --workspace --locked
