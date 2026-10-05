@@ -47,11 +47,31 @@ pub struct Drag {
     pub live: egui::Modifiers,
     /// Which of the modifiers held at the press have been released since.
     pub released: egui::Modifiers,
+    /// The reposition key (Space) is held: pointer moves move the whole gesture instead of
+    /// sizing it (marquees, lasso, shapes; `hold_keys`).
+    pub reposition: bool,
 }
 
 impl Drag {
     pub fn new(tool: Tool, start: [f64; 2], points: Vec<[f64; 3]>, modifiers: egui::Modifiers, erase: bool) -> Self {
-        Self { tool, start, points, modifiers, erase, constrain: None, live: modifiers, released: egui::Modifiers::NONE }
+        Self { tool, start, points, modifiers, erase, constrain: None, live: modifiers, released: egui::Modifiers::NONE, reposition: false }
+    }
+
+    /// Reposition: move the start and every point so the last one lands on `to` (same size).
+    pub fn shift_to(&mut self, to: [f64; 2]) {
+        let last = self.points.last().map_or(self.start, |p| [p[0], p[1]]);
+        let (dx, dy) = (to[0] - last[0], to[1] - last[1]);
+        if !(dx.is_finite() && dy.is_finite()) {
+            return;
+        }
+        self.start = [self.start[0] + dx, self.start[1] + dy];
+        for p in &mut self.points {
+            p[0] += dx;
+            p[1] += dy;
+        }
+        if self.points.is_empty() {
+            self.points.push([to[0], to[1], 1.0]);
+        }
     }
 
     /// Record the modifiers of a pointer event.
@@ -1562,10 +1582,17 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
     app.stylus.use_pressure = app.session.prefs().tools.use_tablet_pressure;
     app.stylus.update(&ui.input(|i| i.events.clone()));
     crate::stylus::Stylus::sync_eraser_tool(app);
-    let space_down = ui.input(|i| i.key_down(egui::Key::Space));
-    // Space while drawing a crop frame moves it instead of panning.
-    crate::crop_ui::set_space(app, space_down);
-    let space_pan = space_down && !crate::crop_ui::active(app);
+    // Held keys (hold_keys.rs): Space repositions a crop frame, marquee, lasso or shape being
+    // drawn; otherwise Space is the Hand and ⌘Space / ⌘⌥Space the Zoom tool while held.
+    let reposition = crate::hold_keys::reposition_held(app, &ctx);
+    crate::crop_ui::set_space(app, reposition);
+    let mut drawing = crate::crop_ui::active(app);
+    if let Some(d) = app.drag.as_mut().filter(|d| crate::hold_keys::repositions(d.tool)) {
+        d.reposition = reposition;
+        drawing = true;
+    }
+    let temporary = crate::hold_keys::for_frame(app, &ctx, drawing);
+    let space_pan = temporary == Some(crate::hold_keys::Temporary::Hand);
     let middle = ui.input(|i| i.pointer.middle_down());
     let tool = match temporary {
         Some(t) => t.tool(),
@@ -1614,6 +1641,10 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
         // (Preferences › Tools, `paint_mouse`).
         crate::paint_mouse::sync_tool_smoothing(app);
         let mut buttons = crate::paint_mouse::canvas_buttons(app, &response, tool);
+        // The (temporary) Hand pans above; its gestures never reach the tool underneath.
+        if tool == Tool::Hand {
+            (buttons.started, buttons.dragged, buttons.stopped) = (false, false, false);
+        }
         // Zoom tool drags: scrubby zoom or a zoom rectangle (zoom_tool.rs); clicks step below.
         if tool == Tool::Zoom && crate::zoom_tool::drag(app, &ctx, &mut view, &xf, &buttons, response.interact_pointer_pos()) {
             (buttons.started, buttons.dragged, buttons.stopped) = (false, false, false);
@@ -1714,10 +1745,6 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
                 }
                 // A click with the (temporary) Hand does nothing, never the tool underneath.
                 Tool::Hand => {}
-                // Double-clicking closes the polygonal lasso: the first click placed the last
-                // vertex (or already closed it), so the second never starts a new polygon. egui
-                // reports it as a triple click when a vertex went down shortly before.
-                Tool::PolygonLasso if response.double_clicked() || response.triple_clicked() => commit_polygon(app),
                 _ => {
                     if tool == Tool::Move && app.ui.transform.is_none() {
                         begin_transform_controls_at(app, &ctx, &xf, p);
@@ -2271,7 +2298,10 @@ pub fn tool_event(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers)
                 crate::vector_ui::pen_move(app, x, y);
             }
             let zoom = app.current_zoom();
-            if let Some(d) = &mut app.drag {
+            if let Some(d) = app.drag.as_mut().filter(|d| d.reposition) {
+                d.track(mods);
+                d.shift_to([x, y]);
+            } else if let Some(d) = &mut app.drag {
                 d.track(mods);
                 // ⇧: straight 0/45/90° strokes, 45° gradient angles (stroke_constraint.rs).
                 let last = d.points.last().map_or(d.start, |p| [p[0], p[1]]);
@@ -2307,6 +2337,9 @@ pub fn tool_event(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers)
             let zoom = app.current_zoom();
             let Some(mut d) = app.drag.take() else { return };
             d.track(mods);
+            if d.reposition {
+                d.shift_to([x, y]);
+            }
             let last = d.points.last().map_or(d.start, |p| [p[0], p[1]]);
             let [x, y] = crate::stroke_constraint::constrain(d.tool, &mut d.constrain, d.start, last, [x, y], mods.shift, zoom);
             // A Move-tool click (released where it was pressed) selects, it never moves: snapping

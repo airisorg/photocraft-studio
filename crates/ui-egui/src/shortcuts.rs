@@ -83,6 +83,7 @@ pub fn default_shortcut(id: &str) -> Option<String> {
         .and_then(|c| c.3)
         .or_else(|| photocraft_engine::commands::find(id).and_then(|c| c.shortcut))
         .or_else(|| crate::menu_catalog::CATALOG.iter().find(|c| c.3 == id).and_then(|c| c.2))
+        .or_else(|| photocraft_engine::prefs::TEMPORARY_TOOLS.iter().find(|t| t.0 == id).map(|t| t.2))
         .map(str::to_string)
 }
 
@@ -331,26 +332,6 @@ pub fn handle(app: &mut PhotocraftApp, ctx: &egui::Context) {
             };
             return;
         }
-    }
-    // ⇧[ and ⇧] step a painting tool's hardness by 25% (#352). First: egui's `consume_key`
-    // ignores ⇧, so the size keys below would take them.
-    if app.ui.tool.is_brushlike() {
-        let hardness = app.session.tools.brush.hardness;
-        let step = |sc: &str| parse(sc).is_some_and(|sc| consume(ctx, &sc));
-        let quarter = (hardness * 4.0).round();
-        let next = if step("Shift+[") {
-            (quarter - 1.0).max(0.0) / 4.0
-        } else if step("Shift+]") {
-            (quarter + 1.0).min(4.0) / 4.0
-        } else {
-            hardness
-        };
-        if next != hardness {
-            let _ = app.run("tools.setBrush", serde_json::json!({ "brush": { "hardness": next } }));
-        }
-    }
-    if pressed(Key::D) {
-        let _ = app.run("tools.defaultColors", json!({}));
     }
     // [ and ] resize the brush through `tools.setBrush` (journaled, drivable).
     let size = app.session.tools.brush.size;
