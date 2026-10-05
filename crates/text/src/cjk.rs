@@ -1,4 +1,3 @@
-// Modified by the independent FZ2000 PhotoCraft Studio fork; see docs/fork-code-map.md.
 //! CJK font fallback: which installed system fonts cover Japanese, Simplified Chinese,
 //! Traditional Chinese and Korean, and in which order to try them for the user's locale.
 //!
@@ -69,7 +68,7 @@ pub fn script_order(locale: Option<&str>) -> [CjkScript; 4] {
         "zh" | "yue" => {
             let hant = rest.iter().any(|p| matches!(*p, "hant" | "tw" | "hk" | "mo"));
             let hans = rest.iter().any(|p| matches!(*p, "hans" | "cn" | "sg"));
-            if (hant || lang == "yue") && !hans {
+            if hant && !hans || lang == "yue" && !hans {
                 [TraditionalChinese, SimplifiedChinese, Japanese, Korean]
             } else {
                 [SimplifiedChinese, TraditionalChinese, Japanese, Korean]
@@ -260,10 +259,6 @@ pub fn font_files(script: CjkScript) -> Vec<FontFile> {
         };
         let mut v: Vec<FontFile> = [
             "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-            // FreeBSD ports (x11-fonts/noto-sans-cjk and friends) install under /usr/local.
-            "/usr/local/share/fonts/noto/NotoSansCJK-Regular.ttc",
-            "/usr/local/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
-            "/usr/local/share/fonts/noto/NotoSansCJK-VF.ttc",
             "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
             "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
             "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc",
