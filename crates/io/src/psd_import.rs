@@ -82,23 +82,6 @@ fn selected_real_mask(rec: &LayerRecord) -> Option<photocraft_psd::RealMask> {
     rec.layer_mask()?.real
 }
 
-/// The fill of a plain shape layer (fill block + vector path, no stroke) to import as a fill layer
-/// with a vector mask: when its mask parameters give the vector mask a density below 100 % or a
-/// feather, or when it stores no pixels and fills with a pattern.
-fn soft_shape_fill(rec: &LayerRecord, has_vector: bool, fill_key: Option<&[u8; 4]>) -> Option<photocraft_doc::Fill> {
-    if !has_vector || rec.block(b"vstk").is_some() || rec.block(b"vscg").is_some() {
-        return None;
-    }
-    let k = fill_key?;
-    let fill = rec.block(k).and_then(|b| blocks::parse_fill(k, &b.data))?;
-    let p = rec.layer_mask().and_then(|m| m.parameters);
-    let soft = p.is_some_and(|p| p.vector_density.is_some_and(|d| d < 255) || p.vector_feather.is_some_and(|f| f > 0.0));
-    // Without stored pixels a pattern-filled shape cannot be rasterized on its own (the
-    // compositor resolves the document's patterns for fill layers).
-    let unrendered_pattern = (rec.rect.is_empty() || rec.rect.size().is_err()) && matches!(fill, photocraft_doc::Fill::Pattern { .. });
-    (soft || unrendered_pattern).then_some(fill)
-}
-
 impl Ctx<'_> {
     fn warn(&mut self, s: impl Into<String>) {
         self.warnings.push(s.into());
