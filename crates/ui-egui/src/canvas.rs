@@ -792,16 +792,17 @@ pub(crate) fn retain_gpu_documents(app: &mut PhotocraftApp) {
 /// Tabs + canvas for the active document, or the start screen.
 pub fn document_area(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     retain_gpu_documents(app);
-    if app.ui.chrome.shows_home(app.session.documents().len()) {
+    let n = app.session.documents().len();
+    if app.ui.chrome.shows_home(n, app.session.prefs().general.auto_show_home_screen) {
         start_screen(app, ui);
         return;
     }
-    if n == 0 && !opening {
+    if n == 0 {
         // Auto show the Home Screen is off: an empty workspace, like Photoshop.
         paint_dots(ui, ui.available_rect_before_wrap());
         return;
     }
-    if !app.ui.view.hides_tabs() || opening {
+    if !app.ui.view.hides_tabs() {
         tabs(app, ui);
     }
     if let Some(job) = app.jobs.focus.or_else(|| (n == 0).then(|| app.jobs.opens.last().map(|o| o.job)).flatten()) {
@@ -1113,8 +1114,6 @@ fn start_screen(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let recent: Vec<String> = if cfg!(target_arch = "wasm32") { Vec::new() } else { app.ui.recent_files.iter().take(HOME_RECENT).cloned().collect() };
     let recent_h = if recent.is_empty() { 0.0 } else { 34.0 + recent.len() as f32 * HOME_RECENT_ROW };
     let card = Rect::from_center_size(area.center(), egui::vec2(460.0, 330.0 + recent_h));
-    let new_label = crate::shortcuts::command_label(app, "New document…", "file.new");
-    let open_label = crate::shortcuts::command_label(app, "Open…", "file.open");
     ui.scope_builder(egui::UiBuilder::new().max_rect(card), |ui| {
         ui.vertical_centered(|ui| {
             ui.horizontal(|ui| {
@@ -1161,10 +1160,6 @@ fn start_screen(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     });
 }
 
-fn start_screen_drop_hint(is_wayland: bool) -> &'static str {
-    if is_wayland { tl!("Use File › Open to open an image.") } else { tl!("Drop an image or PSD anywhere to open it.") }
-}
-
 /// Recent files listed on the Home screen.
 const HOME_RECENT: usize = 6;
 /// Height of one Home-screen recent-file row.
@@ -1177,7 +1172,7 @@ fn home_recent(app: &mut PhotocraftApp, ui: &mut egui::Ui, recent: &[String]) {
     ui.horizontal(|ui| {
         // Line the heading up with the file icons.
         ui.add_space(((ui.available_width() - width) / 2.0).max(0.0) + 8.0);
-        ui.label(egui::RichText::new(tl!("Recent")).font(crate::theme::semibold(12.5)).color(t.text_dim));
+        ui.label(egui::RichText::new("Recent").font(crate::theme::semibold(12.5)).color(t.text_dim));
     });
     ui.add_space(4.0);
     let mut open = None;

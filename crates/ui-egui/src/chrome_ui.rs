@@ -166,7 +166,7 @@ pub fn home_button(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let on = app.ui.chrome.shows_home(n, auto);
     // With no documents and auto-show on, Home can't be dismissed (there's nothing behind it).
     let can_toggle = n > 0 || !auto;
-    if icons::button(ui, "house", 26.0, on && can_toggle, tl!("Home")).clicked() && can_toggle {
+    if icons::button(ui, "house", 26.0, on && can_toggle, "Home").clicked() && can_toggle {
         app.ui.chrome.home = if on { None } else { Some(n) };
     }
 }
