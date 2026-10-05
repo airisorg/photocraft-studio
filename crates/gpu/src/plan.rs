@@ -811,13 +811,19 @@ impl<'a> Planner<'a> {
             Fill::Gradient { angle, scale, style, reverse, offset, dither, .. } => {
                 p.gradient = true;
                 // compose::render_fill: whole-pixel end points (fill_layout).
-                let (angle, scale, offset) = photocraft_compose::fill_layout::gradient_layout(*style, *angle, *scale, *offset, frame);
+                let (angle, scale, offset) = photocraft_compose::fill_layout::fill_gradient_layout(*style, *angle, *scale, frame);
                 p.params[0] = [angle, scale, if *reverse { 1.0 } else { 0.0 }, style_index(*style)];
                 let c = frame;
                 p.params[1] = [c.x0 as f32, c.y0 as f32, c.width() as f32, c.height() as f32];
-                // p2.xy: centre offset; p2.w: dither (the shared position hash, see the shader).
-                p.params[2] = [offset.0, offset.1, 0.0, if *dither { 1.0 } else { 0.0 }];
-                let ramp = photocraft_compose::gradient_fill::Ramp::new(f);
+                p.params[2][0] = offset.0;
+                p.params[2][1] = offset.1;
+                let conv: Vec<(f32, [f32; 4])> = stops
+                    .iter()
+                    .map(|(t, c)| {
+                        let r = c.to_rgb();
+                        (*t, [r[0], r[1], r[2], c.alpha])
+                    })
+                    .collect();
                 let mut rows = vec![[0.0f32; 4096]; 4];
                 for k in 0..4096 {
                     let v = ramp.as_ref().map_or([0.0; 4], |r| r.sample(k as f32 / 4095.0));
@@ -880,7 +886,7 @@ impl<'a> Planner<'a> {
         }
         let mut p = Pass::new(Kernel::Adjust, 0);
         p.a = Some(src);
-        let (kind, params, lut) = adjustment_program(adj, self.cx.transfer, self.cx.depth);
+        let (kind, params, lut) = adjustment_program(adj, self.cx.transfer, photocraft_compose::adjustment_quantum(self.cx.depth));
         p.adjust_kind = kind;
         p.params = params;
         p.lut = lut;
@@ -1427,7 +1433,7 @@ pub fn adjustment_on_gpu(adj: &Adjustment) -> bool {
 }
 
 /// Adjustment → (kernel kind, parameters, LUT rows). Kinds are the `switch` in `adjust()`.
-pub fn adjustment_program(adj: &Adjustment, transfer: Transfer, depth: photocraft_color::SampleType) -> Program {
+pub fn adjustment_program(adj: &Adjustment, transfer: Transfer, quantum: Option<f32>) -> Program {
     let mut p = [[0.0f32; 4]; 4];
     match adj {
         Adjustment::Invert => (1, p, None),
@@ -1460,9 +1466,7 @@ pub fn adjustment_program(adj: &Adjustment, transfer: Transfer, depth: photocraf
             (6, p, None)
         }
         // RGB space only (see `adjustment_on_gpu`); the rows are the CPU's channel∘master LUTs.
-        Adjustment::Levels { .. } | Adjustment::Curves { .. } => {
-            (7, p, Some(adjust::tone_luts_depth(adj, Some(depth)).iter().take(3).map(|t| to_row(t)).collect()))
-        }
+        Adjustment::Levels { .. } | Adjustment::Curves { .. } => (7, p, Some(adjust::tone_luts_q(adj, quantum).iter().take(3).map(|t| to_row(t)).collect())),
         Adjustment::HueSaturation { hue, saturation, lightness, colorize, ranges } => {
             p[0] = [*hue, saturation / 100.0, lightness / 100.0, if *colorize { 1.0 } else { 0.0 }];
             if !*colorize && ranges.iter().any(|r| !r.is_neutral()) {

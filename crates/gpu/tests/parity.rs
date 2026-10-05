@@ -371,25 +371,9 @@ fn fills_and_dissolve() {
     for (w, h, style, angle) in [(4, 4, GradientStyle::Reflected, 30.0), (7, 5, GradientStyle::Linear, 30.0), (9, 4, GradientStyle::Linear, -60.0)] {
         let mut d = base_doc(w, h);
         let stops = vec![(0.0, Color::rgb(0.0, 0.0, 0.7)), (0.5, Color::rgb(1.0, 0.0, 0.0)), (1.0, Color::rgb(1.0, 1.0, 0.0))];
-        d.layers.push(Layer::new("grad", LayerContent::Fill(Fill::gradient(stops, angle, 1.0, style, false))));
+        d.layers.push(Layer::new("grad", LayerContent::Fill(Fill::Gradient { stops, angle, scale: 1.0, style, reverse: false })));
         check(&mut g, &d, &format!("small gradient {w}x{h} {style:?} {angle}"));
     }
-    // An opaque, dithered gradient over everything (the GPU skips the layers it hides), with a
-    // clipped layer and an adjustment above it.
-    let mut d = base_doc(64, 48);
-    d.layers.push(noise_layer("under", PixelFormat::RGBA8, Rect::new(5, 5, 50, 40), 17, 0.4));
-    let stops = vec![(0.0, Color::rgb(0.9, 0.2, 0.1)), (1.0, Color::rgb(0.1, 0.3, 0.9))];
-    let mut cover = Fill::gradient(stops, 70.0, 0.7, GradientStyle::Linear, false);
-    if let Fill::Gradient { dither, offset, .. } = &mut cover {
-        *dither = true;
-        *offset = (0.1, -0.05);
-    }
-    d.layers.push(Layer::new("cover", LayerContent::Fill(cover)));
-    let mut clip = noise_layer("clip", PixelFormat::RGBA8, Rect::new(10, 10, 30, 30), 23, 0.2);
-    clip.clipped = true;
-    d.layers.push(clip);
-    d.layers.push(Layer::new("inv", LayerContent::Adjustment(Adjustment::Invert)));
-    check(&mut g, &d, "opaque gradient over everything");
     let mut d = base_doc(64, 48);
     let mut l = noise_layer("dis", PixelFormat::RGBA8, Rect::new(0, 0, 64, 48), 41, 0.2);
     l.blend = BlendMode::Dissolve;

@@ -19,26 +19,13 @@ use crate::effects;
 /// Effective `(angle, scale, centre offset)` for a gradient fill with `style`, `angle` (degrees)
 /// and `scale` laid out in `frame`.
 pub fn fill_gradient_layout(style: GradientStyle, angle: f32, scale: f32, frame: Rect) -> (f32, f32, (f32, f32)) {
-    gradient_layout(style, angle, scale, (0.0, 0.0), frame)
-}
-
-/// [`fill_gradient_layout`] for a gradient centred `offset` (a fraction of the frame) off the
-/// frame's centre: layer-effect gradients (overlays, gradient glows and strokes) snap the same
-/// way (psd-tools layer_effects: an 87° overlay on a 600 × 60 text line runs along (3, 60), i.e.
-/// 87.14°).
-pub fn gradient_layout(style: GradientStyle, angle: f32, scale: f32, offset: (f32, f32), frame: Rect) -> (f32, f32, (f32, f32)) {
-    let unchanged = (angle, scale, offset);
-    if !matches!(style, GradientStyle::Linear | GradientStyle::Reflected)
-        || !angle.is_finite()
-        || !scale.is_finite()
-        || !offset.0.is_finite()
-        || !offset.1.is_finite()
-    {
+    let unchanged = (angle, scale, (0.0, 0.0));
+    if !matches!(style, GradientStyle::Linear | GradientStyle::Reflected) || !angle.is_finite() || !scale.is_finite() {
         return unchanged;
     }
     let w = f64::from(frame.width().max(1));
     let h = f64::from(frame.height().max(1));
-    let (cx, cy) = (f64::from(frame.x0) + w / 2.0 + f64::from(offset.0) * w, f64::from(frame.y0) + h / 2.0 + f64::from(offset.1) * h);
+    let (cx, cy) = (f64::from(frame.x0) + w / 2.0, f64::from(frame.y0) + h / 2.0);
     // Unscaled chord length along `a` (radians), as `effects::gradient_t`.
     let chord_of = |a: f64| {
         let (s, c) = a.sin_cos();
@@ -68,8 +55,8 @@ pub fn gradient_layout(style: GradientStyle, angle: f32, scale: f32, offset: (f3
     // Reflected spans half the chord from the centre; Linear the whole chord.
     let span = if style == GradientStyle::Reflected { 2.0 * len } else { len };
     let scale2 = span / chord_of(a2);
-    let shift = (((mid.0 - cx) / w) as f32, ((mid.1 - cy) / h) as f32);
-    (a2.to_degrees() as f32, scale2 as f32, (offset.0 + shift.0, offset.1 + shift.1))
+    let offset = (((mid.0 - cx) / w) as f32, ((mid.1 - cy) / h) as f32);
+    (a2.to_degrees() as f32, scale2 as f32, offset)
 }
 
 /// Gradient parameter `t` of a gradient fill at pixel centre `(x, y)` (see [`fill_gradient_layout`]).
@@ -121,25 +108,6 @@ mod tests {
                 }
             }
         }
-    }
-
-    #[test]
-    fn offset_centres_snap_like_the_frame_centre() {
-        // A zero offset is the plain layout exactly.
-        let f = Rect::new(0, 0, 7, 5);
-        for style in [GradientStyle::Linear, GradientStyle::Reflected] {
-            assert_eq!(gradient_layout(style, 30.0, 1.0, (0.0, 0.0), f), fill_gradient_layout(style, 30.0, 1.0, f));
-        }
-        // Moving the centre by whole pixels moves the snapped layout by the same pixels.
-        let big = Rect::new(0, 0, 40, 20);
-        let (a0, s0, o0) = gradient_layout(GradientStyle::Linear, 30.0, 0.5, (0.0, 0.0), big);
-        let (a1, s1, o1) = gradient_layout(GradientStyle::Linear, 30.0, 0.5, (0.25, -0.1), big);
-        assert!((a0 - a1).abs() < 1e-4 && (s0 - s1).abs() < 1e-4, "{a0} {a1} {s0} {s1}");
-        assert!((o1.0 - o0.0 - 0.25).abs() < 1e-4 && (o1.1 - o0.1 + 0.1).abs() < 1e-4, "{o0:?} {o1:?}");
-        // Non-snapping styles and bad offsets pass through.
-        assert_eq!(gradient_layout(GradientStyle::Radial, 30.0, 1.0, (0.2, 0.1), big), (30.0, 1.0, (0.2, 0.1)));
-        let (_, _, o) = gradient_layout(GradientStyle::Linear, 30.0, 1.0, (f32::NAN, 0.0), big);
-        assert!(o.0.is_nan());
     }
 
     #[test]

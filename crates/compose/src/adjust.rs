@@ -69,10 +69,10 @@ pub fn apply_with(adj: &Adjustment, buf: &mut Buffer, transfer: Transfer) {
     apply_depth(adj, buf, transfer, None);
 }
 
-/// Applies an adjustment with the document's tone transfer, in a document of `depth` (`None`:
-/// unrounded). Integer depths work on whole levels like Photoshop's (see [`levels_q`] and
-/// `adjustment_quantum`), 32-bit documents get its float Levels (see [`levels_float`]).
-pub fn apply_depth(adj: &Adjustment, buf: &mut Buffer, transfer: Transfer, depth: Option<SampleType>) {
+/// Applies an adjustment with the document's tone transfer, on samples with `quantum` steps
+/// per unit (the document's integer depth, see `adjustment_quantum`): Levels then works on
+/// whole levels like Photoshop's (see [`levels_q`]).
+pub fn apply_depth(adj: &Adjustment, buf: &mut Buffer, transfer: Transfer, quantum: Option<f32>) {
     match adj {
         Adjustment::Invert => map_rgb(buf, |c| [1.0 - c[0], 1.0 - c[1], 1.0 - c[2]]),
         Adjustment::Threshold { level } => {
@@ -120,7 +120,7 @@ pub fn apply_depth(adj: &Adjustment, buf: &mut Buffer, transfer: Transfer, depth
             })
         }
         Adjustment::Levels { space, .. } | Adjustment::Curves { space, .. } => {
-            let luts = tone_luts_depth(adj, depth);
+            let luts = tone_luts_q(adj, quantum);
             match space {
                 ToneSpace::Rgb => map_rgb(buf, |c| std::array::from_fn(|i| lut(&luts[i], c[i]))),
                 ToneSpace::Cmyk | ToneSpace::Lab => map_rgb(buf, |c| tone_in_space(*space, &luts, c)),
