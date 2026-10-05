@@ -7,11 +7,11 @@
 //! is disabled in the current state reports why on the status bar instead of doing nothing
 //! silently, as the greyed menu item shows.
 
-use egui::{Key, KeyboardShortcut};
+use egui::{Key, KeyboardShortcut, Modifiers};
 use serde_json::json;
 
 use crate::PhotocraftApp;
-use crate::shortcuts::{key_matches, parse};
+use crate::shortcuts::{consume, parse};
 
 /// What a dispatched shortcut did (kept for tests and `ui.inspect`-style debugging).
 #[derive(Clone, Debug, PartialEq)]
@@ -39,15 +39,9 @@ pub fn take_log(ctx: &egui::Context) -> Vec<(String, Outcome)> {
     ctx.data_mut(|d| d.remove_temp::<Vec<(String, Outcome)>>(log_id())).unwrap_or_default()
 }
 
-/// Alternative default shortcuts Photoshop gives some commands besides the one its menu shows:
-/// (command, shortcut). Edit › Fill… is Shift+F5 and also Shift+Backspace (Shift+Delete on a Mac).
-pub const SECONDARY: &[(&str, &str)] = &[("edit.fill", "Shift+Backspace")];
-
 /// Every key binding, most modifiers first (so ⇧⌘Z wins over ⌘Z), each key owned by one command:
 /// command and shell shortcuts, then the menu catalogue's for live items without their own,
-/// then Edit › Keyboard Shortcuts assignments to any other menu item. D and X
-/// (`tools.defaultColors` / `tools.swapColors`) and the fill keys are commands like any other, so
-/// their overrides apply. Held temporary tools (Space…) are not here: see [`crate::hold_keys`].
+/// then Edit › Keyboard Shortcuts assignments to any other menu item.
 pub fn bindings(app: &PhotocraftApp) -> Vec<(String, KeyboardShortcut)> {
     let prefs = app.session.prefs();
     let ui = crate::menus::UI_COMMANDS.iter().map(|(id, _, _, sc)| (*id, prefs.shortcut(id, *sc)));
@@ -64,18 +58,15 @@ pub fn bindings(app: &PhotocraftApp) -> Vec<(String, KeyboardShortcut)> {
     let overrides = prefs
         .shortcuts
         .iter()
-        .filter(|(id, sc)| {
-            !sc.is_empty()
-                && photocraft_engine::commands::find(id).is_none()
-                && !crate::menus::UI_COMMANDS.iter().any(|c| c.0 == id.as_str())
-                && !crate::hold_keys::is_temporary(id)
-        })
+        .filter(|(id, sc)| !sc.is_empty() && photocraft_engine::commands::find(id).is_none() && !crate::menus::UI_COMMANDS.iter().any(|c| c.0 == id.as_str()))
         .map(|(id, sc)| (id.as_str(), Some(sc.as_str())));
-    // Photoshop's second shortcuts, kept while the command's main one is the default.
-    let secondary = SECONDARY.iter().filter(|(id, _)| !prefs.shortcuts.contains_key(*id)).map(|&(id, sc)| (id, Some(sc)));
     let mut all: Vec<(String, KeyboardShortcut)> = Vec::new();
-    for (id, sc) in ui.chain(engine).chain(catalog).chain(overrides).chain(secondary) {
+    for (id, sc) in ui.chain(engine).chain(catalog).chain(overrides) {
         let Some(sc) = sc.and_then(parse) else { continue };
+        // Plain X and D are the colour keys (handled with the tool keys).
+        if sc.modifiers == Modifiers::NONE && matches!(sc.logical_key, Key::X | Key::D) {
+            continue;
+        }
         if !all.iter().any(|(_, b)| *b == sc) {
             all.push((id.to_string(), sc));
         }
@@ -95,8 +86,7 @@ pub enum Focus {
 
 impl Focus {
     pub fn of(ctx: &egui::Context) -> Focus {
-        // A layer rename keeps its keys even in the frame egui drops its focus (Esc, Tab).
-        if ctx.text_edit_focused() || crate::layer_row_ui::rename_active(ctx) {
+        if ctx.text_edit_focused() {
             Focus::Text
         } else if ctx.egui_wants_keyboard_input() {
             Focus::Widget
@@ -156,53 +146,31 @@ impl Focus {
     }
 }
 
-/// What decides which keys [`crate::shortcuts::handle`] gives the shortcuts: an open menu, a
-/// dialog, the unsaved-changes prompt, a warp or the Filter Gallery, inline type.
-fn key_owner(app: &PhotocraftApp, ctx: &egui::Context) -> (bool, usize, bool, bool, bool) {
-    let distort = app.distort.active() || app.distort.gallery.is_some();
-    (crate::menu_nav::is_open(ctx), app.ui.dialogs.len(), app.discard.is_some(), distort, app.ui.text_edit.is_some())
-}
-
-/// Dispatch this frame's shortcut presses in the order they arrived (⌘Z then ⌘S undoes, then
-/// saves the undone state; #440), consuming each. A press matching several bindings goes to the
-/// first in table order (⇧⌘Z before ⌘Z). Stops after a shortcut that hands the keyboard to
-/// someone else (opens a dialog, a prompt, a menu or inline type), leaving the later presses to
-/// it. While typing (inline type), clipboard and select-all shortcuts belong to the text.
-/// Returns true when a shortcut was dispatched.
-pub fn dispatch_pressed(app: &mut PhotocraftApp, ctx: &egui::Context, focus: Focus, editing: bool) -> bool {
+/// The command whose shortcut was pressed this frame (its key press consumed), if any.
+/// While typing (inline type), clipboard and select-all shortcuts belong to the text.
+pub fn pressed_command(app: &PhotocraftApp, ctx: &egui::Context, focus: Focus, editing: bool) -> Option<String> {
     // Building the table walks the registry: only do it when a key went down.
     if !ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Key { pressed: true, .. }))) {
-        return false;
+        return None;
     }
-    const TEXT_OWNED: [&str; 6] = ["edit.copy", "edit.cut", "edit.paste", "edit.copyMerged", "select.all", "edit.pasteSpecial.pasteInPlace"];
-    let table: Vec<(String, KeyboardShortcut)> =
-        bindings(app).into_iter().filter(|(id, sc)| focus.allows(sc) && !(editing && TEXT_OWNED.contains(&id.as_str()))).collect();
-    let command = |e: &egui::Event| match e {
-        egui::Event::Key { key, pressed: true, modifiers, .. } => table.iter().find(|(_, sc)| key_matches(sc, *key, *modifiers)).map(|(id, _)| id.clone()),
-        _ => None,
-    };
-    let mut ran = false;
-    loop {
-        let next = ctx.input_mut(|i| {
-            let (at, id) = i.events.iter().enumerate().find_map(|(at, e)| Some((at, command(e)?)))?;
-            i.events.remove(at);
-            Some(id)
-        });
-        let Some(id) = next else { break };
-        let owner = key_owner(app, ctx);
-        dispatch(app, ctx, &id);
-        ran = true;
-        if key_owner(app, ctx) != owner {
-            break;
+    for (id, sc) in bindings(app) {
+        if !focus.allows(&sc) {
+            continue;
+        }
+        if editing && matches!(id.as_str(), "edit.copy" | "edit.cut" | "edit.paste" | "edit.copyMerged" | "select.all" | "edit.pasteSpecial.pasteInPlace") {
+            continue;
+        }
+        if consume(ctx, &sc) {
+            return Some(id);
         }
     }
-    ran
+    None
 }
 
 /// Why `id` can't run now (the engine's reason when it has one).
 pub fn disabled_reason(app: &PhotocraftApp, id: &str) -> String {
     photocraft_engine::commands::find(id)
-        .and_then(|_| app.session.disabled_reason(id))
+        .and_then(|c| (c.enabled)(&app.session).err())
         .unwrap_or_else(|| if app.session.active().is_none() { "no document open".into() } else { "not available in the current state".into() })
 }
 

@@ -1373,8 +1373,6 @@ fn layers(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         .auto_shrink([false, !fill])
         .show(ui, |ui| {
             let filter = app.ui.layer_filter.clone();
-            let fx_collapsed = app.session.active().map(|d| d.fx_collapsed.clone()).unwrap_or_default();
-            crate::layer_row_ui::begin(ui.ctx());
             for &(depth, l) in &rows {
                 // Select › Isolate Layers.
                 if !photocraft_engine::select_extra_cmds::isolation_shows(&doc, &isolated, l.id) {
@@ -1394,23 +1392,11 @@ fn layers(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                     }
                 }
                 let row = RowSel { selected: selection.contains(&l.id), primary: active == Some(l.id), multi: selection.len() > 1 };
-                let top = ui.cursor().top();
                 layer_row(app, &ctx, ui, &doc, l, depth, row, &mut actions);
-                if reveal == Some(l.id) {
-                    crate::layer_reveal::scroll_to_row(ui, top);
-                }
-                if !l.effects.items.is_empty() && fx_collapsed.iter().all(|id| *id != l.id) {
+                if !l.effects.items.is_empty() {
                     effect_rows(app, ui, l, depth);
                 }
                 crate::smart_ui::filter_rows(app, ui, l, depth, &mut actions);
-            }
-            // A rename whose row is gone (deleted, filtered out, inside a closed group) ends,
-            // committed: nothing else could commit or cancel it.
-            if let Some(layer) = crate::layer_row_ui::renaming(ui.ctx())
-                && !crate::layer_row_ui::recorded(ui.ctx()).iter().any(|r| r.layer == layer)
-                && let Some(done) = crate::layer_row_ui::end_rename(ui.ctx(), true)
-            {
-                actions.push(done);
             }
         });
     // End any layer drag after every row has had a chance to accept the drop.
@@ -1563,12 +1549,6 @@ fn layer_row(
     layer_drag_and_drop(ctx, ui, l, rect, &resp, actions);
     // Rows are painted: name them for screen readers and UI tests.
     resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, selected, &l.name));
-    // A row scrolled out of view only keeps its place (#125): a layout's hundreds of rows would
-    // otherwise lay out names, icons and thumbnails every frame. Group rows stay whole: their
-    // disclosure triangle is a widget (accessibility, scroll-to).
-    if !ui.is_rect_visible(rect) && !l.is_group() && !resp.context_menu_opened() && crate::layer_row_ui::renaming(ctx) != Some(l.id.0) {
-        return;
-    }
     let painter = ui.painter_at(rect.expand(1.0));
     if t.pro {
         if selected {
@@ -1594,44 +1574,7 @@ fn layer_row(
     if l.visible {
         icons::paint(ui, eye, "eye", 15.0, t.icon);
     }
-    let sweep_id = egui::Id::new("layer-eye-sweep");
-    if eye_resp.drag_started() {
-        let visible = !l.visible;
-        ctx.data_mut(|d| d.insert_temp(sweep_id, (visible, vec![l.id.0])));
-        actions.push(("layer.setProps".into(), json!({"layer": l.id.0, "visible": visible})));
-    } else if let Some((visible, mut swept)) = ctx.data(|d| d.get_temp::<(bool, Vec<u64>)>(sweep_id)) {
-        if !ctx.input(|i| i.pointer.primary_down()) {
-            ctx.data_mut(|d| d.remove::<(bool, Vec<u64>)>(sweep_id));
-        } else if let Some(p) = ctx.input(|i| i.pointer.interact_pos())
-            && p.y >= rect.top()
-            && p.y < rect.bottom()
-            && !swept.contains(&l.id.0)
-        {
-            if l.visible != visible {
-                actions.push(("layer.setProps".into(), json!({"layer": l.id.0, "visible": visible})));
-            }
-            swept.push(l.id.0);
-            ctx.data_mut(|d| d.insert_temp(sweep_id, (visible, swept)));
-        }
-    }
-    if eye_resp.clicked() {
-        // ⌥-click shows only this layer; ⌥-click it again to restore the others.
-        if ui.input(|i| i.modifiers.alt) {
-            actions.push(("layer.showOnly".into(), json!({"layer": l.id.0})));
-        } else {
-            actions.push(("layer.setProps".into(), json!({"layer": l.id.0, "visible": !l.visible})));
-        }
-    }
-    // Everything but the thumbnails, the indentation and the name, so a narrow panel squeezes
-    // the indentation first, then the thumbnails (a layer with two masks has three).
-    let others = 6.0
-        + 28.0
-        + if l.is_group() { crate::layer_tree_ui::TRIANGLE_W } else { 0.0 }
-        + if l.clipped { 12.0 } else { 0.0 }
-        + crate::layer_row_ui::reserved_width(l);
-    let ts = crate::mask_thumbs_ui::thumb_size(l, if t.pro { 24.0 } else { 34.0 }, rect.width() - others);
-    let fixed = others + ts + 6.0 + crate::mask_thumbs_ui::width(l, ts);
-    x += 28.0 + crate::layer_row_ui::indent(depth, rect.width(), fixed);
+    x += 28.0 + depth as f32 * 14.0;
     let toggled = crate::layer_tree_ui::disclosure(ui, rect, &mut x, l, actions);
     if l.clipped {
         painter.text(pos2(x, rect.center().y), Align2::LEFT_CENTER, "↳", egui::FontId::proportional(13.0), t.text_faint);
@@ -1709,9 +1652,7 @@ fn layer_row(
     });
     if let Some(p) = thumb_load {
         actions.push(("select.loadSelection".into(), p));
-    } else if let Some(cmd) = mask_toggle {
-        actions.push(cmd);
-    } else if resp.clicked() && !eye_resp.clicked() && !toggled && !fx_toggled && !masks.clicked {
+    } else if resp.clicked() && !eye_resp.clicked() && !toggled {
         let mode = select_mode(ui.input(|i| i.modifiers));
         actions.push(("layer.select".into(), json!({"layer": l.id.0, "mode": mode})));
         // Clicking a thumbnail picks what painting targets; adjustment/fill layers target their mask.
