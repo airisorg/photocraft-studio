@@ -707,7 +707,7 @@ impl Compositor {
 
     /// How far beyond a page cell the effect maps of `f` must be computed to be exact in it.
     fn fx_apron(doc: &Document, f: &plan::FxLayer<'_>) -> i32 {
-        let vector_shape = matches!(f.layer.content, LayerContent::Shape(_)) && photocraft_compose::effect_outline(f.layer).is_none();
+        let vector_shape = matches!(f.layer.content, LayerContent::Shape(_));
         let progs: Vec<fx::MapProgram> = f
             .layer
             .effects
@@ -818,9 +818,6 @@ impl Compositor {
         sink: &mut dyn FnMut(&mut wgpu::CommandEncoder, ChunkOut<'_>),
         flush: bool,
     ) -> Result<Stats, Unsupported> {
-        if let Some(f) = self.fault() {
-            return Err(Unsupported(f.to_string()));
-        }
         // CMYK layers convert through the document's own CMYK profile (uploads and plan colours).
         let space = photocraft_compose::cmyk_space(doc);
         self.cmyk = space.as_ref().map_or(0, |s| s.id);
@@ -912,14 +909,7 @@ impl Compositor {
                 let index = queue.submit([done.finish()]);
                 #[cfg(not(target_arch = "wasm32"))]
                 if let Some(prev) = last_submit.replace(index) {
-                    match &self.health {
-                        Some(h) => {
-                            h.wait(device, Some(prev));
-                        }
-                        None => {
-                            let _ = device.poll(wgpu::PollType::Wait { submission_index: Some(prev), timeout: None });
-                        }
-                    }
+                    let _ = device.poll(wgpu::PollType::Wait { submission_index: Some(prev), timeout: None });
                 }
                 #[cfg(target_arch = "wasm32")]
                 let _ = index;
@@ -927,10 +917,6 @@ impl Compositor {
                 work = 0;
                 freed = 0;
                 stats.flushes += 1;
-                // The device was lost mid-refresh: issue no more work.
-                if let Some(f) = self.fault() {
-                    return Err(Unsupported(f.to_string()));
-                }
             }
         }
 
@@ -1045,9 +1031,6 @@ impl Compositor {
                 let f = plan.fx.get(m.fx)?;
                 let key = (f.layer.id, paged.get(m.fx).copied().unwrap_or(false).then_some(cell));
                 let e = self.fx.get(&key)?;
-                if m.item == plan::SHAPE_MAP {
-                    return Some((e.shape.view.clone(), e.region));
-                }
                 let t = e.progs.get(m.item)?.maps.get(m.map)?.as_ref()?;
                 Some((t.view.clone(), e.region))
             }));

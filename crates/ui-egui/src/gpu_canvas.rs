@@ -366,7 +366,6 @@ impl GpuCanvas {
                 }
             },
         };
-        comp.set_health(self.health.clone());
         if let Some(b) = res.compositor_budget {
             comp.set_memory_budget(b);
         }
@@ -793,8 +792,6 @@ pub struct Perf {
     pub gpu_uploads: u64,
     /// Why the last refresh fell back to the CPU compositor (None = GPU composited).
     pub gpu_fallback: Option<String>,
-    /// Adapter, backend, driver and fallback state (Help › System Info).
-    pub gpu_info: GpuInfo,
     /// GPU memory the compositor may hold for layer pages and effect maps (MB; see
     /// [`memory_budget`]).
     pub gpu_budget_mb: u64,
@@ -1087,13 +1084,7 @@ fn detect_physical_memory() -> Option<u64> {
     kb.checked_mul(1024)
 }
 
-#[cfg(target_os = "freebsd")]
-fn detect_physical_memory() -> Option<u64> {
-    let out = std::process::Command::new("/sbin/sysctl").args(["-n", "hw.physmem"]).output().ok()?;
-    String::from_utf8(out.stdout).ok()?.trim().parse().ok()
-}
-
-#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "freebsd")))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn detect_physical_memory() -> Option<u64> {
     None
 }
@@ -1117,8 +1108,6 @@ struct Resources {
     compositor: Option<photocraft_gpu::Compositor>,
     /// Why the wgpu compositor couldn't be created (then the CPU compositor is used).
     compositor_failed: Option<photocraft_gpu::Unsupported>,
-    /// The device's health: the paint callback issues no GPU work once it's lost.
-    health: photocraft_gpu::DeviceHealth,
     /// GPU memory the compositor may hold (`None`: its default), and the document area the
     /// view shows; applied before every composite.
     compositor_budget: Option<u64>,
@@ -1382,7 +1371,6 @@ impl Resources {
             out_linear: target.is_srgb(),
             compositor: None,
             compositor_failed: None,
-            health: photocraft_gpu::DeviceHealth::new(),
             compositor_budget: None,
             compositor_focus: None,
             encode_bgl,
