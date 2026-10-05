@@ -451,13 +451,9 @@ impl Ex {
                 }
             }
             LayerContent::Smart(sm) => {
-                let parsed = sm.psd_raw.as_deref().and_then(|d| crate::smart_map::parse_sold(d));
-                if sm.psd_raw.is_some() && parsed.is_none() {
-                    // Placed-layer data we don't parse (`PlLd` only): kept verbatim.
-                    self.smart.prune_ok = false;
-                    set_principal(&mut raw, smart_keys(sm.psd_raw.as_deref().map(Vec::as_slice)), sm.psd_raw.as_ref());
-                } else {
-                    self.smart_blocks(l, sm, parsed, &mut raw);
+                set_principal(&mut raw, smart_keys(sm.psd_raw.as_deref().map(Vec::as_slice)), sm.psd_raw.as_ref());
+                if !raw.iter().any(|(k, _)| matches!(k, b"SoLd" | b"PlLd" | b"SoLE")) {
+                    self.warnings.push(format!("layer \"{}\": smart object written as pixels", l.name));
                 }
             }
             LayerContent::Raster(_) | LayerContent::Group(_) => {}
@@ -1098,9 +1094,6 @@ fn document_to_psd_nested(doc: &Document, opts: &PsdExportOptions, depth: u32) -
             info.padding = None;
         }
     }
-    // 32-bit files carry Photoshop's HDR toning records as Color Mode Data; Photoshop will not
-    // open a 32-bit file without them (#291).
-    let color_mode_data = photocraft_psd::hdr::color_mode_data_for_depth(header.depth);
     let file = PsdFile {
         header,
         color_mode_data,
