@@ -2000,7 +2000,10 @@ fn draw_transform_controls(app: &mut PhotocraftApp, painter: &egui::Painter, xf:
 
 fn draw_drag_preview(app: &mut PhotocraftApp, painter: &egui::Painter, xf: &ViewXform) {
     draw_tool_state(app, painter, xf, painter.ctx().input(|i| i.pointer.hover_pos()));
-    let Some(d) = &app.drag else { return };
+    let Some(d) = &app.drag else {
+        app.trail = None;
+        return;
+    };
     let mut last = d.points.last().map(|p| [p[0], p[1]]).unwrap_or(d.start);
     if matches!(d.tool, Tool::RectMarquee | Tool::EllipseMarquee) {
         let o = &app.ui.tool_options;
@@ -2019,28 +2022,6 @@ fn draw_drag_preview(app: &mut PhotocraftApp, painter: &egui::Painter, xf: &View
             let trail = app.trail.get_or_insert_with(|| crate::stroke_trail::Trail::new(size));
             trail.feed(&d.points, app.session.tools.brush.size);
             trail.draw(painter, doc_rect, xf.flip, col);
-        }
-        t if crate::vector_ui::is_shape_tool(t) => crate::vector_ui::draw_shape_preview(app, painter, xf, t, d.start, last, d.modifiers),
-        Tool::RectMarquee | Tool::EllipseMarquee | Tool::ObjectSelection => {
-            // Marching ants, visible on any pixels (#172).
-            let (a, b) = marquee.unwrap_or((d.start, last));
-            let r = Rect::from_two_pos(xf.to_screen(a[0] as f32, a[1] as f32), xf.to_screen(b[0] as f32, b[1] as f32));
-            let r = Rect::from_min_max(r.min.round() + vec2(0.5, 0.5), r.max.round() + vec2(0.5, 0.5));
-            let pts = if d.tool == Tool::EllipseMarquee {
-                crate::tool_feedback::ellipse_points(r)
-            } else {
-                vec![r.left_top(), r.right_top(), r.right_bottom(), r.left_bottom()]
-            };
-            crate::tool_feedback::draw_ants(painter, &pts, true);
-        }
-        // Patch Tool dragging the patch: the selection outline follows the pointer.
-        Tool::Patch if crate::retouch_ui::patch_drags_selection(app, d.start, d.modifiers) => {
-            let start = d.start;
-            let [dx, dy] = crate::retouch_ui::patch_offset(app, start, last);
-            if let Some((_, _, segs)) = &app.outline_cache {
-                let moved: Vec<crate::outline::Segment> = segs.iter().map(|(a, b)| ([a[0] + dx, a[1] + dy], [b[0] + dx, b[1] + dy])).collect();
-                marching_ants_segments(painter, xf, &moved, painter.ctx().input(|i| i.time));
-            }
         }
         t if crate::vector_ui::is_shape_tool(t) => crate::vector_ui::draw_shape_preview(app, painter, xf, t, d.start, last, d.modifiers),
         Tool::RectMarquee | Tool::EllipseMarquee | Tool::ObjectSelection => {
@@ -2212,6 +2193,7 @@ pub fn tool_event(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers)
                 points.insert(0, [p[0], p[1], pressure as f64]);
             }
             app.drag = Some(Drag { tool, start: from.unwrap_or([x, y]), points, modifiers: mods, erase, constrain: None });
+            app.trail = None;
             app.stylus.begin_stroke();
             if from.is_some() {
                 app.stylus.record_point();

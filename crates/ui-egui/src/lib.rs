@@ -103,6 +103,7 @@ pub mod smart_ui;
 pub mod snap_ui;
 pub mod state;
 pub mod stroke_constraint;
+pub mod stroke_trail;
 pub mod stylus;
 mod tab_strip;
 pub mod theme;
@@ -262,10 +263,6 @@ pub struct PhotocraftApp {
     live_stroke: Option<canvas::LiveStroke>,
     /// Footprint trail of a retouching drag (see `stroke_trail`).
     trail: Option<stroke_trail::Trail>,
-    /// Move tool drag shown live (`move_ui`).
-    pub(crate) move_preview: Option<move_ui::MovePreview>,
-    /// Patch Tool drag: the healed document at the pointer (`patch_preview`).
-    pub(crate) patch_preview: Option<patch_preview::PatchPreview>,
     /// The next tool `Down` is a right-button drag that erases (see `paint_mouse`).
     secondary_erase: bool,
     /// End of the last painting stroke: ⇧-click draws a straight line from it (#178).
@@ -391,8 +388,6 @@ impl PhotocraftApp {
             drag: None,
             live_stroke: None,
             trail: None,
-            move_preview: None,
-            patch_preview: None,
             secondary_erase: false,
             last_stroke_end: None,
             control_rx: None,
