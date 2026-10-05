@@ -17,7 +17,6 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
-mod app_dirs;
 mod app_icon;
 #[cfg(target_os = "macos")]
 mod apple_events;
@@ -38,30 +37,6 @@ use photocraft_ui_egui::PhotocraftApp;
 
 /// Matches the `.desktop` file and hicolor icon name, so Wayland docks pick up the icon.
 const APP_ID: &str = "ai.storyteller.photocraft";
-
-/// The main window: 1440 × 900 (shrunk to fit the monitor, and maximized on the first frame
-/// when it still doesn't fit, `work_area::fit_window`), centred on the main monitor. Without
-/// `centered`, Windows cascades each new window from the top-left corner, so it opened at a
-/// different offset every launch (#419). Wayland compositors place windows themselves.
-fn native_options() -> eframe::NativeOptions {
-    eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_icon(app_icon::window_icon())
-            .with_app_id(APP_ID)
-            .with_title("PhotoCraft")
-            .with_inner_size([1440.0, 900.0])
-            .with_min_inner_size([760.0, 480.0])
-            .with_drag_and_drop(true)
-            .with_fullsize_content_view(true)
-            .with_titlebar_shown(false)
-            .with_title_shown(false),
-        centered: true,
-        // eframe saves native window geometry and egui panel/window sizes on exit.
-        // Keep that state beside preferences, including config overrides and portable mode.
-        persistence_path: services::config_dir().map(|dir| dir.join("ui.ron")),
-        ..Default::default()
-    }
-}
 
 fn main() -> eframe::Result {
     crash_guard::install_hook();
@@ -144,17 +119,18 @@ fn main() -> eframe::Result {
     let monitor = monitor_profile::detect_async();
     // Brush presets load in the background; the app attaches them when they arrive.
     let presets = services::presets_dir().map(photocraft_engine::preset_store::open_dir_async);
-    let mut options = native_options();
-    // eframe restores the saved window layout before our code runs; drop values that would crash it.
-    ui_state::sanitize(options.persistence_path.as_deref());
-    // Crash-safe GPU startup (#4): pick the backend (a marker left by a start that died in the
-    // driver moves to a safer one), and lock this start's marker until the first frames render.
-    let t_sentinel = std::time::Instant::now();
-    let os = gpu_startup::Os::current();
-    let (pref, mode) = gpu_startup::read_rendering_prefs(services::prefs_file().as_deref());
-    let (previous, sentinel) = match services::config_dir() {
-        Some(dir) => gpu_startup::Sentinel::begin(&dir),
-        None => (gpu_startup::Previous::Clean, None),
+    let mut options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_icon(app_icon::window_icon())
+            .with_app_id(APP_ID)
+            .with_title("PhotoCraft")
+            .with_inner_size([1440.0, 900.0])
+            .with_min_inner_size([760.0, 480.0])
+            .with_drag_and_drop(true)
+            .with_fullsize_content_view(true)
+            .with_titlebar_shown(false)
+            .with_title_shown(false),
+        ..Default::default()
     };
     // Crash-safe GPU startup (#4): pick the backend (a marker left by a start that died in the
     // driver moves to a safer one), and lock this start's marker until the first frames render.
