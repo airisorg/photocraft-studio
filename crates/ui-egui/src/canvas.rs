@@ -208,19 +208,6 @@ pub(crate) fn pencil_cursor_rect(xf: &ViewXform, doc: [f64; 2], size: f32, ppp: 
     Rect::from_min_max(pos2(snap(r.min.x), snap(r.min.y)), pos2(snap(r.max.x), snap(r.max.y)))
 }
 
-/// Whether a brush-tip circle draws its centre mark.
-/// Clone Stamp and Healing Brush stay an empty circle until Option is held, the source-point
-/// cursor. Other brushes follow the cursor preference, the large-tip mark, or the Background Eraser.
-fn brush_tip_centre(tool: Tool, option: bool, show_crosshair: bool, radius: f32) -> bool {
-    if tool == Tool::QuickSelection {
-        return false;
-    }
-    if matches!(tool, Tool::CloneStamp | Tool::Healing) {
-        return option || show_crosshair;
-    }
-    show_crosshair || radius > 6.0 || tool == Tool::BackgroundEraser
-}
-
 fn begin_live_stroke(app: &PhotocraftApp) -> Option<LiveStroke> {
     static STROKES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let st = app.session.active()?;
@@ -2241,6 +2228,12 @@ pub fn tool_event(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers)
     }
     match ev {
         ToolEvent::Down { x, y, pressure } => {
+            // Painting a type, shape, Smart Object or fill layer asks to rasterize it first
+            // (⌥-click with the Clone Stamp or Healing Brush only sets the source).
+            let sets_source = matches!(tool, Tool::CloneStamp | Tool::Healing) && mods.alt;
+            if !sets_source && crate::rasterize_prompt::intercept(app, tool, x, y, pressure) {
+                return;
+            }
             match tool {
                 Tool::Pen => {
                     crate::vector_ui::pen_down(app, x, y);
@@ -2288,7 +2281,7 @@ pub fn tool_event(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers)
             if from.is_some() {
                 app.stylus.record_point();
             }
-            app.live_stroke = if matches!(tool, Tool::Brush | Tool::Eraser) { begin_live_stroke(app) } else { None };
+            app.live_stroke = if strokes_live(tool) { begin_live_stroke(app) } else { None };
         }
         ToolEvent::Move { x, y, pressure } => {
             if tool == Tool::Type && app.drag.is_none() {

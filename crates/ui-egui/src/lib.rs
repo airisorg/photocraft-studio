@@ -1271,6 +1271,9 @@ impl PhotocraftApp {
 mod input_tests;
 
 #[cfg(test)]
+mod pencil_tests;
+
+#[cfg(test)]
 mod marquee_tests;
 
 #[cfg(test)]

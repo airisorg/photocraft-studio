@@ -1,4 +1,3 @@
-// Modified by the independent FZ2000 PhotoCraft Studio fork; see docs/fork-code-map.md.
 //! Edit › Fill… (`edit.fill`): Photoshop's Fill dialog as one command.
 //!
 //! Contents: Foreground / Background / Color / Content-Aware / Pattern / History / Black /
@@ -296,7 +295,7 @@ fn blend_tile(bytes: &mut [u8], fmt: &photocraft_color::PixelFormat, origin: Rec
             let mut bytes = vec![0u8; bpp];
             photocraft_raster::encode_pixel(fmt, enc.get(..m.min(n)).unwrap_or(&[]), &mut bytes);
             // Keeping alpha: copy the colour samples only (alpha is the last sample).
-            let keep = if keep_alpha && fmt.alpha { bpp - bpp / n.max(1) } else { bpp };
+            let keep = if (keep_alpha || !fmt.alpha) && fmt.alpha { bpp - bpp / n.max(1) } else { bpp };
             Some((bytes, keep))
         }
         _ => None,
@@ -407,7 +406,7 @@ mod tests {
         assert!(blacks > 300 && blacks < 900, "{blacks}");
         assert!((0..40).all(|x| {
             let v = surf.rgba(x, 3)[0];
-            !(0.01..=0.99).contains(&v)
+            v < 0.01 || v > 0.99
         }));
     }
 
