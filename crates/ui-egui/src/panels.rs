@@ -1344,7 +1344,7 @@ fn layers(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
             }
             if !t.pro {
                 let locked = l.locks.transparency || l.locks.position || l.locks.all;
-                if icons::button(ui, if locked { "lock" } else { "lock-open" }, 22.0, locked, tl!("Lock layer")).clicked() {
+                if icons::button(ui, if locked { "lock" } else { "lock-open" }, 22.0, locked, "Lock layer").clicked() {
                     actions.push(simple_lock_toggle(bg, l));
                 }
             }
@@ -2558,5 +2558,55 @@ mod swatch_type_tests {
         let st = h.state().session.active().unwrap();
         let Some(photocraft_doc::LayerContent::Text(t)) = st.doc.layer(photocraft_doc::LayerId(id)).map(|l| &l.content) else { panic!("type layer") };
         assert_eq!(t.char_runs().len(), 1, "still one white run");
+    }
+}
+
+#[cfg(test)]
+mod lock_tests {
+    use super::*;
+    use crate::canvas::{ToolEvent, tool_event};
+    use egui::Modifiers;
+
+    fn click_lock(app: &mut PhotocraftApp) {
+        let st = app.session.active().unwrap();
+        let l = st.active_layer.and_then(|id| st.doc.layer(id)).unwrap();
+        let (cmd, p) = simple_lock_toggle(crate::doc_props_ui::is_background(&st.doc, l), l);
+        app.run(&cmd, p).unwrap();
+    }
+
+    fn erase_line(app: &mut PhotocraftApp) {
+        app.ui.tool = Tool::Eraser;
+        let m = Modifiers::NONE;
+        tool_event(app, ToolEvent::Down { x: 10.0, y: 40.0, pressure: 1.0 }, m);
+        tool_event(app, ToolEvent::Move { x: 100.0, y: 40.0, pressure: 1.0 }, m);
+        tool_event(app, ToolEvent::Up { x: 100.0, y: 40.0 }, m);
+    }
+
+    #[test]
+    fn simple_lock_button_never_locks_the_eraser_out_of_the_background() {
+        // #76: the simple themes' lock button used to toggle "lock all" on the Background, which
+        // kept showing as locked and then refused every paint tool.
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({"width": 120, "height": 80})).unwrap();
+        app.run("tools.setColors", json!({"background": "#ff0000"})).unwrap();
+        app.run("tools.setBrush", json!({"brush": {"size": 12, "hardness": 1.0}})).unwrap();
+        // Clicking the Background's lock converts it to a normal layer (Photoshop).
+        click_lock(&mut app);
+        let l = &app.session.active().unwrap().doc.layers[0];
+        assert_eq!(l.name, "Layer 0");
+        assert!(!(l.locks.transparency || l.locks.pixels || l.locks.position || l.locks.all));
+        erase_line(&mut app);
+        assert!(!app.ui.status_error, "{}", app.ui.status);
+        assert_eq!(app.session.active().unwrap().doc.layers[0].surface().unwrap().rgba(50, 40)[3], 0.0, "erased to transparency");
+        // On a normal layer the button locks all, then unlocks everything.
+        click_lock(&mut app);
+        assert!(app.session.active().unwrap().doc.layers[0].locks.all);
+        click_lock(&mut app);
+        let k = app.session.active().unwrap().doc.layers[0].locks;
+        assert!(!(k.transparency || k.pixels || k.position || k.artboard || k.all));
+        // A layer with only transparency locked unlocks in one click.
+        app.run("layer.setProps", json!({"locks": {"transparency": true}})).unwrap();
+        click_lock(&mut app);
+        assert!(!app.session.active().unwrap().doc.layers[0].locks.transparency);
     }
 }
