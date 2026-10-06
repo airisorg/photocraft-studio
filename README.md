@@ -4,7 +4,12 @@ PhotoCraft Studio is a browser-based image editor with cloud projects, sharing, 
 
 It is an independent fork of [PhotoCraft](https://github.com/storytold/photocraft), created by the ArtCraft team and PhotoCraft contributors. Their Rust editor, painting tools, document model, file formats, and GPU renderer remain its foundation. We thank the upstream contributors. This fork is maintained separately and is not affiliated with, sponsored by, or endorsed by the original project or the ArtCraft team.
 
-PhotoCraft Studio is deployed on [Tofu](https://trytofu.ai/), which helps your coding agent take an existing app online with hosting, a managed database, Google sign-in, and transactional email in one place. To take your own app from local development to the web, [try Tofu](https://trytofu.ai/) or explore its [documentation](https://trytofu.ai/docs).
+<p align="center">
+  <img alt="100% Rust" src="https://img.shields.io/badge/100%25-Rust-b7410e?style=flat-square&logo=rust">
+  <img alt="macOS · Windows · Linux · FreeBSD · Web" src="https://img.shields.io/badge/macOS%20%C2%B7%20Windows%20%C2%B7%20Linux%20%C2%B7%20FreeBSD%20%C2%B7%20Web-native-2f7bf5?style=flat-square">
+  <img alt="License: MIT OR Apache-2.0" src="https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-3a3a3a?style=flat-square">
+  <img alt="Status: early alpha" src="https://img.shields.io/badge/status-early%20alpha-d69e2e?style=flat-square">
+</p>
 
 [![Deployed on Tofu](docs/media/deployed-on-tofu.svg)](https://trytofu.ai/)
 
@@ -129,11 +134,19 @@ The [fork code map](docs/fork-code-map.md) identifies added modules, modified up
 
 Report issues for this fork in [this repository](https://github.com/airisorg/photocraft-studio/issues). Start with [AGENTS.md](AGENTS.md) and the [contribution guide](docs/contributing.md). Keep the UI thin, preserve native file compatibility, and add a regression test for each bug fix.
 
-Installers for macOS, Windows, Linux and the web are attached to each [GitHub release](https://github.com/storytold/photocraft/releases). On Linux you can pick an AppImage, a `.deb`, an `.rpm`, a tarball or a Flatpak bundle. The bundle needs the freedesktop runtime from [Flathub](https://flathub.org/setup), which `flatpak` offers to install along with it:
+Installers for macOS, Windows, Linux, FreeBSD and the web are attached to each [GitHub release](https://github.com/storytold/photocraft/releases). On Linux you can pick an AppImage, a `.deb`, an `.rpm`, a tarball or a Flatpak bundle. The bundle needs the freedesktop runtime from [Flathub](https://flathub.org/setup), which `flatpak` offers to install along with it:
 
 ```sh
 flatpak install --user photocraft-<version>-linux-x86_64.flatpak   # or -linux-aarch64
 flatpak run ai.storyteller.photocraft
+```
+
+On FreeBSD 14 (x86_64), the release has a tarball laid out like `/usr/local`. Install the runtime libraries, then unpack it there:
+
+```sh
+pkg install libxkbcommon wayland libX11 libXcursor libXrandr libXi libxcb mesa-libs vulkan-loader gtk3 fontconfig freetype2 alsa-lib
+tar -xzf photocraft-<version>-freebsd-x86_64.tar.gz --strip-components 1 -C /usr/local
+photocraft
 ```
 
 Maintainers: [`docs/releasing.md`](docs/releasing.md) explains how releases are built, signed and published.
