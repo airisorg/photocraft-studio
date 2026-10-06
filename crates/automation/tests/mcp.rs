@@ -423,7 +423,7 @@ async fn fake_app() -> (String, tokio::task::JoinHandle<Vec<Value>>) {
                     json!({"id": id, "ok": true, "result": {"tool": "brush", "panels": ["layers"]}})
                 }
                 "engine.execute" => {
-                    json!({"id": id, "ok": true, "result": {"ran": req["params"]["command"], "params": req["params"]["params"], "wait": req["params"]["wait"]}})
+                    json!({"id": id, "ok": true, "result": {"ran": req["params"]["command"], "params": req["params"]["params"]}})
                 }
                 "engine.commands" => {
                     json!({"id": id, "ok": true, "result": [{"id": "file.new", "label": "New…", "enabled": true}]})
