@@ -1708,13 +1708,15 @@ fn layer_row(
             actions.push(("ui.maskTarget".into(), json!(false)));
         }
     }
-    // Double-click: the name renames in place; the Background, which can't be renamed while
-    // it's locked, becomes a normal layer; an adjustment or fill thumbnail opens its settings and
-    // a Smart Object thumbnail its contents, and a type thumbnail edits its text; anywhere else
-    // on the row opens Layer Style (#350, #537).
-    // The first click already made this the active layer.
+    // Double-click the name to rename in place (Photoshop ergonomics). The Background can't be
+    // renamed while it's locked, so a double-click turns it into a normal layer instead.
+    let rename_id = egui::Id::new(("rename", l.id.0));
     if resp.double_clicked() {
-        ctx.data_mut(|d| d.insert_temp(rename_id, l.name.clone()));
+        if crate::doc_props_ui::is_background(doc, l) {
+            actions.push(("layer.new.layerFromBackground".into(), json!({})));
+        } else {
+            ctx.data_mut(|d| d.insert_temp(rename_id, l.name.clone()));
+        }
     }
     if let Some(mut text) = ctx.data(|d| d.get_temp::<String>(rename_id)) {
         let edit_rect = Rect::from_min_max(pos2(x - 3.0, rect.center().y - 11.0), pos2(name_right.max(x + 40.0), rect.center().y + 11.0));
