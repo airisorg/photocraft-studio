@@ -436,11 +436,15 @@ pub fn handle(app: &mut PhotocraftApp, ctx: &egui::Context, req: &ControlRequest
                     "up" => ToolEvent::Up { x, y },
                     _ => ToolEvent::Move { x, y, pressure: pr },
                 };
-                // With the Color Picker on top the image is its eyedropper, as for the mouse.
-                if crate::color_picker_ui::top(app).is_some() {
-                    if !matches!(ev, ToolEvent::Up { .. }) {
-                        crate::color_picker_ui::sample_at(app, x, y);
+                // Right-click with the Move tool, or ⌘/Ctrl+right-click: list the layers there.
+                if matches!(s("button"), Some("secondary" | "right")) && crate::layer_pick_ui::is_gesture(app.ui.tool, mods) {
+                    if matches!(ev, ToolEvent::Down { .. }) {
+                        let at = app.last_canvas_rect.center();
+                        crate::layer_pick_ui::open(app, [at.x, at.y], x, y);
                     }
+                    continue;
+                }
+                if matches!(s("button"), Some("secondary" | "right")) && !crate::paint_mouse::pointer_secondary(app, matches!(ev, ToolEvent::Down { .. })) {
                     continue;
                 }
                 if matches!(s("button"), Some("secondary" | "right")) {
@@ -605,22 +609,6 @@ pub fn inspect(app: &PhotocraftApp, ctx: &egui::Context) -> Value {
         "toolOptions": app.ui.tool_options,
         "textEdit": app.ui.text_edit,
         "layerMenu": app.ui.layer_menu,
-        "canvasToolMenu": app.ui.canvas_tool_menu.as_ref().map(|menu| {
-            json!({
-                "pos": menu.pos,
-                "tool": menu.tool,
-                "entries": if menu.tool == crate::state::Tool::Pen {
-                    crate::canvas_tool_menu::PEN_MENU.iter().map(|row| match row {
-                        Some((label, id)) => json!({"label": label, "id": id, "enabled": crate::canvas_tool_menu::entry_enabled(app, menu, id)}),
-                        None => json!({"separator": true}),
-                    }).collect::<Vec<_>>()
-                } else {
-                    crate::canvas_tool_menu::menu_entries(menu).iter().map(|&(label, id)| {
-                        json!({"label": label, "id": id, "enabled": crate::canvas_tool_menu::entry_enabled(app, menu, id)})
-                    }).collect::<Vec<_>>()
-                }
-            })
-        }),
         "panels": app.ui.panels,
         "views": app.ui.views,
         "dialogs": dialogs,

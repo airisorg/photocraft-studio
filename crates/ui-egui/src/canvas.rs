@@ -1732,6 +1732,14 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
         // (Preferences › Tools, `paint_mouse`).
         crate::paint_mouse::sync_tool_smoothing(app);
         let mut buttons = crate::paint_mouse::canvas_buttons(app, &response, tool);
+        // Right-click with the Move tool, or ⌘/Ctrl+right-click: the layers under the pointer.
+        if response.secondary_clicked()
+            && crate::layer_pick_ui::is_gesture(tool, mods)
+            && let Some(p) = response.interact_pointer_pos()
+        {
+            let d = xf.to_doc(p);
+            crate::layer_pick_ui::open(app, [p.x, p.y], d[0], d[1]);
+        }
         // The (temporary) Hand pans above; its gestures never reach the tool underneath.
         if tool == Tool::Hand {
             (buttons.started, buttons.dragged, buttons.stopped) = (false, false, false);
@@ -1864,7 +1872,6 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
         draw_transform_controls(app, &painter, &xf);
         crate::paint_mouse::show_picker(app, &ctx);
         crate::layer_pick_ui::show(app, &ctx);
-        crate::canvas_tool_menu::show(app, &ctx);
         crate::snap_ui::draw(app, &painter, &xf);
         if border == photocraft_engine::prefs::CanvasBorder::Line {
             painter.rect_stroke(img_rect, 0.0, Stroke::new(1.0, Color32::from_gray(20)), egui::StrokeKind::Outside);
