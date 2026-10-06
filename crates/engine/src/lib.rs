@@ -356,29 +356,6 @@ impl Session {
             // Not reached: inline dispatch never starts a job. Waiting is still correct.
             jobs::Started::Job(j) => self.wait_job(j),
         }
-        self.coalesce_request = params.get("coalesce").and_then(Value::as_str).map(str::to_string);
-        // Pixel commands follow the Channels panel target unless the caller names one.
-        let run_params = channel_cmds::inject_target(self, id, commands::inject_kind(id, params.clone()));
-        self.color_restrict = channel_cmds::color_restriction(self, id, &run_params);
-        // Last-resort guard (AGENTS.md, Never crash): a command that panics anyway fails with an
-        // error instead of taking the app down. `edit` only commits a document after its closure
-        // returns, so the documents are unchanged.
-        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (spec.run)(self, &run_params)))
-            .unwrap_or_else(|_| Err(EngineError::Other(format!("`{id}` failed with an internal error (logged); the document is unchanged"))));
-        self.coalesce_request = None;
-        self.color_restrict = None;
-        let r = r?;
-        // A layer-mask view ends when another layer becomes active (#196).
-        if let Some(st) = self.active_mut() {
-            mask_view_cmds::fix(st);
-        }
-        edit_menu_cmds::after_command(self, id);
-        automate_cmds::after_command(self, id);
-        self.sync_preset_store();
-        if spec.journal && !brush_cmds::coalesce_journal(self, id, &params) {
-            self.journal.push((id.to_string(), params));
-        }
-        Ok(r)
     }
 
     /// Is the command currently runnable? (drives menu enablement)

@@ -399,6 +399,42 @@ mod tests {
     }
 
     #[test]
+    fn background_jobs_list_wait_and_cancel() {
+        let mut h = Headless::new();
+        h.handle("doc.new", json!({"width": 600, "height": 400})).unwrap();
+        h.handle("engine.execute", json!({"command": "layer.new.layer"})).unwrap();
+        h.handle("engine.execute", json!({"command": "edit.fill", "params": {"color": "#808080"}})).unwrap();
+        // Default: waits, the result is the command's.
+        let r = h.handle("engine.execute", json!({"command": "filter.noise.addNoise", "params": {"amount": 20}})).unwrap();
+        assert!(r["filter"].is_object(), "{r}");
+        // wait: false returns a job id at once.
+        let r = h.handle("engine.execute", json!({"command": "filter.blur.gaussianBlur", "params": {"radius": 40}, "wait": false})).unwrap();
+        let job = r["job"].as_u64().unwrap();
+        let listed = h.handle("jobs.list", json!({})).unwrap();
+        assert!(listed["jobs"].as_array().unwrap().iter().any(|j| j["id"] == job), "{listed}");
+        // Wait for it via jobs.list (which applies finished jobs).
+        let t = std::time::Instant::now();
+        loop {
+            let l = h.handle("jobs.list", json!({})).unwrap();
+            let state = l["jobs"].as_array().unwrap().iter().find(|j| j["id"] == job).map(|j| j["state"].clone());
+            if state == Some(json!("done")) {
+                break;
+            }
+            assert!(t.elapsed().as_secs() < 60, "{l}");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        // Cancel: a second job, cancelled at once, leaves the document unchanged.
+        let before = h.session.active().unwrap().doc.clone();
+        let r = h.handle("engine.execute", json!({"command": "filter.blur.gaussianBlur", "params": {"radius": 40}, "wait": false})).unwrap();
+        let job = r["job"].as_u64().unwrap();
+        h.handle("jobs.cancel", json!({"job": job})).unwrap();
+        assert!(h.handle("jobs.cancel", json!({"job": "nope"})).is_err());
+        let l = h.handle("jobs.list", json!({})).unwrap();
+        assert_eq!(l["jobs"].as_array().unwrap().iter().find(|j| j["id"] == job).unwrap()["state"], "cancelled");
+        assert!(std::sync::Arc::ptr_eq(&h.session.active().unwrap().doc, &before));
+    }
+
+    #[test]
     fn automation_preview_rejects_oversized_full_size_and_numeric_wraparound() {
         let mut h = Headless::new();
         h.handle("doc.new", json!({"width": 2049, "height": 1})).unwrap();

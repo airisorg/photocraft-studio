@@ -214,8 +214,8 @@ impl Headless {
         if !matches!(&self.filesystem, Filesystem::TrustedLocal) {
             authorize_engine_command(id, &params)?;
         }
-        // Background jobs that finished since the last request (or batch step) are applied first.
-        self.sync_jobs();
+        // Background jobs that finished since the last request are applied first.
+        self.session.poll_jobs();
         if wait {
             return Ok(self.session.execute(id, params)?);
         }
