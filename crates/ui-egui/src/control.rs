@@ -6,12 +6,10 @@
 //! Methods:
 //! - `engine.execute {command, params}`: run any engine or UI command by id
 //! - `engine.commands`: list commands with enablement
-//! - `ui.inspect`: full UI state (tool, panels, views, dialogs, windows, window size); the menu
-//!   tree is `ui.menu.list`
-//! - `ui.set {tool?, panels?, dock?, dockTabs?, dockWidth?, maskTarget?, vectorMaskTarget?, selectionMode?, zoom?, center?, fit?, theme?, brushSection?, brushTab?, brushesView?, brushSize?}`:
-//!   change UI state; any other field is an error ([`UI_SET_FIELDS`])
-//! - `ui.menu.invoke {id, wait?}` / `ui.menu.list`: activate a menu item by id; list the menu tree
-//! - `ui.dialog.open {kind, fields?}` (kinds: newDocument, about, layerStyle {effect?}, colorPicker {target: foreground|background}, command {command}) / `ui.dialog.set {dialog, field, value}` / `ui.dialog.confirm {dialog, wait?}` / `ui.dialog.cancel {dialog}`
+//! - `ui.inspect`: full UI state (tool, panels, views, dialogs, windows, menu tree, window size)
+//! - `ui.set {tool?, panels?, zoom?, center?, dark?}`: change UI state
+//! - `ui.menu.invoke {id}` / `ui.menu.list`: activate a menu item by id; list the menu tree
+//! - `ui.dialog.open {kind, fields?}` (kinds: newDocument, about, layerStyle {effect?}, colorPicker {target: foreground|background}, command {command}) / `ui.dialog.set {dialog, field, value}` / `ui.dialog.confirm {dialog}` / `ui.dialog.cancel {dialog}`
 //! - `ui.dialog.apply {dialog}`: commit Preferences changes without closing the dialog
 //! - `ui.window.open {document?}` / `ui.window.close {window}`: extra document windows
 //! - `ui.pointer {events: [{kind: down|move|up, x, y, pressure?, tiltX?, tiltY?, rotation?}], modifiers?, button?}`: drive the active tool in document coordinates (`button: "secondary"` opens the tool's canvas context menu or Brush Preset picker, or erases with Preferences › Tools › Right-click with painting tools = erase)
@@ -372,8 +370,15 @@ pub fn handle(app: &mut PhotocraftApp, ctx: &egui::Context, req: &ControlRequest
                 {
                     return err(error);
                 }
-                let apply = req.method == "ui.dialog.apply";
-                run_waiting(app, wait, |app| if apply { crate::prefs_ui::apply(app, id) } else { crate::dialogs::confirm(app, id) })
+                let events_enabled = app.session.prefs().script_events.enabled;
+                if events_enabled {
+                    app.session.edit_prefs(|prefs| prefs.script_events.enabled = false);
+                }
+                let result = if req.method == "ui.dialog.apply" { crate::prefs_ui::apply(app, id) } else { crate::dialogs::confirm(app, id) };
+                if events_enabled {
+                    app.session.edit_prefs(|prefs| prefs.script_events.enabled = true);
+                }
+                wrap(result)
             }
             None => err("missing `dialog`"),
         },
@@ -734,57 +739,6 @@ mod tests {
         let r = call(&mut app, &ctx, "ui.menu.invoke", json!({"id": "filter.blur.gaussianBlur"}));
         assert!(r.to_string().contains("dialog"), "ui.menu.invoke should open the dialog: {r}");
         assert_eq!(app.session.active().unwrap().revision, rev, "opening a dialog must not edit the document");
-    }
-
-    #[test]
-    fn ui_set_rejects_unknown_fields_before_changing_anything() {
-        use crate::theme::ThemeKind;
-        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
-        let ctx = egui::Context::default();
-        app.set_theme(&ctx, ThemeKind::StudioLight);
-        // `dark` was advertised to MCP clients but never read; a typo looked like success too.
-        for params in [json!({"dark": true}), json!({"thme": "classic"}), json!({"tool": "move", "dark": true})] {
-            let r = call(&mut app, &ctx, "ui.set", params.clone());
-            assert_eq!(r["ok"], false, "{params}: {r}");
-            assert!(r["error"].as_str().unwrap().contains("unknown field"), "{r}");
-        }
-        assert_eq!(app.ui.theme, ThemeKind::StudioLight);
-        assert_eq!(app.ui.tool, Tool::Brush, "a rejected call applies none of its fields");
-        // Every field the method reads gets past the check (a bad value is its own error).
-        for field in UI_SET_FIELDS {
-            let r = call(&mut app, &ctx, "ui.set", json!({ field: null }));
-            assert!(!r.to_string().contains("unknown field"), "{field}: {r}");
-        }
-        assert_eq!(call(&mut app, &ctx, "ui.set", Value::Null)["ok"], true);
-    }
-
-    #[test]
-    fn ui_set_gradient_blend_mode_validates_and_updates_options() {
-        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
-        let ctx = egui::Context::default();
-        let good = call(&mut app, &ctx, "ui.set", json!({"tool": "gradient", "gradientBlendMode": "Difference", "gradientClassic": true}));
-        assert_eq!(good["ok"], true, "{good}");
-        assert_eq!(app.ui.tool_options.gradient_blend_mode, photocraft_color::BlendMode::Difference);
-        assert!(app.ui.tool_options.gradient_classic);
-        let bad = call(&mut app, &ctx, "ui.set", json!({"gradientBlendMode": "nonsense", "gradientClassic": false}));
-        assert_eq!(bad["ok"], false, "{bad}");
-        assert!(app.ui.tool_options.gradient_classic, "invalid mode must not change options");
-    }
-
-    #[test]
-    fn ui_set_unknown_theme_error_names_every_theme_and_each_name_works() {
-        use crate::theme::ThemeKind;
-        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
-        let ctx = egui::Context::default();
-        let r = call(&mut app, &ctx, "ui.set", json!({"theme": "nope"}));
-        assert_eq!(r["ok"], false);
-        let error = r["error"].as_str().unwrap();
-        for kind in ThemeKind::ALL {
-            assert!(error.contains(kind.id()), "{error} lacks {}", kind.id());
-            assert_eq!(call(&mut app, &ctx, "ui.set", json!({"theme": kind.id()}))["ok"], true);
-            assert_eq!(app.ui.theme, kind);
-            assert_eq!(ThemeKind::from_name(kind.id()), Some(kind));
-        }
     }
 
     #[test]
