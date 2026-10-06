@@ -37,6 +37,19 @@ from it is committed here. Per-file authors, sources and licences:
 | Shippori Mincho Regular (FONTDASU) | Japanese serif Type fallback (desktop) | SIL OFL 1.1, shipped as `OFL-shippori-mincho.txt` |
 | BIZ UDMincho Regular (Morisawa) | Japanese serif Type fallback (desktop) | SIL OFL 1.1, shipped as `OFL-biz-ud-mincho.txt` |
 
+### Optional build input: craft-fonts (not files in this repo)
+
+Builds made with `CRAFT_FONTS_DIR` (all official releases) embed fonts from
+[storytold/craft-fonts](https://github.com/storytold/craft-fonts) at a pinned commit; no font file
+from it is committed here. Per-file authors, sources and licences:
+[craft-fonts `ATTRIBUTION.md`](https://github.com/storytold/craft-fonts/blob/main/ATTRIBUTION.md).
+
+| Font (embedded at build time) | Use | License |
+|---|---|---|
+| BIZ UDPGothic Regular, Bold (Morisawa) | Japanese UI and sans Type fallback (desktop) | SIL OFL 1.1, shipped as `OFL-biz-ud-pgothic.txt` |
+| Shippori Mincho Regular (FONTDASU) | Japanese serif Type fallback (desktop) | SIL OFL 1.1, shipped as `OFL-shippori-mincho.txt` |
+| BIZ UDMincho Regular (Morisawa) | Japanese serif Type fallback (desktop) | SIL OFL 1.1, shipped as `OFL-biz-ud-mincho.txt` |
+
 The other built-in ICC profiles and the generated LUT looks are produced by code at runtime
 (`crates/cms/src/builtin.rs`, `crates/cms/src/lutfile.rs`) and dedicated to the public domain
 (CC0-1.0); they are not separate files.

@@ -51,15 +51,6 @@ copy_docs() {
   for f in README.md LICENSE LICENSE-MIT LICENSE-APACHE COPYRIGHT NOTICE ATTRIBUTION.md SECURITY.md; do
     if [ -f "$ROOT/$f" ]; then cp "$ROOT/$f" "$dest/"; fi
   done
-  # Preserve the relative paths referenced by NOTICE/ATTRIBUTION in binary and
-  # static-web distributions, including the fonts embedded without craft-fonts.
-  for f in assets/fonts/OFL-Inter.txt assets/fonts/OFL-JetBrainsMono.txt \
-    assets/icons/LICENSE-lucide.txt assets/dict/LICENSE-SCOWL.txt \
-    assets/app-icon/LICENSE.txt crates/ui-egui/src/i18n/LICENSE-translations.txt \
-    docs/brand/LICENSE-brand.txt; do
-    mkdir -p "$dest/$(dirname "$f")"
-    cp "$ROOT/$f" "$dest/$f"
-  done
   copy_font_licences "$dest"
 }
 

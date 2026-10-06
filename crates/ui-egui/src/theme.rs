@@ -349,8 +349,9 @@ pub fn install_fonts_with(ctx: &egui::Context, cjk: crate::cjk_fonts::Sources) {
         fonts.families.insert(FontFamily::Name(fam.into()), stack);
     }
     ctx.set_fonts(fonts);
-    // Japanese / Chinese / Korean system fonts are registered on demand (cjk_fonts.rs).
-    crate::cjk_fonts::install(ctx);
+    // Japanese / Chinese / Korean fallback fonts (craft-fonts' Japanese ones if built in, then
+    // the system's) are registered on demand (cjk_fonts.rs).
+    crate::cjk_fonts::install_with(ctx, cjk);
 }
 
 pub fn medium(size: f32) -> FontId {

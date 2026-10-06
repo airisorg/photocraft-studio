@@ -42,6 +42,11 @@ const FALLBACK_LAST: &[&str] = &["Arial Unicode MS", "Apple Color Emoji", "Segoe
 pub fn fallback_candidates(order: &[crate::cjk::CjkScript; 4]) -> Vec<&'static str> {
     let mut v = FALLBACK_CANDIDATES.to_vec();
     for s in order {
+        // craft-fonts' Japanese fonts (if built in) go ahead of the installed Japanese fonts, in
+        // the Japanese slot of the locale order, so shared Han keeps the locale's forms.
+        if *s == crate::cjk::CjkScript::Japanese {
+            v.extend(crate::craft_fonts::japanese_families());
+        }
         v.extend_from_slice(crate::cjk::families(*s));
     }
     v.extend_from_slice(FALLBACK_LAST);
