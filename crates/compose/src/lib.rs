@@ -1350,15 +1350,25 @@ fn cached_effect_maps(layer: &Layer, region: Rect, key: u64, cx: &Ctx) -> std::s
             s
         }
     };
-    let entry = slot.get_or_init(|| {
-        let shape: Vec<f32> = if region.is_empty() { Vec::new() } else { effect_shape(layer, region, cx) };
-        let maps = effects::build_maps_prepared(layer, shape, region, &cx.light, &texture_ctx(layer, region, cx), cx.patterns);
-        let bytes = maps.bytes();
-        // Counted exactly once, when the entry is built.
-        fx_cache().lock().unwrap_or_else(|e| e.into_inner()).bytes += bytes;
-        FxEntry { maps: std::sync::Arc::new(maps), _pin: layer.clone(), bytes }
-    });
-    let maps = entry.maps.clone();
+    let maps = match slot.get() {
+        Some(e) => e.maps.clone(),
+        None => {
+            let shape: Vec<f32> = if region.is_empty() { Vec::new() } else { effect_shape(layer, region, cx) };
+            let maps = effects::build_maps_prepared(layer, shape, region, &cx.light, &texture_ctx(layer, region, cx), cx.patterns);
+            let bytes = maps.bytes();
+            let maps = std::sync::Arc::new(maps);
+            if slot.set(FxEntry { maps: maps.clone(), _pin: layer.clone(), bytes }).is_ok() {
+                // Counted exactly once, by the build that filled the slot, and only while the
+                // slot is still cached (eviction may have dropped it meanwhile).
+                let mut c = fx_cache().lock().unwrap_or_else(|e| e.into_inner());
+                if c.map.get(&key).is_some_and(|s| std::sync::Arc::ptr_eq(s, &slot)) {
+                    c.bytes += bytes;
+                }
+            }
+            // A concurrent build that finished first wins, so every tile shares one map.
+            slot.get().map_or(maps, |e| e.maps.clone())
+        }
+    };
     // Evict the oldest entries over budget (never the one just used).
     let mut c = fx_cache().lock().unwrap_or_else(|e| e.into_inner());
     let budget = effect_cache_budget();
