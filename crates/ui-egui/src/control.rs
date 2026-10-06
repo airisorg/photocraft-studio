@@ -444,7 +444,8 @@ pub fn handle(app: &mut PhotocraftApp, ctx: &egui::Context, req: &ControlRequest
                     }
                     continue;
                 }
-                if matches!(s("button"), Some("secondary" | "right")) && !crate::paint_mouse::pointer_secondary(app, matches!(ev, ToolEvent::Down { .. })) {
+                if matches!(s("button"), Some("secondary" | "right")) && !crate::paint_mouse::pointer_secondary(app, matches!(ev, ToolEvent::Down { .. }), mods)
+                {
                     continue;
                 }
                 if matches!(s("button"), Some("secondary" | "right")) {
