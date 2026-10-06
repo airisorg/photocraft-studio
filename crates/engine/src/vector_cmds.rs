@@ -1308,41 +1308,6 @@ pub fn specs() -> Vec<CommandSpec> {
             path_set
         ),
         spec!("path.delete", "Delete Path", [], r##"{"name":str|"work"="work"}"##, has_doc, path_delete),
-        spec!(
-            "path.transform",
-            "Free Transform Path",
-            [],
-            r##"{"name":str|"work"|"layer"="work","layer":id? (with layer target),"matrix":[a,b,c,d,e,f] | "translateX":px?,"translateY":px?,"scaleX":factor?,"scaleY":factor?,"angle":degrees?} (numeric transforms pivot on path bounds center)"##,
-            has_doc,
-            path_transform
-        ),
-        spec!(
-            "path.clippingPath.set",
-            "Clipping Path",
-            [],
-            r##"{"name":savedPathName,"flatness":0..100=0} (PSD export clipping path)"##,
-            has_doc,
-            clipping_path_set
-        ),
-        spec!("path.clippingPath.clear", "Clear Clipping Path", [], r##"{}"##, has_doc, clipping_path_clear),
-        spec!("path.style.copyFill", "Copy Fill", [], r##"{} (copies active shape layer fill)"##, has_shape_fill, copy_shape_fill),
-        spec!("path.style.copyStroke", "Copy Complete Stroke", [], r##"{} (copies active shape layer stroke)"##, has_shape_stroke, copy_shape_stroke),
-        spec!(
-            "path.style.pasteFill",
-            "Paste Fill",
-            [],
-            r##"{"layer":id?} (pastes copied fill onto active shape layer)"##,
-            can_paste_shape_fill,
-            paste_shape_fill
-        ),
-        spec!(
-            "path.style.pasteStroke",
-            "Paste Complete Stroke",
-            [],
-            r##"{"layer":id?} (pastes copied stroke onto active shape layer)"##,
-            can_paste_shape_stroke,
-            paste_shape_stroke
-        ),
         spec!("path.rename", "Rename Path", [], r##"{"name":str|"work"="work","to":str} (renaming the work path saves it)"##, has_doc, path_rename),
         // ⌘↩ / Ctrl+Enter, as in Photoshop (the UI loads the path selected in the Paths panel, #306).
         CommandSpec {
