@@ -23,7 +23,6 @@
 use std::sync::{Arc, Mutex};
 
 use photocraft_algo::resample::translate_surface;
-use photocraft_algo::transform::Homography;
 use photocraft_color::{BlendMode, PixelFormat};
 use photocraft_doc::{DocId, Document, Layer, LayerContent, LayerId, LayerMask, Metadata, SmartObject, SmartSource};
 use photocraft_geom::{Affine, Rect, Size};
@@ -297,10 +296,7 @@ pub fn render(doc: &Document, sm: &SmartObject) -> Result<Option<Surface>> {
         None => source_image(&name, &bytes, doc.pixel_format())?,
     };
     // Through the warp (source space) and the transform in one pass; whole-pixel moves are exact.
-    let placed = match &sm.perspective {
-        Some(p) => photocraft_algo::warp::place_source_projective(&img.surface, img.bounds, &Homography(*p), sm.warp.as_ref()),
-        None => photocraft_algo::warp::place_source(&img.surface, img.bounds, &sm.transform, sm.warp.as_ref()),
-    };
+    let placed = photocraft_algo::warp::place_source(&img.surface, img.bounds, &sm.transform, sm.warp.as_ref());
     Ok(Some(apply_smart_filters(&placed, sm, doc.bounds())))
 }
 
@@ -396,17 +392,6 @@ pub(crate) fn snap_affine(a: Affine) -> Affine {
 /// Moves a smart object by whole pixels without re-rendering.
 pub(crate) fn shift_smart(sm: &mut SmartObject, dx: i32, dy: i32) {
     sm.transform = Affine::translate(dx as f64, dy as f64).mul(&sm.transform);
-    if let Some(c) = &mut sm.cache {
-        *c = crate::layer_multi_cmds::shift_surface(c, dx, dy);
-    }
-    if let Some(m) = &mut sm.filter_mask {
-        m.surface = crate::layer_multi_cmds::shift_surface(&m.surface, dx, dy);
-    }
-}
-
-/// Moves a smart object by whole pixels without re-rendering.
-pub(crate) fn shift_smart(sm: &mut SmartObject, dx: i32, dy: i32) {
-    transform_placement(sm, &Affine::translate(dx as f64, dy as f64));
     if let Some(c) = &mut sm.cache {
         *c = crate::layer_multi_cmds::shift_surface(c, dx, dy);
     }

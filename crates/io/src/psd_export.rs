@@ -451,9 +451,13 @@ impl Ex {
                 }
             }
             LayerContent::Smart(sm) => {
-                set_principal(&mut raw, smart_keys(sm.psd_raw.as_deref().map(Vec::as_slice)), sm.psd_raw.as_ref());
-                if !raw.iter().any(|(k, _)| matches!(k, b"SoLd" | b"PlLd" | b"SoLE")) {
-                    self.warnings.push(format!("layer \"{}\": smart object written as pixels", l.name));
+                let parsed = sm.psd_raw.as_deref().and_then(|d| crate::smart_map::parse_sold(d));
+                if sm.psd_raw.is_some() && parsed.is_none() {
+                    // Placed-layer data we don't parse (`PlLd` only): kept verbatim.
+                    self.smart.prune_ok = false;
+                    set_principal(&mut raw, smart_keys(sm.psd_raw.as_deref().map(Vec::as_slice)), sm.psd_raw.as_ref());
+                } else {
+                    self.smart_blocks(l, sm, parsed, &mut raw);
                 }
             }
             LayerContent::Raster(_) | LayerContent::Group(_) => {}
@@ -505,6 +509,203 @@ impl Ex {
                 }
             }
         }
+    }
+
+    /// Placed-layer blocks (`PlLd` + `SoLd`) of a smart object, its embedded file (`lnk2`) and
+    /// filter cache (`FEid`). An imported placed layer that nothing changed is written verbatim;
+    /// otherwise the blocks are regenerated (from the imported descriptor where the source is
+    /// the same). Without a source that can be embedded the layer is written as pixels.
+    fn smart_blocks(&mut self, l: &Layer, sm: &photocraft_doc::SmartObject, template: Option<crate::smart_map::Placed>, raw: &mut Vec<([u8; 4], Vec<u8>)>) {
+        use crate::smart_map::{FilterStack, PlacedSpec, filter_fx, plld_bytes, sold_bytes, uuid_from};
+        let src = match self.smart_source(sm, template.as_ref()) {
+            Ok(s) => s,
+            Err(e) => {
+                raw.retain(|(k, _)| !matches!(k, b"SoLd" | b"PlLd" | b"SoLE"));
+                self.warnings.push(format!("layer \"{}\": smart object written as pixels ({e})", l.name));
+                return;
+            }
+        };
+        self.smart.used.insert(src.uuid.clone());
+        let stack = FilterStack {
+            enabled: sm.filters_enabled,
+            filters: sm.smart_filters.clone(),
+            mask_enabled: sm.filter_mask.as_ref().is_none_or(|m| m.enabled),
+            mask_linked: sm.filter_mask.as_ref().is_some_and(|m| m.linked),
+        };
+        let same_source = template.as_ref().filter(|t| t.idnt == src.uuid);
+        if let (Some(t), Some(data)) = (same_source, sm.psd_raw.as_ref())
+            && self.placed_unchanged(t, data, sm, &stack)
+        {
+            let keys: &[&[u8; 4]] = if raw.iter().any(|(k, _)| k == b"SoLd") { &[b"SoLd"] } else { &[b"SoLE", b"SoLd"] };
+            match keys.iter().find_map(|k| raw.iter().position(|(rk, _)| rk == *k)) {
+                Some(i) => raw[i].1 = data.to_vec(),
+                None => raw.push((*b"SoLd", data.to_vec())),
+            }
+            if !stack.filters.is_empty() {
+                self.smart.keep_fx.insert(t.placed.clone());
+            }
+            return;
+        }
+        let placed = match same_source {
+            Some(t) if !t.placed.is_empty() => t.placed.clone(),
+            _ => uuid_from(format!("{}:{}", src.uuid, l.id.0).as_bytes()),
+        };
+        let size = same_source.and_then(|t| crate::smart_map::stored_size(&t.descriptor)).unwrap_or(src.size);
+        let size = if size.0 > 0.0 && size.1 > 0.0 { size } else { size_from_layer(sm) };
+        let mut warnings = Vec::new();
+        let fx = (!stack.filters.is_empty()).then(|| filter_fx(&stack, &l.name, &mut warnings));
+        let spec = PlacedSpec { idnt: &src.uuid, placed: &placed, transform: sm.transform, size, dpi: src.dpi, warp: sm.warp.as_ref(), filter_fx: fx };
+        let sold = sold_bytes(same_source.map(|t| &t.descriptor), &spec, &mut warnings);
+        let plld = plld_bytes(&spec, &mut warnings);
+        warnings.dedup();
+        let key = if same_source.is_some() && raw.iter().any(|(k, _)| k == b"SoLE") && !raw.iter().any(|(k, _)| k == b"SoLd") { *b"SoLE" } else { *b"SoLd" };
+        raw.retain(|(k, _)| k == &key || !matches!(k, b"SoLd" | b"SoLE"));
+        upsert(raw, b"PlLd", plld, Some(&key));
+        upsert(raw, &key, sold, None);
+        if !stack.filters.is_empty() {
+            let bounds = sm.cache.as_ref().map_or(self.canvas, |c| c.content_bounds().union(&self.canvas));
+            let item = match (sm.stack_mode, self.source_composite(&src.uuid)) {
+                (None, Some((img, img_bounds))) => {
+                    let unfiltered = photocraft_algo::warp::place_source(&img, img_bounds, &sm.transform, sm.warp.as_ref());
+                    crate::smart_map::feid_item(&placed, &unfiltered, sm.filter_mask.as_ref(), bounds, self.fmt)
+                }
+                _ => None,
+            };
+            match item {
+                Some(i) => self.smart.new_fx.push(i),
+                // Without the unfiltered pixels Photoshop re-renders from the source itself; only
+                // the filter mask has nowhere to go.
+                None if sm.filter_mask.is_some() => self.warnings.push(format!("layer \"{}\": the smart filter mask was not written to PSD", l.name)),
+                None => {}
+            }
+        }
+        self.warnings.extend(warnings.into_iter().map(|w| if w.starts_with("layer ") { w } else { format!("layer \"{}\": {w}", l.name) }));
+    }
+
+    /// Whether an imported placed layer still says what the smart object is: transform, warp,
+    /// filter stack and filter mask as stored.
+    fn placed_unchanged(&self, t: &crate::smart_map::Placed, data: &[u8], sm: &photocraft_doc::SmartObject, stack: &crate::smart_map::FilterStack) -> bool {
+        if t.transform != sm.transform || blocks::parse_placed_warp(b"SoLd", data) != sm.warp || t.stack.clone().unwrap_or_default() != *stack {
+            return false;
+        }
+        if stack.filters.is_empty() {
+            return true;
+        }
+        let old = self.smart.old_fx.iter().find(|i| i.id == t.placed);
+        let mask = old.map(|i| crate::smart_map::mask_from_item(i, self.mask_fmt.sample, stack));
+        match mask {
+            Some(Ok(m)) => m == sm.filter_mask,
+            Some(Err(_)) => false,
+            None => sm.filter_mask.is_none(),
+        }
+    }
+
+    /// The `lnk2` file a smart object's source is written as: a preserved embedded file, or a new
+    /// one (a `.pcraft` source becomes a PSB of the nested document; image files are embedded as
+    /// they are; a linked file is read and embedded).
+    fn smart_source(&mut self, sm: &photocraft_doc::SmartObject, template: Option<&crate::smart_map::Placed>) -> Result<Source, String> {
+        use photocraft_doc::SmartSource;
+        match &sm.source {
+            // A file of the imported document, or one its placed-layer data names (a missing
+            // link stays a smart object, as in Photoshop).
+            SmartSource::Linked { path } if self.smart.known.contains(path) || template.is_some_and(|t| t.idnt == *path) => {
+                let stored = template.filter(|t| t.idnt == *path).and_then(|t| crate::smart_map::stored_size(&t.descriptor));
+                let geometry = stored.map(|size| (size, f64::from(self.dpi))).or_else(|| {
+                    let meta = photocraft_doc::Metadata { psd_global_blocks: self.smart.globals.clone(), ..Default::default() };
+                    let f = crate::linked::find_linked_file(&meta, path)?;
+                    source_geometry(&f.file_name, &f.bytes).ok()
+                });
+                let (size, dpi) = geometry.unwrap_or((size_from_layer(sm), f64::from(self.dpi)));
+                Ok(Source { uuid: path.clone(), size, dpi })
+            }
+            SmartSource::Linked { path } => {
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    let bytes = std::fs::read(path).map_err(|e| format!("the linked file {path} can't be read: {e}"))?;
+                    let name = path.rsplit(['/', '\\']).next().unwrap_or(path).to_string();
+                    self.warnings.push(format!("the linked smart object {name} was embedded (PSD export keeps no external links)"));
+                    self.embed(&name, &bytes)
+                }
+                #[cfg(target_arch = "wasm32")]
+                Err(format!("the linked file {path} can't be read here"))
+            }
+            SmartSource::Embedded { file_name, bytes } => self.embed(file_name, bytes),
+        }
+    }
+
+    /// The composite of the source `uuid` (an embedded file of this export or of the imported
+    /// document) in the document's pixel format, its top-left at the origin; decoded once.
+    fn source_composite(&mut self, uuid: &str) -> Option<(std::sync::Arc<Surface>, photocraft_geom::Rect)> {
+        if let Some(c) = self.smart.composites.get(uuid) {
+            return c.clone();
+        }
+        let doc = match self.smart.docs.get(uuid) {
+            Some(d) => Some(d.clone()),
+            None => {
+                let file = self.smart.add.iter().find(|f| f.uuid == uuid).cloned().or_else(|| {
+                    let meta = photocraft_doc::Metadata { psd_global_blocks: self.smart.globals.clone(), ..Default::default() };
+                    crate::linked::find_linked_file(&meta, uuid)
+                });
+                file.and_then(|f| crate::import(&f.file_name, &f.bytes).ok()).map(|r| r.document)
+            }
+        };
+        let c = doc.map(|d| {
+            let mut s = Surface::new(self.fmt);
+            let fmt = self.fmt;
+            let _ = photocraft_compose::render_bands(&d, d.bounds(), 0, |band| -> Result<(), ()> {
+                let mut vals = Vec::with_capacity(band.px.len() * fmt.channels());
+                let mut v = [0.0f32; 5];
+                for p in &band.px {
+                    let n = photocraft_raster::from_rgba_into(&fmt, *p, &mut v);
+                    vals.extend_from_slice(&v[..n]);
+                }
+                s.write_region(band.rect, &vals);
+                Ok(())
+            });
+            s.prune();
+            (std::sync::Arc::new(s), d.bounds())
+        });
+        self.smart.composites.insert(uuid.to_string(), c.clone());
+        c
+    }
+
+    /// Adds `bytes` as an embedded file (converted to PSB when it is a `.pcraft` bundle), once
+    /// per distinct content.
+    fn embed(&mut self, file_name: &str, bytes: &[u8]) -> Result<Source, String> {
+        let key = *blake3::hash(bytes).as_bytes();
+        if let Some(r) = self.smart.converted.get(&key) {
+            return r.clone();
+        }
+        let r = self.convert_source(file_name, bytes);
+        self.smart.converted.insert(key, r.clone());
+        r
+    }
+
+    fn convert_source(&mut self, file_name: &str, bytes: &[u8]) -> Result<Source, String> {
+        let (name, data, size, dpi, nested) = if photocraft_format::is_pcraft(bytes) {
+            if self.smart.depth >= MAX_NESTING {
+                return Err(format!("smart objects nest more than {MAX_NESTING} deep"));
+            }
+            let doc = photocraft_format::load_from_bytes(bytes).map_err(|e| format!("its contents can't be read: {e}"))?;
+            let (file, warnings) = document_to_psd_nested(&doc, &PsdExportOptions { force_psb: true }, self.smart.depth + 1);
+            let data = file.to_bytes().map_err(|e| format!("its contents can't be written: {e}"))?;
+            let stem = file_name.rsplit_once('.').map_or(file_name, |(a, _)| a);
+            self.warnings.extend(warnings.into_iter().map(|w| format!("smart object {stem}: {w}")));
+            let size = (f64::from(doc.size.width), f64::from(doc.size.height));
+            (format!("{stem}.psb"), data, size, f64::from(doc.resolution_dpi), Some(doc))
+        } else {
+            // Formats we can't decode (vector PDF/AI…) are still embedded; their size comes from the layer.
+            let (size, dpi) = source_geometry(file_name, bytes).unwrap_or(((0.0, 0.0), f64::from(self.dpi)));
+            (file_name.to_string(), bytes.to_vec(), size, dpi, None)
+        };
+        let uuid = crate::smart_map::uuid_from(&data);
+        if let Some(d) = nested {
+            self.smart.docs.insert(uuid.clone(), d);
+        }
+        if !self.smart.known.contains(&uuid) && !self.smart.add.iter().any(|f| f.uuid == uuid) {
+            self.smart.add.push(crate::linked::LinkedFile { uuid: uuid.clone(), file_name: name, bytes: data });
+        }
+        Ok(Source { uuid, size, dpi })
     }
 
     /// Pixels for a fill layer: Photoshop's cached rendering while valid,
@@ -743,118 +944,6 @@ pub fn document_to_psd(doc: &Document) -> PsdFile {
 /// with `photocraft_compose::flatten`.
 pub fn document_to_psd_with(doc: &Document, opts: &PsdExportOptions) -> (PsdFile, Vec<String>) {
     document_to_psd_nested(doc, opts, 0)
-}
-
-/// Adds headroom for compressed channel streams and their per-row length tables.
-fn estimate_encoded_size(raw_bytes: u64, rows: u64, structural_bytes: u64) -> Option<u64> {
-    raw_bytes.checked_add(raw_bytes.checked_add(63)?.checked_div(64)?)?.checked_add(rows.checked_mul(8)?)?.checked_add(structural_bytes)
-}
-
-fn add_plane_estimate(raw_bytes: &mut u64, rows: &mut u64, width: u64, height: u64, channels: u64, bytes_per_sample: u64) -> Option<()> {
-    let plane_bytes = width.checked_mul(height)?.checked_mul(channels)?.checked_mul(bytes_per_sample)?;
-    let plane_rows = height.checked_mul(channels)?;
-    *raw_bytes = raw_bytes.checked_add(plane_bytes)?;
-    *rows = rows.checked_add(plane_rows)?;
-    Some(())
-}
-
-fn exceeds_psd_size_limit(estimated_size: Option<u64>) -> bool {
-    estimated_size.is_none_or(|size| size > PSD_MAX_FILE_SIZE)
-}
-
-fn surface_dimensions(surface: &Surface) -> Option<(u64, u64)> {
-    let bounds = surface.content_bounds();
-    Some((u64::from(bounds.width()), u64::from(bounds.height())))
-}
-
-pub(crate) fn estimate_psd_size(doc: &Document) -> Option<u64> {
-    let mut raw_bytes = 0;
-    let mut rows = 0;
-    let mut structural_bytes = PSD_ESTIMATE_FIXED_OVERHEAD;
-
-    let width = u64::from(doc.size.width);
-    let height = u64::from(doc.size.height);
-
-    if doc.mode == ColorMode::Multichannel {
-        let channels = u64::try_from(doc.channels.len().clamp(1, 56)).ok()?;
-        let sample_bytes = u64::try_from(if doc.depth == SampleType::F32 { SampleType::U16.bytes() } else { doc.depth.bytes() }).ok()?;
-        add_plane_estimate(&mut raw_bytes, &mut rows, width, height, channels, sample_bytes)?;
-    } else {
-        let format = doc.pixel_format();
-        let color_channels = u64::try_from(format.mode.color_channels()).ok()?;
-        let bytes_per_sample = u64::try_from(format.sample.bytes()).ok()?;
-        let layer_channels = color_channels.checked_add(1)?;
-
-        for (_, _, layer) in doc.walk() {
-            structural_bytes = structural_bytes.checked_add(PSD_ESTIMATE_LAYER_OVERHEAD)?.checked_add(u64::try_from(layer.name.len()).ok()?)?;
-            for (_, data) in &layer.psd_blocks {
-                structural_bytes = structural_bytes.checked_add(u64::try_from(data.len()).ok()?)?;
-            }
-
-            let surface = match &layer.content {
-                LayerContent::Fill(fill) => {
-                    let mut fill_width = width;
-                    let mut fill_height = height;
-                    if let Some(cache) = &layer.fill_cache
-                        && cache.fill == *fill
-                    {
-                        let (cache_width, cache_height) = surface_dimensions(&cache.surface)?;
-                        fill_width = fill_width.max(cache_width);
-                        fill_height = fill_height.max(cache_height);
-                    }
-                    add_plane_estimate(&mut raw_bytes, &mut rows, fill_width, fill_height, layer_channels, bytes_per_sample)?;
-                    None
-                }
-                _ => layer.surface(),
-            };
-            if let Some(surface) = surface {
-                let (surface_width, surface_height) = surface_dimensions(surface)?;
-                add_plane_estimate(&mut raw_bytes, &mut rows, surface_width, surface_height, layer_channels, bytes_per_sample)?;
-            }
-            if let Some(mask) = &layer.mask {
-                let (mask_width, mask_height) = surface_dimensions(&mask.surface)?;
-                add_plane_estimate(&mut raw_bytes, &mut rows, mask_width, mask_height, 1, bytes_per_sample)?;
-            }
-            if let LayerContent::Smart(smart) = &layer.content
-                && let photocraft_doc::SmartSource::Embedded { bytes, .. } = &smart.source
-            {
-                structural_bytes = structural_bytes.checked_add(u64::try_from(bytes.len()).ok()?)?;
-            }
-        }
-
-        let max_extra_channels = 56usize.saturating_sub(format.mode.color_channels() + 1);
-        let mut extra_channels = doc.channels.len().min(max_extra_channels);
-        if doc.quick_mask.is_some() && extra_channels < max_extra_channels {
-            extra_channels += 1;
-        }
-        let merged_channels = color_channels.checked_add(1)?.checked_add(u64::try_from(extra_channels).ok()?)?;
-        add_plane_estimate(&mut raw_bytes, &mut rows, width, height, merged_channels, bytes_per_sample)?;
-        for channel in doc.channels.iter().take(extra_channels) {
-            structural_bytes = structural_bytes.checked_add(u64::try_from(channel.name.len()).ok()?)?;
-        }
-    }
-
-    structural_bytes = structural_bytes
-        .checked_add(u64::try_from(doc.icc_profile.as_ref().map_or(0, |profile| profile.len())).ok()?)?
-        .checked_add(u64::try_from(doc.metadata.xmp.as_ref().map_or(0, String::len)).ok()?)?
-        .checked_add(u64::try_from(doc.metadata.exif.as_ref().map_or(0, |data| data.len())).ok()?)?;
-    for (_, name, data) in &doc.metadata.psd_resources {
-        structural_bytes = structural_bytes.checked_add(u64::try_from(name.len()).ok()?)?.checked_add(u64::try_from(data.len()).ok()?)?;
-    }
-    for (_, _, data) in &doc.metadata.psd_global_blocks {
-        structural_bytes = structural_bytes.checked_add(u64::try_from(data.len()).ok()?)?;
-    }
-
-    estimate_encoded_size(raw_bytes, rows, structural_bytes)
-}
-
-pub(crate) fn psd_version(doc: &Document, force_psb: bool, size_exceeds_limit: bool) -> Version {
-    let exceeds_dimensions = doc.size.width > 30_000 || doc.size.height > 30_000;
-    if force_psb || exceeds_dimensions || size_exceeds_limit { Version::Psb } else { Version::Psd }
-}
-
-pub(crate) fn psd_size_exceeds_limit(doc: &Document) -> bool {
-    exceeds_psd_size_limit(estimate_psd_size(doc))
 }
 
 /// [`document_to_psd_with`] for a document embedded `depth` smart objects deep.

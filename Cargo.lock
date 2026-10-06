@@ -4237,13 +4237,6 @@ dependencies = [
 name = "photocraft-heif"
 version = "0.3.0"
 dependencies = [
- "heic-rs",
-]
-
-[[package]]
-name = "photocraft-io"
-version = "0.3.0"
-dependencies = [
  "blake3",
  "photocraft-algo",
  "photocraft-cms",
