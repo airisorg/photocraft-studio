@@ -98,6 +98,7 @@ pub mod rasterize_prompt;
 pub mod retouch_ui;
 mod rgb_histogram;
 pub mod rulers;
+pub mod scrollbars;
 pub mod shortcut_dispatch;
 pub mod shortcuts;
 mod sizing;
