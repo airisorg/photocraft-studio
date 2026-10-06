@@ -1274,6 +1274,9 @@ mod input_tests;
 mod pencil_tests;
 
 #[cfg(test)]
+mod move_auto_select_tests;
+
+#[cfg(test)]
 mod marquee_tests;
 
 #[cfg(test)]
