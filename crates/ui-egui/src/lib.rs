@@ -864,6 +864,9 @@ impl eframe::App for PhotocraftApp {
         // maximize it into the work area once (#315).
         work_area::fit_window(ctx);
         discard_ui::guard_window_close(self, ctx);
+        // Background jobs: apply finished ones, keep frames coming, Esc cancels (before the
+        // shortcuts see Esc).
+        jobs_ui::tick(self, ctx);
         shortcuts::handle(self, ctx);
         let arrived: Vec<(String, Vec<u8>)> =
             self.services.inbox.as_ref().map(|q| std::mem::take(&mut *q.lock().unwrap_or_else(|e| e.into_inner()))).unwrap_or_default();

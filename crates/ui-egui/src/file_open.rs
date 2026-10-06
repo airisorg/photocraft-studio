@@ -54,7 +54,7 @@ impl PhotocraftApp {
             crate::jobs_ui::start_open(self, &display_name(path), Some(path.to_string()), photocraft_engine::jobs::OpenSource::Path(path.to_string()))?;
             return Ok(Vec::new());
         }
-        let bytes = photocraft_format::read_file(std::path::Path::new(path)).map_err(|e| format!("{path}: {e}"))?;
+        let bytes = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
         self.open_file(path, &bytes)
     }
 
