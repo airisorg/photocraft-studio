@@ -493,25 +493,25 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                         crate::brush_picker::settings_toggle(app, ui);
                         widgets::vline(ui, 22.0);
                         if !t.pro {
-                            opt_label(ui, "Size");
+                            opt_label(ui, tl!("Size"));
                             widgets::value_field(ui, &mut b.size, 1.0..=5000.0, "px", 76.0);
                             widgets::vline(ui, 22.0);
                         }
-                        opt_label(ui, "Mode");
+                        opt_label(ui, tl!("Mode"));
                         let mut mode = b.mode;
                         let opts: Vec<(BlendMode, &str)> = BlendMode::LAYER_MODES.iter().map(|m| (*m, m.label())).collect();
                         if widgets::dropdown(ui, "pencil-mode", &mut mode, &opts, 96.0) {
                             b.mode = mode;
                         }
-                        opt_label(ui, "Opacity");
+                        opt_label(ui, tl!("Opacity"));
                         let mut o = b.opacity * 100.0;
                         if widgets::value_field(ui, &mut o, 0.0..=100.0, "%", if t.pro { 62.0 } else { 66.0 }).changed() {
                             b.opacity = o / 100.0;
                         }
-                        opt_label(ui, "Smoothing");
+                        opt_label(ui, tl!("Smoothing"));
                         smoothing_field(ui, b, if t.pro { 58.0 } else { 66.0 });
                         widgets::vline(ui, 22.0);
-                        widgets::checkbox(ui, &mut app.ui.tool_options.pencil_auto_erase, "Auto Erase");
+                        widgets::checkbox(ui, &mut app.ui.tool_options.pencil_auto_erase, tl!("Auto Erase"));
                     }
                     Tool::Brush | Tool::Eraser => {
                         picked = brush_preset_chip(ui, b, &app.session.tools.presets);
@@ -767,7 +767,7 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                             crate::shortcuts::pretty("Shift+Alt")
                         ),
                     ),
-                    Tool::Move => hint(ui, "Drag to move the active layer"),
+                    Tool::Move => hint(ui, tl!("Drag to move the active layer")),
                     Tool::Eyedropper => hint(
                         ui,
                         &crate::i18n::fmt(
@@ -776,7 +776,7 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                         ),
                     ),
                     Tool::Zoom => {
-                        widgets::checkbox(ui, &mut app.ui.tool_options.zoom_scrubby, "Scrubby Zoom");
+                        widgets::checkbox(ui, &mut app.ui.tool_options.zoom_scrubby, tl!("Scrubby Zoom"));
                         hint(
                             ui,
                             &crate::i18n::fmt(
@@ -795,27 +795,28 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                             app.ui.views[i].zoom = 1.0;
                         }
                     }
-                    Tool::Hand => hint(ui, "Drag to pan  ·  hold Space with any tool"),
+                    Tool::Hand => hint(ui, tl!("Drag to pan  ·  hold Space with any tool")),
                     Tool::Lasso | Tool::PolygonLasso => hint(
                         ui,
-                        &format!(
-                            "Drag (lasso) or click points (polygonal) · {} add · {} subtract",
-                            crate::shortcuts::pretty("Shift"),
-                            crate::shortcuts::pretty("Alt")
+                        &crate::i18n::fmt(
+                            tl!("Drag (lasso) or click points (polygonal) · {add} add · {sub} subtract"),
+                            &[("add", &crate::shortcuts::pretty("Shift")), ("sub", &crate::shortcuts::pretty("Alt"))],
                         ),
                     ),
                     Tool::Crop => hint(
                         ui,
-                        &format!(
-                            "Drag a crop box · drag inside to move · edges resize ({} ratio, {} centre) · Space moves while drawing · {} commits · Esc cancels",
-                            crate::shortcuts::pretty("Shift"),
-                            crate::shortcuts::pretty("Alt"),
-                            crate::shortcuts::pretty("Enter")
+                        &crate::i18n::fmt(
+                            tl!("Drag a crop box · drag inside to move · edges resize ({ratio} ratio, {centre} centre) · Space moves while drawing · {commit} commits · Esc cancels"),
+                            &[
+                                ("ratio", &crate::shortcuts::pretty("Shift")),
+                                ("centre", &crate::shortcuts::pretty("Alt")),
+                                ("commit", &crate::shortcuts::pretty("Enter")),
+                            ],
                         ),
                     ),
-                    Tool::Gradient => hint(ui, "Drag to draw a gradient"),
-                    Tool::PaintBucket => hint(ui, "Click to fill similar colours"),
-                    Tool::Type => hint(ui, "Click to add text"),
+                    Tool::Gradient => hint(ui, tl!("Drag to draw a gradient")),
+                    Tool::PaintBucket => hint(ui, tl!("Click to fill similar colours")),
+                    Tool::Type => hint(ui, tl!("Click to add text")),
                     // Retouching and smart-selection tools draw their bar in `retouch_ui::options_bar`.
                     _ => {}
                 }
@@ -1333,14 +1334,23 @@ fn layers(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                     if widgets::value_field(ui, &mut o, 0.0..=100.0, "%", 66.0).changed() {
                         actions.push(("layer.setProps".into(), json!({"layer": l.id.0, "opacity": o / 100.0})));
                     }
-                    label(ui, if t.pro { tl!("Opacity:") } else { tl!("Opacity") });
+                    label(ui, opacity_label);
                 });
             });
         });
         // Docks zero the item spacing: keep the Opacity and Fill fields apart (#155).
         ui.add_space((theme::ROW_GAP - ui.spacing().item_spacing.y).max(0.0));
         ui.horizontal(|ui| {
-            label(ui, if t.pro { tl!("Lock:") } else { tl!("Lock") });
+            let lock_label = if t.pro { tl!("Lock:") } else { tl!("Lock") };
+            let fill_label = if t.pro { tl!("Fill:") } else { tl!("Fill") };
+            // In a narrow panel with long translated labels, drop the "Lock:" text (the icons keep
+            // their tooltips) rather than let the Fill label run over the lock icons.
+            let gap = ui.spacing().item_spacing.x;
+            let icons_w = if t.pro { 5.0 * 20.0 } else { 22.0 + gap };
+            let fits = body_text_width(ui, lock_label) + icons_w + body_text_width(ui, fill_label) + 66.0 + 2.0 * gap <= ui.available_width();
+            if fits {
+                label(ui, lock_label);
+            }
             if t.pro {
                 ui.spacing_mut().item_spacing.x = 0.0;
                 let lk = l.locks;
@@ -1368,7 +1378,7 @@ fn layers(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                     if widgets::value_field(ui, &mut f, 0.0..=100.0, "%", 66.0).changed() {
                         actions.push(("layer.setProps".into(), json!({"layer": l.id.0, "fill": f / 100.0})));
                     }
-                    label(ui, if t.pro { tl!("Fill:") } else { tl!("Fill") });
+                    label(ui, fill_label);
                 })
             });
         });
@@ -1664,7 +1674,7 @@ fn layer_row(
         let sub = match &l.content {
             LayerContent::Adjustment(a) => tl!(a.label()).to_string(),
             LayerContent::Group(g) => crate::i18n::trn(crate::i18n::current(), g.children.len() as u64, "Group · {n} layer", "Group · {n} layers"),
-            other => other.kind_name().to_string(),
+            other => tl!(other.kind_name()).to_string(),
         };
         crate::layer_row_ui::label(&painter, x, rect.center().y + 8.0, name_right, &sub, egui::FontId::proportional(11.0), t.text_faint);
     }
@@ -1934,7 +1944,8 @@ pub fn properties_window(app: &mut PhotocraftApp, ctx: &egui::Context) {
                     ui.label(RichText::new(&layer.name).font(theme::medium(13.0)).color(t.text));
                     let kind = match &layer.content {
                         LayerContent::Adjustment(a) => crate::i18n::fmt(tl!("{name} Properties"), &[("name", tl!(a.label()))]),
-                        other => format!("{} Layer", other.kind_name()),
+                        // Whole phrases ("Type Layer"), as the Properties header translates them.
+                        other => tl!(&format!("{} Layer", other.kind_name())).to_string(),
                     };
                     ui.label(RichText::new(kind).small().color(t.text_faint));
                 });
