@@ -8,6 +8,9 @@
 //!
 //! `--safe-gpu` draws the canvas on the CPU path, like the app's `--safe-gpu` launch.
 //!
+//! `--monitor 1366x768 --window-top 31` simulates the display the window is on (in points) and
+//! where its content starts on it, e.g. a window running under a Windows taskbar.
+//!
 //! `--script` is a JSON array of `[method, params]` control-protocol calls (see
 //! docs/control-protocol.md), applied in order with a few frames between them.
 //! `--right-click-at X,Y` opens a screen-space context menu after the script, including panel
