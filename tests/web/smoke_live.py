@@ -25,6 +25,8 @@ with sync_playwright() as p:
     page.on('pageerror',lambda error:errors.append(str(error)))
     page.goto(url,wait_until='networkidle',timeout=120000)
     page.wait_for_function('typeof window.photocraftCommand === "function"',timeout=90000)
+    page.wait_for_selector('#photocraft_loading', state='detached', timeout=90000)
+    page.wait_for_timeout(400)
     page.screenshot(path=str(out/'hosted-workspace.png'))
     def command(method,params=None):
         r=page.evaluate('async ([m,p])=>JSON.parse(await photocraftCommand(m,JSON.stringify(p)))',[method,params or {}])
@@ -54,7 +56,7 @@ with sync_playwright() as p:
     assert after['document']['width']==960 and after['document']['height']==640
     assert len(before['document']['layers'])==4
     assert not errors,errors
-    resources=page.evaluate('performance.getEntriesByType("resource").filter(e=>e.name.endsWith(".wasm")).map(e=>({durationMs:e.duration,encodedBytes:e.encodedBodySize,decodedBytes:e.decodedBodySize}))')
+    resources=page.evaluate('performance.getEntriesByType("resource").filter(e=>e.name.endsWith(".wasm")).map(e=>({url:e.name,durationMs:e.duration,encodedBytes:e.encodedBodySize,decodedBytes:e.decodedBodySize}))')
     (out/'hosted-evidence.json').write_text(json.dumps({'url':url,'browser':browser.version,'renderer':before['perf']['timings']['gpuInfo'],
         'beforeLayers':len(before['document']['layers']),'exportSize':[960,640],'reimportSize':[after['document']['width'],after['document']['height']],
         'pageErrors':errors,'wasmResources':resources},indent=2))
