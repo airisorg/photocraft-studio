@@ -787,10 +787,12 @@ class BrowserAcceptance(unittest.TestCase):
         self.assertEqual(self.inspect()['dialogs'][0]['kind'],'NewDocument')
         self.page.screenshot(path=str(ARTIFACTS/'phone-new-document-fields.png'))
         self.page.mouse.dblclick(78,541)  # Native Width field, reached without protocol setters.
+        self.page.wait_for_timeout(150)  # Let egui replace the drag control with its text editor.
         self.page.keyboard.press('ControlOrMeta+A')
-        self.page.keyboard.type('256')
+        self.page.keyboard.type('256',delay=50)
         self.page.keyboard.press('Tab')
         self.page.wait_for_timeout(150)
+        self.assertEqual(self.inspect()['dialogs'][0]['fields']['width'],256)
         self.page.mouse.click(323,794)  # Native Create footer, above the hosting credit.
         self.page.wait_for_timeout(300)
         state=self.inspect()
