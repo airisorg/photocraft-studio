@@ -90,11 +90,8 @@ fn value(base: &Value, ours: &Value, theirs: &Value, depth: usize) -> Option<Val
 }
 
 pub(crate) fn documents(base: &[u8], ours: &[u8], theirs: &[u8], limit: usize) -> Option<Vec<u8>> {
-    // All three inputs share one decoded budget. Each native document is dropped
-    // before the next is loaded; malformed historical versions fail closed too.
-    let mut remaining = crate::validation::DECODED_LIMIT;
-    let mut parse = |bytes| -> Option<Value> {
-        let mut m = crate::validation::document(bytes, &mut remaining).ok()?;
+    let parse = |bytes| -> Option<Value> {
+        let mut m = photocraft_format::read_manifest(bytes).ok()?;
         m.thumbnail = None;
         m.composite = None;
         // Per-tab identities can differ when a file is open twice. They are not content edits.
@@ -114,7 +111,7 @@ pub(crate) fn documents(base: &[u8], ours: &[u8], theirs: &[u8], limit: usize) -
     }
     let merged = value(&b, &o, &t, 0)?;
     let mut manifest: Manifest = serde_json::from_value(merged).ok()?;
-    manifest.document.id = crate::validation::manifest(theirs).ok()?.document.id;
+    manifest.document.id = photocraft_format::read_manifest(theirs).ok()?.document.id;
     let mut writer = ZipWriter::new();
     let manifest = serde_json::to_vec(&manifest).ok()?;
     writer.add("manifest.json", &manifest).ok()?;
@@ -135,14 +132,7 @@ pub(crate) fn documents(base: &[u8], ours: &[u8], theirs: &[u8], limit: usize) -
         }
     }
     let bytes = writer.finish().ok()?;
-    if bytes.len() > limit {
-        return None;
-    }
-    // The merged references must form a valid native document, independently of
-    // the per-input accounting above. No input Documents are retained here.
-    let mut output_budget = crate::validation::DECODED_LIMIT;
-    crate::validation::document(&bytes, &mut output_budget).ok()?;
-    Some(bytes)
+    (bytes.len() <= limit).then_some(bytes)
 }
 
 #[cfg(test)]

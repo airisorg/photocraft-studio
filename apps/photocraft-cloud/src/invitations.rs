@@ -14,36 +14,35 @@ pub(crate) async fn invite(State(s): State<App>, h: HeaderMap, Path(id): Path<Uu
     }
     let pool = db(&s)?;
     let mut tx = pool.begin().await?;
-    locked_role(&mut tx, &a, id, true, true).await?;
     // Serialize the owner's rate limit, including concurrent requests and failed sends.
-    query("SELECT id FROM photocraft.accounts WHERE id=$1 FOR UPDATE").bind(a.id).execute(&mut *tx).await?;
-    let recent: i64 = scalar("SELECT count(*) FROM photocraft.invitation_deliveries WHERE sender_id=$1 AND created_at>now()-interval '1 hour'")
+    sqlx::query("SELECT id FROM photocraft.accounts WHERE id=$1 FOR UPDATE").bind(a.id).execute(&mut *tx).await?;
+    let recent: i64 = sqlx::query_scalar("SELECT count(*) FROM photocraft.invitation_deliveries WHERE sender_id=$1 AND created_at>now()-interval '1 hour'")
         .bind(a.id)
         .fetch_one(&mut *tx)
         .await?;
-    // Different owners can invite the same recipient: serialize the global
-    // cooldown independently of the per-owner quota, in a consistent lock order.
-    query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))").bind(format!("photocraft.invitation-recipient/{email}")).execute(&mut *tx).await?;
-    role_in_transaction(&mut tx, &a, id, true, true).await?;
-    let cooldown: bool = scalar("SELECT EXISTS(SELECT 1 FROM photocraft.invitation_deliveries WHERE email=$1 AND created_at>now()-interval '1 minute')")
-        .bind(&email)
-        .fetch_one(&mut *tx)
-        .await?;
+    let cooldown: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM photocraft.invitation_deliveries WHERE email=$1 AND created_at>now()-interval '1 minute')")
+            .bind(&email)
+            .fetch_one(&mut *tx)
+            .await?;
     if recent >= 20 || cooldown {
         return Err(ApiError(
             StatusCode::TOO_MANY_REQUESTS,
             "Please wait before sending another invitation. Limit: 20 per hour and one per recipient per minute.".into(),
         ));
     }
-    member_capacity(&mut tx, id, &email).await?;
-    query("INSERT INTO photocraft.members(project_id,email,role) VALUES($1,$2,$3) ON CONFLICT(project_id,email) DO UPDATE SET role=EXCLUDED.role")
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM photocraft.members WHERE project_id=$1").bind(id).fetch_one(&mut *tx).await?;
+    if count >= 100 {
+        return Err(bad("This project has reached 100 collaborators"));
+    }
+    sqlx::query("INSERT INTO photocraft.members(project_id,email,role) VALUES($1,$2,$3) ON CONFLICT(project_id,email) DO UPDATE SET role=EXCLUDED.role")
         .bind(id)
         .bind(&email)
         .bind(&v.role)
         .execute(&mut *tx)
         .await?;
     let delivery = Uuid::new_v4();
-    query("INSERT INTO photocraft.invitation_deliveries(id,project_id,sender_id,email) VALUES($1,$2,$3,$4)")
+    sqlx::query("INSERT INTO photocraft.invitation_deliveries(id,project_id,sender_id,email) VALUES($1,$2,$3,$4)")
         .bind(delivery)
         .bind(id)
         .bind(a.id)
@@ -60,13 +59,11 @@ pub(crate) async fn invite(State(s): State<App>, h: HeaderMap, Path(id): Path<Uu
         .send()
         .await
         .is_ok_and(|r| r.status().is_success());
-    let mut tx = pool.begin().await?;
-    query("UPDATE photocraft.invitation_deliveries SET status=$2 WHERE id=$1")
+    sqlx::query("UPDATE photocraft.invitation_deliveries SET status=$2 WHERE id=$1")
         .bind(delivery)
         .bind(if sent { "sent" } else { "failed" })
-        .execute(&mut *tx)
+        .execute(pool)
         .await?;
-    tx.commit().await?;
     if !sent {
         return Err(ApiError(
             StatusCode::BAD_GATEWAY,
@@ -76,7 +73,7 @@ pub(crate) async fn invite(State(s): State<App>, h: HeaderMap, Path(id): Path<Uu
     Ok(Json(json!({"ok":true,"message":"Sign-in invitation sent. After verifying this email address, the project appears in Shared with you."})))
 }
 
-pub(crate) fn email(value: &str) -> Result<String> {
+fn email(value: &str) -> Result<String> {
     let value = text(value, 320)?.to_lowercase();
     let Some((local, domain)) = value.split_once('@') else {
         return Err(bad("Enter a valid email address"));
@@ -111,7 +108,7 @@ pub(crate) async fn confirm_page(Query(v): Query<Confirmation>) -> Result<Html<S
     }
     // Opening the link does not consume it. Email scanners cannot burn a single-use token.
     Ok(Html(format!(
-        r#"<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="strict-origin"><title>Join PhotoCraft Studio</title><style>body{{margin:0;background:#f7f7fa;color:#252331;font:16px system-ui;display:grid;place-items:center;min-height:100dvh}}main{{max-width:390px;padding:40px;margin:24px;background:white;border:1px solid #e8e7ed;border-radius:20px;box-shadow:0 12px 40px #2523310b}}h1{{font-size:28px;letter-spacing:-.8px;line-height:1.15}}p{{color:#676575;line-height:1.6}}button{{background:#7048dc;border:0;color:white;width:100%;font:600 15px system-ui;padding:14px;border-radius:10px;cursor:pointer}}button:focus-visible{{outline:3px solid #bba4fc;outline-offset:4px}}small{{display:block;margin-top:20px;color:#767282}}</style><main><b>PhotoCraft Studio</b><h1>Your next great idea starts here.</h1><p>Continue to verify your email and open your workspace. Projects shared with this address will be waiting for you.</p><form method="post" action="/auth/confirm"><input type="hidden" name="token_hash" value="{}"><input type="hidden" name="type" value="{}"><button type="submit">Continue to PhotoCraft</button></form><small>Only continue if you requested this sign-in or expected an invitation.</small><p><a href="https://trytofu.ai" rel="noreferrer">Hosted on Tofu</a></p></main></html>"#,
+        r#"<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Join PhotoCraft Studio</title><style>body{{margin:0;background:#f7f7fa;color:#252331;font:16px system-ui;display:grid;place-items:center;min-height:100dvh}}main{{max-width:390px;padding:40px;margin:24px;background:white;border:1px solid #e8e7ed;border-radius:20px;box-shadow:0 12px 40px #2523310b}}h1{{font-size:28px;letter-spacing:-.8px;line-height:1.15}}p{{color:#676575;line-height:1.6}}button{{background:#7048dc;border:0;color:white;width:100%;font:600 15px system-ui;padding:14px;border-radius:10px;cursor:pointer}}button:focus-visible{{outline:3px solid #bba4fc;outline-offset:4px}}small{{display:block;margin-top:20px;color:#767282}}</style><main><b>PhotoCraft Studio</b><h1>Your next great idea starts here.</h1><p>Continue to verify your email and open your workspace. Projects shared with this address will be waiting for you.</p><form method="post" action="/auth/confirm"><input type="hidden" name="token_hash" value="{}"><input type="hidden" name="type" value="{}"><button type="submit">Continue to PhotoCraft</button></form><small>Only continue if you requested this sign-in or expected an invitation.</small><p><a href="https://trytofu.ai">Hosted on Tofu</a></p></main></html>"#,
         v.token_hash, v.kind
     )))
 }
