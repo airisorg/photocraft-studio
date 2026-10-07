@@ -2,6 +2,9 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+mod invitations;
+mod merge;
+
 use axum::{
     Json, Router,
     body::Bytes,
@@ -165,6 +168,7 @@ pub fn router(s: App) -> Router {
         .route("/api/me", get(me))
         .route("/auth/login", get(login))
         .route("/auth/callback", get(callback))
+        .route("/auth/confirm", get(invitations::confirm_page).post(invitations::confirm))
         .route("/api/logout", post(logout))
         .route("/api/projects", get(projects).post(create_project))
         .route("/api/projects/{id}", get(project).patch(update_project))
@@ -177,6 +181,7 @@ pub fn router(s: App) -> Router {
         .route("/api/uploads/{id}", axum::routing::delete(cancel_upload))
         .route("/api/uploads/{id}/commit", post(commit_upload))
         .route("/api/projects/{id}/members", get(members).put(set_member))
+        .route("/api/projects/{id}/invite", post(invitations::invite))
         .route("/api/projects/{id}/share", post(create_share).delete(revoke_shares))
         .route("/api/share/{key}", get(shared_project))
         .route("/api/share/{key}/content", get(shared_content))
@@ -230,6 +235,9 @@ async fn callback(State(s): State<App>, h: HeaderMap, Query(q): Query<std::colle
     }
     let t = q.get("token_hash").filter(|v| v.len() <= 512).ok_or(bad("Missing sign-in token"))?;
     let ty = q.get("type").filter(|v| matches!(v.as_str(), "magiclink" | "email" | "signup" | "invite")).ok_or(bad("Unsupported sign-in response"))?;
+    finish_sign_in(&s, t, ty).await
+}
+async fn finish_sign_in(s: &App, t: &str, ty: &str) -> Result<Response> {
     let resp = s
         .http
         .post(format!("{}/auth/v1/verify", s.supabase))
@@ -261,7 +269,7 @@ async fn callback(State(s): State<App>, h: HeaderMap, Query(q): Query<std::colle
     let id = u.get("id").and_then(Value::as_str).and_then(|v| Uuid::parse_str(v).ok()).ok_or(bad("Missing account identity"))?;
     let email = text(u.get("email").and_then(Value::as_str).ok_or(bad("An email address is required"))?, 320)?.to_lowercase();
     let name = text(u.pointer("/user_metadata/full_name").and_then(Value::as_str).unwrap_or(&email), 160)?;
-    let p = db(&s)?;
+    let p = db(s)?;
     let mut tx = p.begin().await?;
     sqlx::query("INSERT INTO photocraft.accounts(id,email,name) VALUES($1,$2,$3) ON CONFLICT(id) DO UPDATE SET email=EXCLUDED.email,name=EXCLUDED.name")
         .bind(id)
@@ -274,8 +282,8 @@ async fn callback(State(s): State<App>, h: HeaderMap, Query(q): Query<std::colle
     sqlx::query("DELETE FROM photocraft.sessions WHERE expires_at<now()").execute(&mut *tx).await?;
     tx.commit().await?;
     let mut r = Redirect::to("/").into_response();
-    r.headers_mut().append(header::SET_COOKIE, session_cookie(&s, "pc_session", &t, 604800)?);
-    r.headers_mut().append(header::SET_COOKIE, session_cookie(&s, "pc_login", "", 0)?);
+    r.headers_mut().append(header::SET_COOKIE, session_cookie(s, "pc_session", &t, 604800)?);
+    r.headers_mut().append(header::SET_COOKIE, session_cookie(s, "pc_login", "", 0)?);
     Ok(r)
 }
 async fn logout(State(s): State<App>, h: HeaderMap) -> Result<Response> {
@@ -534,12 +542,6 @@ async fn commit_upload(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>)
         return Err(bad("Restore this project from Trash before saving"));
     }
     let revision: i64 = pr.get("revision");
-    if revision != u.get::<i64, _>("base_revision") {
-        return Err(ApiError(
-            StatusCode::CONFLICT,
-            "A newer version was saved in another browser. Your edits are safe here. Save a copy or open the latest version.".into(),
-        ));
-    }
     let rows = sqlx::query("SELECT part,data FROM photocraft.chunks WHERE upload_id=$1 ORDER BY part").bind(id).fetch_all(&mut *tx).await?;
     if rows.len() != u.get::<i32, _>("parts") as usize {
         return Err(bad("Upload is incomplete; retry the missing chunks"));
@@ -555,6 +557,24 @@ async fn commit_upload(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>)
     if manifest.document.size.width as i32 != u.get::<i32, _>("width") || manifest.document.size.height as i32 != u.get::<i32, _>("height") {
         return Err(bad("Saved document dimensions do not match its upload"));
     }
+    let merged = revision != u.get::<i64, _>("base_revision");
+    if merged {
+        let base: Option<Vec<u8>> = sqlx::query_scalar("SELECT data FROM photocraft.versions WHERE project_id=$1 AND revision=$2")
+            .bind(project)
+            .bind(u.get::<i64, _>("base_revision"))
+            .fetch_optional(&mut *tx)
+            .await?;
+        let latest: Option<Vec<u8>> = sqlx::query_scalar("SELECT data FROM photocraft.versions WHERE project_id=$1 AND revision=$2")
+            .bind(project)
+            .bind(revision)
+            .fetch_optional(&mut *tx)
+            .await?;
+        bytes = base.zip(latest).and_then(|(base, latest)| merge::documents(&base, &bytes, &latest, MAX_FILE)).ok_or(ApiError(
+            StatusCode::CONFLICT,
+            "You and a collaborator changed the same content. Your edits are safe here. Save a copy, or open the latest version to compare.".into(),
+        ))?;
+    }
+    let checksum = hash(&bytes);
     let used: i64 = sqlx::query_scalar(
         "SELECT coalesce(sum(octet_length(v.data)),0)::bigint FROM photocraft.versions v JOIN photocraft.projects p ON p.id=v.project_id WHERE p.owner_id=$1",
     )
@@ -571,19 +591,22 @@ async fn commit_upload(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>)
         .bind(a.id)
         .bind(u.get::<String, _>("title"))
         .bind(bytes)
-        .bind(u.get::<String, _>("sha256"))
+        .bind(checksum)
         .execute(&mut *tx)
         .await?;
-    sqlx::query("UPDATE photocraft.projects SET revision=$2,width=$3,height=$4,updated_at=now() WHERE id=$1")
-        .bind(project)
-        .bind(next)
-        .bind(u.get::<i32, _>("width"))
-        .bind(u.get::<i32, _>("height"))
-        .execute(&mut *tx)
-        .await?;
+    sqlx::query(
+        "UPDATE photocraft.projects SET revision=$2,width=$3,height=$4,thumbnail=CASE WHEN $5 THEN NULL ELSE thumbnail END,updated_at=now() WHERE id=$1",
+    )
+    .bind(project)
+    .bind(next)
+    .bind(u.get::<i32, _>("width"))
+    .bind(u.get::<i32, _>("height"))
+    .bind(merged)
+    .execute(&mut *tx)
+    .await?;
     sqlx::query("DELETE FROM photocraft.uploads WHERE id=$1").bind(id).execute(&mut *tx).await?;
     tx.commit().await?;
-    Ok(Json(json!({"revision":next})))
+    Ok(Json(json!({"revision":next,"merged":merged})))
 }
 async fn cancel_upload(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>) -> Result<Json<Value>> {
     let a = account(&s, &h).await?;
@@ -596,8 +619,8 @@ async fn cancel_upload(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>)
 async fn members(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>) -> Result<Json<Value>> {
     let a = account(&s, &h).await?;
     role(&s, &a, id, false, true).await?;
-    let rows = sqlx::query("SELECT email,role FROM photocraft.members WHERE project_id=$1 ORDER BY email").bind(id).fetch_all(db(&s)?).await?;
-    Ok(Json(json!(rows.iter().map(|r| json!({"email":r.get::<String,_>("email"),"role":r.get::<String,_>("role")})).collect::<Vec<_>>())))
+    let rows = sqlx::query("SELECT m.email,m.role,EXISTS(SELECT 1 FROM photocraft.accounts a WHERE a.email=m.email) AS joined,(SELECT status FROM photocraft.invitation_deliveries d WHERE d.project_id=m.project_id AND d.email=m.email ORDER BY created_at DESC LIMIT 1) AS delivery FROM photocraft.members m WHERE m.project_id=$1 ORDER BY m.email").bind(id).fetch_all(db(&s)?).await?;
+    Ok(Json(json!(rows.iter().map(|r| json!({"email":r.get::<String,_>("email"),"role":r.get::<String,_>("role"),"joined":r.get::<bool,_>("joined"),"delivery":r.get::<Option<String>,_>("delivery")})).collect::<Vec<_>>())))
 }
 #[derive(Deserialize)]
 struct Member {
@@ -711,7 +734,7 @@ async fn resolve_comment(State(s): State<App>, h: HeaderMap, Path((id, cid)): Pa
 }
 async fn presence(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>) -> Result<Json<Value>> {
     let a = account(&s, &h).await?;
-    role(&s, &a, id, false, false).await?;
+    let access = role(&s, &a, id, false, false).await?;
     sqlx::query("INSERT INTO photocraft.presence(project_id,account_id) VALUES($1,$2) ON CONFLICT(project_id,account_id) DO UPDATE SET seen_at=now()")
         .bind(id)
         .bind(a.id)
@@ -719,7 +742,7 @@ async fn presence(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>) -> R
         .await?;
     let rows=sqlx::query("SELECT a.name FROM photocraft.presence p JOIN photocraft.accounts a ON a.id=p.account_id WHERE p.project_id=$1 AND p.seen_at>now()-interval '30 seconds' ORDER BY a.name LIMIT 50").bind(id).fetch_all(db(&s)?).await?;
     let revision: i64 = sqlx::query_scalar("SELECT revision FROM photocraft.projects WHERE id=$1").bind(id).fetch_one(db(&s)?).await?;
-    Ok(Json(json!({"people":rows.iter().map(|r|r.get::<String,_>("name")).collect::<Vec<_>>(),"revision":revision})))
+    Ok(Json(json!({"people":rows.iter().map(|r|r.get::<String,_>("name")).collect::<Vec<_>>(),"revision":revision,"role":access})))
 }
 
 #[cfg(test)]

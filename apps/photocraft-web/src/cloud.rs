@@ -23,9 +23,12 @@ enum Message {
     Boot(Value, Option<Value>),
     List(Value),
     Opened(Value, Vec<u8>),
-    Saved(DocId, u64, String, i64),
+    Saved(DocId, u64, String, i64, bool),
+    Synced(DocId, u64, Value, Vec<u8>),
+    Presence(String, Value),
     Created(DocId, String),
     SignedOut,
+    SignInReady,
     Data(&'static str, Value),
     Preview(String, Vec<u8>),
     Error(String),
@@ -46,6 +49,7 @@ pub struct Cloud {
     epoch: u64,
     pub home: bool,
     configured: bool,
+    booted: bool,
     sign_in: bool,
     user: Option<Value>,
     projects: Vec<Value>,
@@ -171,6 +175,7 @@ impl Cloud {
             epoch: 0,
             home: true,
             configured: false,
+            booted: false,
             sign_in: false,
             user: None,
             projects: vec![],
@@ -252,6 +257,7 @@ impl Cloud {
             }
             match m {
                 Message::Boot(c, u) => {
+                    self.booted = true;
                     self.configured = c.get("cloud").and_then(Value::as_bool) == Some(true);
                     self.sign_in = c.get("signIn").and_then(Value::as_bool) == Some(true);
                     self.user = u;
@@ -265,6 +271,9 @@ impl Cloud {
                     .into();
                     if self.user.is_some() {
                         self.list(ctx);
+                        if let Some(id) = url_param("project").filter(|v| v.len() == 36) {
+                            self.open(ctx, id, None);
+                        }
                     }
                     let scope = self.scope();
                     task(&self.queue, self.epoch, ctx, async move { Ok(Message::Drafts(draft_list(&scope).await?)) });
@@ -346,7 +355,83 @@ impl Cloud {
                     self.status = "Signed out. Private browser recovery data cleared.".into();
                     self.busy = false;
                 }
-                Message::Saved(id, local, pid, revision) => {
+                Message::SignInReady => {
+                    super::web::set_unsaved(false);
+                    if let Some(w) = web_sys::window() {
+                        let _ = w.location().set_href("/auth/login");
+                    }
+                    return;
+                }
+                Message::Synced(id, expected, meta, bytes) => {
+                    self.busy = false;
+                    // Never replace an edited tab, a switched document, or an active gesture.
+                    if app.session.active().is_some_and(|d| d.doc.id == id && d.revision == expected)
+                        && !ctx.input(|i| i.pointer.any_down())
+                        && !ctx.egui_wants_keyboard_input()
+                    {
+                        match photocraft_format::load_from_bytes(&bytes) {
+                            Ok(mut doc) => {
+                                doc.id = id;
+                                let active = app.session.active().and_then(|d| d.active_layer).filter(|layer| doc.layer(*layer).is_some());
+                                let mut state = photocraft_engine::DocState::new(doc, None);
+                                state.revision = expected.saturating_add(1);
+                                state.saved_revision = state.revision;
+                                if let Some(layer) = active {
+                                    state.active_layer = Some(layer);
+                                    state.selected_layers = vec![layer];
+                                }
+                                if let Some(d) = app.session.active_mut() {
+                                    *d = state;
+                                }
+                                if let Some(binding) = self.bindings.get_mut(&id) {
+                                    binding.revision = meta.get("revision").and_then(Value::as_i64).unwrap_or(binding.revision);
+                                    binding.saved_local = expected.saturating_add(1);
+                                    binding.role = field(&meta, "role").into();
+                                }
+                                app.sync_views();
+                                self.status = "Up to date with your collaborators. Earlier work is in version history.".into();
+                                self.newer = false;
+                                self.error = false;
+                            }
+                            Err(_) => {
+                                self.newer = true;
+                                self.status = "Could not open the shared update. Your document is unchanged.".into();
+                            }
+                        }
+                    } else {
+                        self.newer = true;
+                    }
+                }
+                Message::Presence(pid, v) => {
+                    if let Some(b) = self.binding(app).filter(|b| b.id == pid) {
+                        if let Some(id) = app.session.active().map(|d| d.doc.id)
+                            && let Some(binding) = self.bindings.get_mut(&id)
+                            && let Some(role) = v.get("role").and_then(Value::as_str)
+                        {
+                            binding.role = role.into();
+                        }
+                        self.people = v
+                            .get("people")
+                            .and_then(Value::as_array)
+                            .map(|p| p.iter().filter_map(Value::as_str).map(String::from).collect())
+                            .unwrap_or_default();
+                        self.newer = v.get("revision").and_then(Value::as_i64).is_some_and(|r| r > b.revision);
+                        if self.newer
+                            && !self.busy
+                            && !ctx.egui_wants_keyboard_input()
+                            && !ctx.input(|i| i.pointer.any_down())
+                            && now() - self.last_change > 800.
+                            && let Some(d) = app.session.active().filter(|d| d.revision == b.saved_local)
+                        {
+                            self.sync(ctx, d.doc.id, d.revision, b.id);
+                        }
+                    }
+                }
+                Message::Saved(id, local, pid, revision, merged) => {
+                    if merged {
+                        self.sync(ctx, id, local, pid);
+                        continue;
+                    }
                     self.textures.remove(&pid);
                     if let Some(d) = app.session.active_mut().filter(|d| d.doc.id == id) {
                         d.saved_revision = local;
@@ -359,7 +444,25 @@ impl Cloud {
                     self.list(ctx);
                 }
                 Message::Data(key, v) => match key {
+                    "config" => {
+                        self.booted = true;
+                        self.configured = v.get("cloud").and_then(Value::as_bool) == Some(true);
+                        self.sign_in = v.get("signIn").and_then(Value::as_bool) == Some(true);
+                        self.status = if self.sign_in {
+                            "Sign in to save your designs and collaborate."
+                        } else {
+                            "Cloud connection is unavailable. You can still edit and download your designs."
+                        }
+                        .into();
+                    }
                     "members" => self.members = arr(v),
+                    "invited" => {
+                        self.members = arr(v);
+                        self.member_email.clear();
+                        self.status = "Invitation sent. Their sign-in email gives them access to this project.".into();
+                        self.error = false;
+                        self.busy = false;
+                    }
                     "history" => self.history = arr(v),
                     "comments" => self.comments = arr(v),
                     "comment_posted" => {
@@ -367,19 +470,6 @@ impl Cloud {
                         self.comment.clear();
                     }
                     "share" => self.share_url = field(&v, "url").into(),
-                    "presence" => {
-                        self.people = v
-                            .get("people")
-                            .and_then(Value::as_array)
-                            .map(|v| v.iter().filter_map(Value::as_str).map(String::from).collect())
-                            .unwrap_or_default();
-                        if let Some(b) = self.binding(app) {
-                            self.newer = v.get("revision").and_then(Value::as_i64).is_some_and(|r| r > b.revision);
-                            if self.newer {
-                                self.status = "A newer version is available. Your local edits have been kept.".into();
-                            }
-                        }
-                    }
                     _ => {}
                 },
                 Message::Notice(v) => {
@@ -461,24 +551,61 @@ impl Cloud {
                 self.save(app, ctx, false);
             }
         }
-        if now() - self.last_poll > 10000. {
+        if now() - self.last_poll > 1500. {
             self.last_poll = now();
             if let Some(b) = self.binding(app).filter(|_| self.user.is_some()) {
                 let q = self.queue.clone();
                 let epoch = self.epoch;
+                if self.show_comments {
+                    self.data(ctx, "comments", format!("/api/projects/{}/comments", b.id));
+                }
                 let ctx = ctx.clone();
                 wasm_bindgen_futures::spawn_local(async move {
                     if let Ok(v) = api("POST", &format!("/api/projects/{}/presence", b.id), Some(json!({}))).await {
-                        q.borrow_mut().push((epoch, Message::Data("presence", v)));
+                        q.borrow_mut().push((epoch, Message::Presence(b.id.clone(), v)));
                         ctx.request_repaint();
                     }
                 });
             }
+            if !self.sign_in && self.user.is_none() {
+                self.data(ctx, "config", "/api/config".into());
+            }
         }
         ctx.request_repaint_after(std::time::Duration::from_millis(500));
     }
+    fn sync(&mut self, ctx: &egui::Context, id: DocId, revision: u64, pid: String) {
+        self.busy = true;
+        self.status = "Bringing in your collaborators’ changes…".into();
+        task(&self.queue, self.epoch, ctx, async move {
+            match download_project(format!("/api/projects/{pid}"), None).await? {
+                Message::Opened(meta, bytes) => Ok(Message::Synced(id, revision, meta, bytes)),
+                _ => Err("Could not read the shared update".into()),
+            }
+        });
+    }
     fn scope(&self) -> String {
         self.user.as_ref().map(|u| field(u, "id").into()).unwrap_or_else(|| "guest".into())
+    }
+    fn begin_sign_in(&mut self, app: &PhotocraftApp, ctx: &egui::Context) {
+        let mut drafts = Vec::new();
+        for d in app.session.documents() {
+            match photocraft_format::save_to_bytes(&d.doc, &Default::default()) {
+                Ok(bytes) => drafts.push((format!("guest:{}", d.doc.id.0), d.doc.name.clone(), bytes)),
+                Err(e) => {
+                    self.error = true;
+                    self.status = format!("Could not preserve your work before sign-in: {e}. Download your document first.");
+                    return;
+                }
+            }
+        }
+        self.busy = true;
+        let permit = self.draft_allowed.clone();
+        task(&self.queue, self.epoch, ctx, async move {
+            for (key, name, bytes) in drafts {
+                draft_put(&key, &name, &bytes, permit.clone()).await?;
+            }
+            Ok(Message::SignInReady)
+        });
     }
     fn save(&mut self, app: &PhotocraftApp, ctx: &egui::Context, copy: bool) {
         if self.busy {
@@ -551,23 +678,30 @@ impl Cloud {
                     return Err(e);
                 }
             };
-            if let Some(png) = preview {
+            if let Some(png) = preview.filter(|_| done.get("merged").and_then(Value::as_bool) != Some(true)) {
                 let _ = binary("PUT", &format!("/api/projects/{pid}/thumbnail"), Some(&png)).await;
             }
-            Ok(Message::Saved(docid, local, pid, done.get("revision").and_then(Value::as_i64).unwrap_or(base + 1)))
+            Ok(Message::Saved(
+                docid,
+                local,
+                pid,
+                done.get("revision").and_then(Value::as_i64).unwrap_or(base + 1),
+                done.get("merged").and_then(Value::as_bool).unwrap_or(false),
+            ))
         });
     }
     pub fn ui(&mut self, app: &mut PhotocraftApp, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         if self.home {
             *ui.visuals_mut() = egui::Visuals::light();
+            home::workspace_style(ui);
             ui.visuals_mut().selection.bg_fill = egui::Color32::from_rgb(238, 232, 252);
             ui.visuals_mut().selection.stroke = egui::Stroke::new(1., home::PURPLE);
         }
         let t = if self.home { Tokens::for_kind(ThemeKind::StudioLight) } else { Tokens::get(&ctx) };
         let binding = self.binding(app);
         let compact = ui.available_width() < 760.;
-        egui::Panel::top("cloud_header").exact_size(55.).frame(egui::Frame::NONE.fill(t.card).inner_margin(egui::Margin::symmetric(18, 8))).show(ui, |ui| {
+        egui::Panel::top("cloud_header").exact_size(64.).frame(egui::Frame::NONE.fill(t.card).inner_margin(egui::Margin::symmetric(20, 12))).show(ui, |ui| {
             ui.horizontal_centered(|ui| {
                 if ui.add(egui::Button::new(RichText::new("PhotoCraft").size(18.).strong()).frame(false)).on_hover_text("Open your workspace").clicked() {
                     self.home = !self.home;
@@ -589,31 +723,79 @@ impl Cloud {
                     }
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if self.user.is_some() {
-                        ui.menu_button("Account", |ui| {
-                            ui.label(self.user.as_ref().map(|u| field(u, "email")).unwrap_or(""));
-                            if ui.button("Sign out").clicked() {
-                                self.show_logout = true;
-                                ui.close();
+                    let avatar = home::avatar(ui, self.user.as_ref().map(|u| field(u, "name")));
+                    egui::Popup::menu(&avatar)
+                        .frame(
+                            egui::Frame::popup(ui.style())
+                                .fill(egui::Color32::WHITE)
+                                .stroke(egui::Stroke::new(1., home::BORDER))
+                                .inner_margin(18)
+                                .corner_radius(14),
+                        )
+                        .show(|ui| {
+                            *ui.visuals_mut() = egui::Visuals::light();
+                            home::workspace_style(ui);
+                            ui.set_width(260.);
+                            ui.spacing_mut().item_spacing.y = 12.;
+                            if let Some(user) = &self.user {
+                                ui.label(RichText::new(field(user, "name")).size(16.).strong());
+                                ui.label(field(user, "email"));
+                                ui.separator();
+                                if ui.button("Sign out").clicked() {
+                                    self.show_logout = true;
+                                    ui.close();
+                                }
+                            } else {
+                                ui.label(RichText::new("A home for your ideas").size(17.).strong());
+                                ui.label("Save your designs, share them, and create together.");
+                                if self.sign_in {
+                                    if ui.add_enabled_ui(!self.busy, |ui| ui.add_sized([260., 42.], home::primary("Continue with Google"))).inner.clicked() {
+                                        self.begin_sign_in(app, &ctx);
+                                    }
+                                } else if !self.booted && !self.error {
+                                    ui.horizontal(|ui| {
+                                        ui.spinner();
+                                        ui.label("Connecting…");
+                                    });
+                                } else {
+                                    ui.label("Cloud sign-in is unavailable. Guest editing still works.");
+                                    if ui.button("Retry connection").clicked() {
+                                        self.data(&ctx, "config", "/api/config".into());
+                                    }
+                                }
+                                ui.label(RichText::new("You can keep editing without an account.").small().color(home::MUTED));
                             }
                         });
-                    } else if ui
-                        .add_enabled(self.sign_in, egui::Button::new(if compact { "Sign in" } else { "Continue with Google" }))
-                        .on_hover_text(if self.sign_in { "Sign in to your cloud workspace" } else { "Cloud sign-in is awaiting setup" })
-                        .clicked()
-                        && let Some(w) = web_sys::window()
-                    {
-                        let _ = w.location().set_href("/auth/login");
-                    }
                     if !self.home {
                         if ui
                             .add_enabled(
                                 !self.busy && app.session.active().is_some(),
-                                egui::Button::new(RichText::new(if compact { "Save" } else { "Save to cloud" }).color(t.primary_text)).fill(t.primary_bg),
+                                egui::Button::new(
+                                    RichText::new(if binding.as_ref().is_some_and(|b| b.role == "view") {
+                                        "Save a copy"
+                                    } else if compact {
+                                        "Save"
+                                    } else {
+                                        "Save to cloud"
+                                    })
+                                    .color(t.primary_text),
+                                )
+                                .fill(t.primary_bg),
                             )
                             .clicked()
                         {
-                            self.save(app, &ctx, false);
+                            self.save(app, &ctx, binding.as_ref().is_some_and(|b| b.role == "view"));
+                        }
+                        if let Some(b) = binding.as_ref() {
+                            if b.role == "owner" && ui.add_sized([70., 36.], home::primary("Share")).clicked() {
+                                self.show_share = true;
+                                self.share_url.clear();
+                                self.data(&ctx, "members", format!("/api/projects/{}/members", b.id));
+                            }
+                            if !compact && ui.button("Comments").clicked() {
+                                self.show_comments = true;
+                                self.data(&ctx, "comments", format!("/api/projects/{}/comments", b.id));
+                            }
                         }
                         ui.menu_button("More", |ui| {
                             if compact {
@@ -668,8 +850,6 @@ impl Cloud {
                     }
                     if self.busy {
                         ui.spinner();
-                    } else if ui.available_width() > 350. {
-                        ui.label(RichText::new(if self.user.is_some() { "Cloud workspace" } else { "Local workspace" }).small().color(t.text_dim));
                     }
                 });
             });
@@ -771,7 +951,10 @@ impl Cloud {
                 if narrow {
                     ui.horizontal_wrapped(|ui| {
                         for (_, name) in nav {
-                            ui.selectable_value(&mut self.filter, name.into(), name);
+                            if home::compact_nav(ui, name, self.filter == name).clicked() {
+                                self.filter = name.into();
+                                self.search.clear();
+                            }
                         }
                     });
                     ui.add_space(20.);
@@ -779,7 +962,12 @@ impl Cloud {
                 ui.horizontal_wrapped(|ui| {
                     ui.label(RichText::new(if self.filter == "Home" { "Make room for a new idea." } else { &self.filter }).size(24.).strong().color(home::INK));
                     if self.filter != "Home" {
-                        ui.add(egui::TextEdit::singleline(&mut self.search).hint_text("Search designs or folders").desired_width(220.));
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.search)
+                                .hint_text("Search designs or folders")
+                                .desired_width(220.)
+                                .margin(egui::Margin::symmetric(12, 10)),
+                        );
                     }
                     if self.filter != "Home" && self.filter != "Templates" && self.user.is_some() && ui.button("Refresh").clicked() {
                         self.list(&ctx);
@@ -992,7 +1180,7 @@ impl Cloud {
             let mut open = true;
             egui::Window::new("Share & permissions").open(&mut open).default_width(440.).show(ctx, |ui| {
                 ui.label("Invite collaborators by email");
-                ui.label("They sign in with Google. No invitation email is sent.");
+                ui.label("Send a sign-in email and choose what they can do.");
                 ui.add_space(10.);
                 ui.horizontal(|ui| {
                     ui.add(egui::TextEdit::singleline(&mut self.member_email).hint_text("name@example.com"));
@@ -1001,14 +1189,14 @@ impl Cloud {
                         ui.selectable_value(&mut self.member_role, "edit".into(), "Can edit");
                     });
                 });
-                if ui.button("Grant access").clicked() {
+                if ui.add_enabled(!self.busy && !self.member_email.trim().is_empty(), home::primary("Send invitation")).clicked() {
+                    self.busy = true;
                     let path = format!("/api/projects/{pid}/members");
                     let v = json!({"email":self.member_email,"role":self.member_role});
                     task(&self.queue, self.epoch, ctx, async move {
-                        api("PUT", &path, Some(v)).await?;
-                        Ok(Message::Data("members", api("GET", &path, None).await?))
+                        api("POST", &path.replace("/members", "/invite"), Some(v)).await?;
+                        Ok(Message::Data("invited", api("GET", &path, None).await?))
                     });
-                    self.member_email.clear();
                 }
                 for m in self.members.clone() {
                     ui.horizontal(|ui| {
@@ -1163,7 +1351,7 @@ async fn draft_list(scope: &str) -> Result<Vec<(String, Value)>, String> {
     let keys = store.get_all_keys(None, None).await.map_err(js_error)?;
     let mut out = vec![];
     for key in keys {
-        if let Some(k) = key.as_string().filter(|k| k.starts_with(&format!("{scope}:")))
+        if let Some(k) = key.as_string().filter(|k| k.starts_with(&format!("{scope}:")) || k.starts_with("guest:"))
             && let Some(v) = store.get(key).await.map_err(js_error)?
         {
             let name = js_sys::Reflect::get(&v, &JsValue::from_str("name")).ok().and_then(|v| v.as_string()).unwrap_or_else(|| "Recovered document".into());

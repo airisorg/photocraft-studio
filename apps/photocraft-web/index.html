@@ -19,14 +19,14 @@
     #photocraft_loading small { max-width: 310px; line-height: 1.6; }
     #tofu_credit { position: fixed; z-index: 2; right: 8px; bottom: 5px; padding: 1px 5px;
       color: #bcb9d8; background: #1a1a1c; font: 11px system-ui, sans-serif; border-radius: 3px; }
-    #photocraft_stalled { visibility: hidden; animation: stalled 0s 20s forwards; }
+    #photocraft_stalled { visibility: hidden; animation: photocraft-stalled 0s 20s forwards; }
     #photocraft_stalled a { pointer-events: auto; color: #6f45ce; }
-    @keyframes stalled { to { visibility: visible; } }
+    @keyframes photocraft-stalled { to { visibility: visible; } }
   </style>
 </head>
 <body>
   <canvas id="photocraft_canvas" aria-label="PhotoCraft Studio creative workspace"></canvas>
-  <div id="photocraft_loading" role="status"><strong>PhotoCraft Studio</strong><span>A little space for your next great idea.</span><small>Opening your workspace&hellip;<br>The first visit takes a moment to load the editor.</small><small id="photocraft_stalled">Taking longer than expected? <a href="">Reload the workspace</a>.</small></div>
+  <div id="photocraft_loading" role="status"><strong>PhotoCraft Studio</strong><span>A little space for your next great idea.</span><small>Opening your workspace&hellip;<br>The first visit takes a moment to load the editor.</small><p id="photocraft_stalled">The editor may have failed to download. <a href="">Reload</a> to try again.</p></div>
   <noscript>PhotoCraft Studio needs JavaScript and WebAssembly enabled to run the Rust editor in your browser.</noscript>
   <a id="tofu_credit" href="https://trytofu.ai" target="_blank" rel="noopener noreferrer">Hosted on Tofu</a>
 </body>
