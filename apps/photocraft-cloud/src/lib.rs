@@ -21,7 +21,13 @@ use sqlx::{
     PgPool, Row,
     postgres::{PgConnectOptions, PgPoolOptions, PgSslMode},
 };
-use std::{str::FromStr, sync::Arc};
+use std::{
+    str::FromStr,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 use tower_http::{
     compression::CompressionLayer,
     services::{ServeDir, ServeFile},
@@ -34,6 +40,7 @@ const ACCOUNT_QUOTA: i64 = 1024 * 1024 * 1024;
 #[derive(Clone)]
 pub struct AppState {
     pub db: Option<PgPool>,
+    pub ready: Arc<AtomicBool>,
     pub origin: String,
     pub supabase: String,
     pub anon: String,
@@ -66,7 +73,22 @@ fn token() -> String {
     format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple())
 }
 fn db(s: &App) -> Result<&PgPool> {
-    s.db.as_ref().ok_or(ApiError(StatusCode::SERVICE_UNAVAILABLE, "Cloud storage is not configured yet. You can edit and download files locally.".into()))
+    let pool =
+        s.db.as_ref()
+            .ok_or(ApiError(StatusCode::SERVICE_UNAVAILABLE, "Cloud storage is not configured yet. You can edit and download files locally.".into()))?;
+    if !s.ready.load(Ordering::Acquire) {
+        return Err(ApiError(StatusCode::SERVICE_UNAVAILABLE, "Cloud storage is starting. Your local work is safe; retry shortly.".into()));
+    }
+    Ok(pool)
+}
+async fn ready_db(s: &App) -> Result<&PgPool> {
+    for _ in 0..50 {
+        if s.db.is_none() || s.ready.load(Ordering::Acquire) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    db(s)
 }
 fn text(value: &str, max: usize) -> Result<String> {
     let v = value.trim();
@@ -126,22 +148,44 @@ pub async fn application() -> std::result::Result<Router, Box<dyn std::error::Er
                 let ca = std::env::var("SUPABASE_CA_CERT").map_err(|_| "SUPABASE_CA_CERT is required for verified database TLS")?;
                 opts = opts.ssl_mode(PgSslMode::VerifyFull).ssl_root_cert_from_pem(ca.into_bytes());
             }
-            let p = PgPoolOptions::new().max_connections(5).acquire_timeout(std::time::Duration::from_secs(10)).connect_with(opts).await?;
-            let mut tx = p.begin().await?;
-            sqlx::query("SELECT pg_advisory_xact_lock(735193624)").execute(&mut *tx).await?;
-            sqlx::raw_sql(include_str!("../migrations/001_cloud.sql")).execute(&mut *tx).await?;
-            tx.commit().await?;
-            Some(p)
+            Some(PgPoolOptions::new().max_connections(5).acquire_timeout(std::time::Duration::from_secs(10)).connect_lazy_with(opts))
         }
         Err(_) => None,
     };
     let s = Arc::new(AppState {
         db: pool,
+        ready: Arc::new(AtomicBool::new(false)),
         origin,
         supabase: std::env::var("SUPABASE_URL").unwrap_or_default(),
         anon: std::env::var("SUPABASE_ANON_KEY").unwrap_or_default(),
         http: reqwest::Client::builder().timeout(std::time::Duration::from_secs(15)).redirect(reqwest::redirect::Policy::none()).build()?,
     });
+    if let Some(pool) = s.db.clone() {
+        let ready = s.ready.clone();
+        // Serve the editor immediately. A database wake-up must not take down static pages
+        // or kill the process; cloud routes stay unavailable until migration commits.
+        tokio::spawn(async move {
+            let mut retry_seconds = 1;
+            loop {
+                let result: std::result::Result<(), sqlx::Error> = async {
+                    let mut tx = pool.begin().await?;
+                    sqlx::query("SELECT pg_advisory_xact_lock(735193624)").execute(&mut *tx).await?;
+                    sqlx::Executor::execute(&mut *tx, include_str!("../migrations/001_cloud.sql")).await?;
+                    tx.commit().await
+                }
+                .await;
+                if result.is_ok() {
+                    ready.store(true, Ordering::Release);
+                    println!("PhotoCraft cloud storage is ready");
+                    break;
+                }
+                // Do not log connection strings or provider error payloads.
+                eprintln!("PhotoCraft cloud setup is delayed; the editor remains available. Retrying in {retry_seconds}s");
+                tokio::time::sleep(std::time::Duration::from_secs(retry_seconds)).await;
+                retry_seconds = (retry_seconds * 2).min(30);
+            }
+        });
+    }
     let public = std::env::var("PUBLIC_DIR").unwrap_or_else(|_| "public".into());
     Ok(router(s)
         .fallback_service(ServeDir::new(&public).not_found_service(ServeFile::new(format!("{public}/index.html"))))
@@ -163,7 +207,7 @@ async fn browser_headers(req: axum::extract::Request, next: Next) -> Response {
 }
 pub fn router(s: App) -> Router {
     Router::new()
-        .route("/healthz", get(|| async { Json(json!({"status":"ok","service":"photocraft-cloud"})) }))
+        .route("/healthz", get(|State(s): State<App>| async move { Json(json!({"status":"ok","service":"photocraft-cloud","cloud":cloud_state(&s)})) }))
         .route("/api/config", get(config))
         .route("/api/me", get(me))
         .route("/auth/login", get(login))
@@ -206,16 +250,26 @@ async fn guard(State(s): State<App>, req: axum::extract::Request, next: Next) ->
     r
 }
 async fn config(State(s): State<App>) -> Json<Value> {
+    let ready = s.ready.load(Ordering::Acquire);
     Json(
-        json!({"cloud":s.db.is_some(),"signIn":s.db.is_some()&&!s.supabase.is_empty()&&!s.anon.is_empty()&&!s.origin.is_empty(),"chunkBytes":CHUNK,"maxFileBytes":MAX_FILE,"version":env!("CARGO_PKG_VERSION")}),
+        json!({"cloud":ready,"cloudState":cloud_state(&s),"signIn":ready&&!s.supabase.is_empty()&&!s.anon.is_empty()&&!s.origin.is_empty(),"chunkBytes":CHUNK,"maxFileBytes":MAX_FILE,"version":env!("CARGO_PKG_VERSION")}),
     )
+}
+fn cloud_state(s: &App) -> &'static str {
+    if s.db.is_none() {
+        "disabled"
+    } else if s.ready.load(Ordering::Acquire) {
+        "ready"
+    } else {
+        "starting"
+    }
 }
 async fn me(State(s): State<App>, h: HeaderMap) -> Result<Json<Value>> {
     let a = account(&s, &h).await?;
     Ok(Json(json!({"id":a.id,"name":a.name,"email":a.email})))
 }
 async fn login(State(s): State<App>) -> Result<Response> {
-    db(&s)?;
+    ready_db(&s).await?;
     if !s.origin.starts_with("https://") || s.supabase.is_empty() || s.anon.is_empty() {
         return Err(bad("Cloud sign-in is not configured"));
     }
@@ -238,6 +292,8 @@ async fn callback(State(s): State<App>, h: HeaderMap, Query(q): Query<std::colle
     finish_sign_in(&s, t, ty).await
 }
 async fn finish_sign_in(s: &App, t: &str, ty: &str) -> Result<Response> {
+    // Establish storage before consuming the provider's single-use sign-in token.
+    let mut tx = ready_db(s).await?.begin().await?;
     let resp = s
         .http
         .post(format!("{}/auth/v1/verify", s.supabase))
@@ -269,8 +325,6 @@ async fn finish_sign_in(s: &App, t: &str, ty: &str) -> Result<Response> {
     let id = u.get("id").and_then(Value::as_str).and_then(|v| Uuid::parse_str(v).ok()).ok_or(bad("Missing account identity"))?;
     let email = text(u.get("email").and_then(Value::as_str).ok_or(bad("An email address is required"))?, 320)?.to_lowercase();
     let name = text(u.pointer("/user_metadata/full_name").and_then(Value::as_str).unwrap_or(&email), 160)?;
-    let p = db(s)?;
-    let mut tx = p.begin().await?;
     sqlx::query("INSERT INTO photocraft.accounts(id,email,name) VALUES($1,$2,$3) ON CONFLICT(id) DO UPDATE SET email=EXCLUDED.email,name=EXCLUDED.name")
         .bind(id)
         .bind(email)

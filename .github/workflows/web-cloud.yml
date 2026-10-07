@@ -63,6 +63,7 @@ jobs:
           cargo build --locked -p photocraft-cloud
           cargo run --locked -p photocraft-cloud --example fixture -- "$PHOTOCRAFT_FIXTURE"
           python tests/web/test_auth.py
+          python tests/web/test_startup.py
       - name: Start disposable service and run acceptance suites
         env:
           DATABASE_URL: postgresql://photocraft_test@127.0.0.1:55438/postgres
@@ -75,7 +76,7 @@ jobs:
           SERVER_PID=$!
           trap 'kill "$SERVER_PID"' EXIT
           for _ in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:8876/healthz; then break; fi
+            if curl -fsS http://127.0.0.1:8876/api/config | python -c 'import json,sys; sys.exit(not json.load(sys.stdin)["cloud"])'; then break; fi
             sleep 1
           done
           python tests/web/test_api.py
