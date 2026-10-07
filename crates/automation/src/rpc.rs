@@ -488,6 +488,22 @@ mod tests {
     }
 
     #[test]
+    fn methods_lists_the_job_methods_and_every_listed_name_is_served() {
+        let mut h = Headless::new();
+        let listed = h.handle("methods", Value::Null).unwrap();
+        let listed: Vec<&str> = listed.as_array().unwrap().iter().map(|m| m.as_str().unwrap()).collect();
+        assert_eq!(listed, METHODS);
+        // The job methods `engine.execute {"wait": false}` depends on are discoverable (#414).
+        assert!(listed.contains(&"jobs.list") && listed.contains(&"jobs.cancel"));
+        for m in METHODS {
+            if let Err(e) = h.handle(m, Value::Null) {
+                assert!(!e.to_string().contains("unknown method"), "{m} is listed but not served: {e}");
+            }
+        }
+        assert!(h.handle("jobs.nope", Value::Null).unwrap_err().to_string().contains("unknown method"));
+    }
+
+    #[test]
     fn batch_response_budget_stops_later_steps_even_when_stop_on_error_is_false() {
         let mut h = Headless::new();
         let mut steps = vec![json!({"command": "command.list"}); MAX_BATCH_STEPS - 1];

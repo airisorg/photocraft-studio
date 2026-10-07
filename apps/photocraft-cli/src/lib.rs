@@ -39,9 +39,6 @@ USAGE:
       or on 127.0.0.1:<port>. Methods: engine.execute, jobs.list/cancel, engine.commands,
       doc.open/new/save/inspect/render/select/close, session.list, batch, methods
       (docs/control-protocol.md#headless-server).
-
-  photocraft-cli <subcommand> --help (or -h) prints this text. A flag the subcommand doesn't take is
-  an error.
 ";
 
 struct Args {
