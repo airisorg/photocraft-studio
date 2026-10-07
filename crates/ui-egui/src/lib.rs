@@ -1314,6 +1314,9 @@ mod marquee_tests;
 mod stamp_tests;
 
 #[cfg(test)]
+mod polygon_lasso_tests;
+
+#[cfg(test)]
 mod clipboard_tests {
     use super::*;
     use std::sync::{Arc, Mutex};
