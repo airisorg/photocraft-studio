@@ -110,9 +110,20 @@ PhotoCraft's PSD support is a standalone crate written from Adobe's public speci
 Every menu item, tool and dialog runs a command from one registry of 500+ commands. The UI, the CLI, the JSON control channel and the MCP server all call the same commands, so anything you can click, a script or an AI agent can do too.
 
 ```sh
-git clone https://github.com/airisorg/photocraft-studio.git
-cd photocraft-studio
-cargo run --release -p photocraft
+# Headless: open, edit, save
+photocraft-cli run wave.psd \
+  --cmd filter.sharpen.smartSharpen     --params '{"amount":80}' \
+  --cmd layer.newAdjustmentLayer.curves --params '{"points":[[0,0],[64,48],[192,212],[255,255]]}' \
+  --out wave-final.png
+
+# Apply one action list to a folder of images
+photocraft-cli batch --actions grade.json --in ./raw --out ./graded
+
+# Every subcommand explains itself
+photocraft-cli batch --help
+
+# Let an agent drive it over MCP (headless, or bridged to the running app)
+photocraft-cli mcp
 ```
 
 For the browser build, local backend setup, and disposable-database tests, follow [the web development guide](docs/web-cloud.md). Keep database credentials outside the repository; never put production keys in browser code or test fixtures.
