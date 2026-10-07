@@ -48,8 +48,11 @@ Version history is retained; the initial quota is 1 GB per owner including versi
 Build the editor using the existing Trunk pipeline. Package its output alongside the HTTP
 service's Dockerfile. The container serves `/` and `/healthz` on `PORT`. Set `APP_ORIGIN` to the
 Tofu-returned HTTPS origin. Tofu-managed `DATABASE_URL`, `SUPABASE_CA_CERT`, `SUPABASE_URL`, and
-`SUPABASE_ANON_KEY` stay in its environment. PostgreSQL uses verified TLS. Startup applies the
-idempotent schema migration under an advisory lock before accepting traffic.
+`SUPABASE_ANON_KEY` stay in its environment. PostgreSQL uses verified TLS. The HTTP editor starts immediately. Cloud routes become available only after the idempotent
+schema migration commits under an advisory lock. Temporary database startup failures retry
+with bounded exponential backoff. `/healthz` distinguishes `starting`, `ready` and `disabled`
+cloud storage while reporting HTTP availability. Sign-in waits briefly for readiness and
+establishes a database transaction before consuming a one-time authentication token.
 
 The PhotoCraft managed database was provisioned on 2026-10-07 without changing Chat. Google
 and email sign-in are configured by Tofu. Live account return, invitation delivery and
@@ -108,6 +111,7 @@ cargo run --locked -p photocraft-cloud --example fixture -- /tmp/fixture.pcraft
 # APP_ORIGIN=http://127.0.0.1:8876, PORT=8876 and PUBLIC_DIR=dist/web.
 PHOTOCRAFT_FIXTURE=/tmp/fixture.pcraft python tests/web/test_api.py
 python tests/web/test_auth.py
+python tests/web/test_startup.py
 python tests/web/test_browser.py
 python packaging/web/tofu-package.py dist/photocraft-tofu.zip
 ```

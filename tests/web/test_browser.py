@@ -424,6 +424,22 @@ class BrowserAcceptance(unittest.TestCase):
         self.assertEqual(self.inspect()['document']['width'],320)
 
 
+    def test_18_delayed_cloud_restores_existing_session(self):
+        self.signed_in()
+        phase={'ready':False}
+        self.context.route('**/api/config',lambda route: route.fulfill(json={'cloud':phase['ready'],'signIn':phase['ready'],'version':'test'}))
+        self.context.route('**/api/me',lambda route: route.continue_() if phase['ready'] else route.fulfill(status=503,json={'error':'Cloud starting'}))
+        self.load(self.page)
+        self.new()
+        self.stroke()
+        phase['ready']=True
+        self.page.wait_for_timeout(2500)
+        self.page.mouse.click(1320,32)
+        self.wait_revision(1)
+        self.assertEqual(self.inspect()['document']['width'],320)
+        self.page.screenshot(path=str(ARTIFACTS/'startup-session-recovered.png'))
+
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

@@ -445,6 +445,7 @@ impl Cloud {
                 }
                 Message::Data(key, v) => match key {
                     "config" => {
+                        let was_configured = self.configured;
                         self.booted = true;
                         self.configured = v.get("cloud").and_then(Value::as_bool) == Some(true);
                         self.sign_in = v.get("signIn").and_then(Value::as_bool) == Some(true);
@@ -454,6 +455,12 @@ impl Cloud {
                             "Cloud connection is unavailable. You can still edit and download your designs."
                         }
                         .into();
+                        if !was_configured && self.configured {
+                            task(&self.queue, self.epoch, ctx, async move {
+                                let user = api("GET", "/api/me", None).await.ok();
+                                Ok(Message::Boot(v, user))
+                            });
+                        }
                     }
                     "members" => self.members = arr(v),
                     "invited" => {
