@@ -855,6 +855,10 @@ impl Cloud {
             });
         });
         egui::Panel::bottom("cloud_status").exact_size(27.).frame(egui::Frame::NONE.fill(t.card).inner_margin(egui::Margin::symmetric(16, 3))).show(ui, |ui| {
+            // The workspace's 40px controls must not force this compact status row past
+            // the viewport edge, especially on phones.
+            ui.spacing_mut().interact_size.y = 16.;
+            ui.spacing_mut().button_padding = Vec2::new(6., 2.);
             ui.horizontal(|ui| {
                 ui.set_max_width((ui.available_width() - 110.).max(100.));
                 ui.add(egui::Label::new(RichText::new(&self.status).small().color(if self.error { t.warning } else { t.text_dim })).truncate())

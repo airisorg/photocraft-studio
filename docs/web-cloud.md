@@ -4,7 +4,7 @@ This private adaptation retains the PhotoCraft Rust document model, command regi
 file format, egui interface and wgpu renderer. The browser selects WebGPU, with WebGL2 as a
 fallback. No alternative canvas engine or document format is introduced.
 
-Upstream baseline: `storytold/photocraft@47f9306 (PhotoCraft 0.3.0, 2026-10-07)`.
+Upstream baseline: `storytold/photocraft@47f9306fd06d5dee11acb84b108606f4c867222a` (PhotoCraft 0.3.0, 2026-10-07).
 Private repository: `FZ2000/photocraft`. GitHub cannot make a public fork private, so this is
 a private repository with upstream history and an `upstream` remote.
 
