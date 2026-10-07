@@ -7,6 +7,7 @@
 //! ```
 //!
 //! `--safe-gpu` draws the canvas on the CPU path, like the app's `--safe-gpu` launch.
+//! `--wayland-notice` previews the native file drag-and-drop guidance shown in Wayland sessions.
 //!
 //! `--monitor 1366x768 --window-top 31` simulates the display the window is on (in points) and
 //! where its content starts on it, e.g. a window running under a Windows taskbar.
