@@ -6,6 +6,7 @@ No test authentication route or production bypass is added to the application.
 import concurrent.futures
 import hashlib
 import io
+import json
 import os
 from pathlib import Path
 import secrets
@@ -348,6 +349,48 @@ class CloudContract(unittest.TestCase):
         with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
             statuses = list(pool.map(reserve, range(8)))
         self.assertEqual(sorted(statuses), [200]*5 + [400]*3)
+
+    def edited_fixture(self, **fields):
+        out=io.BytesIO()
+        with zipfile.ZipFile(io.BytesIO(self.fixture)) as source, zipfile.ZipFile(out,'w') as target:
+            for name in source.namelist():
+                data=source.read(name)
+                if name=='manifest.json':
+                    manifest=json.loads(data)
+                    manifest['document'].update(fields)
+                    data=json.dumps(manifest).encode()
+                target.writestr(name,data)
+        return out.getvalue()
+
+    def test_32_different_properties_merge_across_accounts(self):
+        pid=self.project()
+        self.member(pid,1,'edit')
+        self.upload(pid)
+        self.upload(pid,self.edited_fixture(name='Owner title'),base=1)
+        merged=self.upload(pid,self.edited_fixture(resolution_dpi=144),base=1,session=self.editor).json()
+        self.assertTrue(merged['merged'])
+        data=self.req(self.editor,'GET',f'/api/projects/{pid}/content?part=0').content
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            doc=json.loads(archive.read('manifest.json'))['document']
+        self.assertEqual(doc['name'],'Owner title')
+        self.assertEqual(doc['resolution_dpi'],144)
+        self.assertEqual(merged['revision'],3)
+
+    def test_33_same_property_conflict_preserves_latest_and_local_upload(self):
+        pid=self.project()
+        self.upload(pid)
+        self.upload(pid,self.edited_fixture(name='Winner'),base=1)
+        self.upload(pid,self.edited_fixture(name='Other edit'),base=1,commit_status=409)
+        data=self.req(self.owner,'GET',f'/api/projects/{pid}/content?part=0').content
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            self.assertEqual(json.loads(archive.read('manifest.json'))['document']['name'],'Winner')
+        self.assertEqual(self.req(self.owner,'GET',f'/api/projects/{pid}').json()['revision'],2)
+
+    def test_34_invites_require_owner(self):
+        pid=self.project()
+        self.member(pid,1,'edit')
+        for who in [self.editor,self.outsider]:
+            self.req(who,'POST',f'/api/projects/{pid}/invite',status=404,json={'email':'synthetic@example.invalid','role':'edit'})
 
 
 if __name__ == "__main__":

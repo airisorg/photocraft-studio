@@ -136,7 +136,7 @@ class BrowserAcceptance(unittest.TestCase):
 
     def test_01_workspace_new_canvas_button(self):
         self.assertEqual(self.page.title(), 'PhotoCraft Studio')
-        self.page.mouse.click(340, 375)
+        self.page.mouse.click(340, 412)
         self.page.wait_for_timeout(300)
         doc = self.inspect()['document']
         self.assertEqual((doc['width'], doc['height']), (1200, 900))
@@ -157,10 +157,10 @@ class BrowserAcceptance(unittest.TestCase):
         self.execute('shape.create', {'kind': 'ellipse', 'rect': [60, 40, 100, 90], 'fill': '#9278ff', 'name': 'Violet circle'})
         self.execute('type.create', {'x': 25, 'y': 210, 'text': 'Made in PhotoCraft', 'size': 18, 'color': '#221144'})
         before = self.inspect()['document']
-        self.page.mouse.click(1130,28)
+        self.page.mouse.click(1238,32)
         self.page.wait_for_timeout(200)
         with self.page.expect_download() as event:
-            self.page.mouse.click(1170,88)
+            self.page.mouse.click(1270,94)
         path = ARTIFACTS / 'native-roundtrip.pcraft'
         event.value.save_as(path)
         self.assertTrue(zipfile.is_zipfile(path))
@@ -183,10 +183,10 @@ class BrowserAcceptance(unittest.TestCase):
     def test_05_psd_export_and_reimport(self):
         self.new()
         self.execute('shape.create', {'kind': 'rect', 'rect': [40,40,100,80], 'fill': '#9278ff', 'name': 'Card'})
-        self.page.mouse.click(1130,28)
+        self.page.mouse.click(1238,32)
         self.page.wait_for_timeout(200)
         with self.page.expect_download() as event:
-            self.page.mouse.click(1170,148)
+            self.page.mouse.click(1270,154)
         path = ARTIFACTS / 'layered-roundtrip.psd'
         event.value.save_as(path)
         self.assertEqual(path.read_bytes()[:4], b'8BPS')
@@ -207,13 +207,13 @@ class BrowserAcceptance(unittest.TestCase):
         self.assertEqual(len(drafts), 1)
         self.context.set_offline(False)
         self.load(self.page)
-        self.page.mouse.click(100,254)
+        self.page.mouse.click(100,276)
         self.page.wait_for_timeout(300)
         # Recovery lives below the empty workspace card, and is also persisted independently.
         self.assertIsNone(self.inspect()['document'])
         self.assertTrue(drafts[0])
         self.page.screenshot(path=str(ARTIFACTS/"recovery-controls.png"))
-        self.page.mouse.click(410,330)
+        self.page.mouse.click(430,396)
         self.page.wait_for_timeout(500)
         self.assertEqual(self.inspect()['document']['width'], 320)
 
@@ -221,14 +221,11 @@ class BrowserAcceptance(unittest.TestCase):
         self.signed_in()
         self.new()
         self.stroke()
-        self.page.mouse.click(1295,28)
+        self.page.mouse.click(1320,32)
         first = self.wait_revision(1)
         self.execute('layer.duplicate')
         self.wait_revision(2)
-        self.load(self.page)
-        self.page.mouse.click(100,254)
-        self.page.wait_for_timeout(150)
-        self.page.mouse.click(435,220)
+        self.load(self.page, '?project='+first['id'])
         self.page.wait_for_timeout(700)
         doc = self.inspect()['document']
         self.assertIsNotNone(doc)
@@ -239,7 +236,7 @@ class BrowserAcceptance(unittest.TestCase):
     def test_08_public_view_opens_in_separate_browser(self):
         self.signed_in()
         self.new()
-        self.page.mouse.click(1295,28)
+        self.page.mouse.click(1320,32)
         project = self.wait_revision(1)
         response = self.context.request.post(BASE+f"/api/projects/{project['id']}/share", headers={'Origin':BASE})
         self.assertTrue(response.ok)
@@ -304,25 +301,24 @@ class BrowserAcceptance(unittest.TestCase):
     def test_13_conflicting_browser_edits_preserve_a_copy(self):
         token = self.signed_in()
         self.new()
-        self.stroke()
-        self.page.mouse.click(1295,28)
-        self.wait_revision(1)
-        _, second = self.context_page(token=token)
-        second.mouse.click(100,254)
-        second.wait_for_timeout(150)
-        second.mouse.click(435,220)
-        second.wait_for_timeout(600)
+        self.page.mouse.click(1320,32)
+        project = self.wait_revision(1)
+        other_context, second = self.context_page('?project='+project['id'], token=token)
         self.assertIsNotNone(self.inspect(second)['document'])
-        self.stroke()
+        # Both editors modify the same pixels from the same saved revision.
+        other_context.set_offline(True)
+        self.execute('edit.fill', {'color':'#0000ff'}, page=second)
+        self.execute('edit.fill', {'color':'#ff0000'})
         self.wait_revision(2)
-        self.execute('layer.duplicate', page=second)
-        second.wait_for_timeout(4500)
-        self.assertEqual(len(self.inspect(second)['document']['layers']), 2)
+        other_context.set_offline(False)
+        second.mouse.click(1320,32)
+        second.wait_for_timeout(2000)
+        self.assertTrue(self.inspect(second)['document']['canUndo'])
         self.assertEqual(self.projects()[0]['revision'], 2, 'A stale browser overwrote the saved document')
         second.screenshot(path=str(ARTIFACTS/'conflict-preserved.png'))
-        second.mouse.click(1220,28)
+        second.mouse.click(1070,32)
         second.wait_for_timeout(200)
-        second.mouse.click(1260,58)
+        second.mouse.click(1090,64)
         deadline=time.monotonic()+15
         while time.monotonic()<deadline:
             projects=self.projects()
@@ -361,6 +357,71 @@ class BrowserAcceptance(unittest.TestCase):
         self.assertEqual((doc['width'],doc['height']),(1080,1350))
         self.assertGreater(len(doc['layers']), 4)
         self.page.screenshot(path=str(ARTIFACTS/'template-from-gallery.png'))
+
+
+    def test_16_two_accounts_merge_and_receive_saved_changes(self):
+        self.signed_in()
+        self.new()
+        self.execute('edit.fill', {'color':'#9278ff'})
+        self.execute('shape.create', {'kind':'rect','rect':[40,40,100,80],'fill':'#ffaa00','name':'Card'})
+        self.page.mouse.click(1320,32)
+        project=self.wait_revision(1)
+        ident, token=str(uuid.uuid4()), secrets.token_hex(32)
+        self.accounts.append(ident)
+        email=ident+'@example.invalid'
+        self.db.execute('INSERT INTO photocraft.accounts(id,email,name) VALUES(%s,%s,%s)', (ident,email,'Second collaborator'))
+        self.db.execute('INSERT INTO photocraft.sessions(hash,account_id) VALUES(%s,%s)', (hashlib.sha256(token.encode()).hexdigest(),ident))
+        response=self.context.request.put(BASE+f"/api/projects/{project['id']}/members",headers={'Origin':BASE},data={'email':email,'role':'edit'})
+        self.assertTrue(response.ok)
+        other_context,second=self.context_page('?project='+project['id'],token=token)
+        layers=self.inspect(second)['document']['layers']
+        self.assertEqual(len(layers),2)
+        other_context.set_offline(True)
+        self.execute('layer.renameLayer',{'layer':layers[0]['id'],'name':'Collaborator background'},page=second)
+        self.execute('layer.renameLayer',{'layer':layers[1]['id'],'name':'Owner card'})
+        self.wait_revision(2)
+        other_context.set_offline(False)
+        second.mouse.click(1320,32)
+        self.wait_revision(3)
+        expected={'Collaborator background','Owner card'}
+        deadline=time.monotonic()+15
+        while time.monotonic()<deadline:
+            if all({l['name'] for l in self.inspect(p)['document']['layers']}==expected for p in [self.page,second]):
+                break
+            self.page.wait_for_timeout(300)
+        else:
+            self.fail('Independent signed-in collaborators did not converge after the merge')
+        path=self.download('file.export.quickExportAsPng')
+        with Image.open(path) as img:
+            self.assertEqual(img.size,(320,240))
+            self.assertEqual(img.convert('RGB').getpixel((80,70)),(255,170,0))
+        response=self.context.request.put(BASE+f"/api/projects/{project['id']}/members",headers={'Origin':BASE},data={'email':email,'role':'view'})
+        self.assertTrue(response.ok)
+        second.wait_for_timeout(2000)
+        second.screenshot(path=str(ARTIFACTS/'collaborator-view-role.png'))
+        self.load(second,'?project='+project['id'])
+        self.assertEqual({l['name'] for l in self.inspect(second)['document']['layers']},expected)
+
+
+    def test_17_avatar_sign_in_preserves_guest_work(self):
+        self.context.route('**/api/config',lambda route: route.fulfill(json={'cloud':True,'signIn':True,'version':'test'}))
+        self.context.route('**/auth/login',lambda route: route.fulfill(content_type='text/html',body='<h1>Sign-in handoff</h1>'))
+        self.load(self.page)
+        self.new()
+        self.stroke()
+        self.page.mouse.click(1400,32)
+        self.page.wait_for_timeout(200)
+        self.page.screenshot(path=str(ARTIFACTS/'account-sign-in-menu.png'))
+        self.page.mouse.click(1270,170)
+        self.page.wait_for_url('**/auth/login',timeout=10000)
+        self.assertEqual(self.page.locator('h1').inner_text(),'Sign-in handoff')
+        self.signed_in()
+        self.page.mouse.click(100,276)
+        self.page.wait_for_timeout(250)
+        self.page.screenshot(path=str(ARTIFACTS/'guest-work-after-sign-in.png'))
+        self.page.mouse.click(430,396)
+        self.page.wait_for_timeout(500)
+        self.assertEqual(self.inspect()['document']['width'],320)
 
 
 

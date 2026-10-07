@@ -32,7 +32,67 @@ pub enum Action {
 }
 
 pub fn primary(label: &str) -> egui::Button<'_> {
-    egui::Button::new(RichText::new(label).color(Color32::WHITE).strong()).fill(PURPLE).corner_radius(10)
+    egui::Button::new(RichText::new(label).size(14.).color(Color32::WHITE).strong()).fill(PURPLE).corner_radius(10)
+}
+
+/// One scale for the workspace's buttons, fields and navigation; editor density stays native.
+pub fn workspace_style(ui: &mut egui::Ui) {
+    let style = ui.style_mut();
+    style.spacing.item_spacing = Vec2::new(10., 10.);
+    style.spacing.button_padding = Vec2::new(14., 10.);
+    style.spacing.interact_size.y = 40.;
+    style.text_styles.insert(egui::TextStyle::Body, FontId::proportional(14.));
+    style.text_styles.insert(egui::TextStyle::Button, FontId::proportional(14.));
+    style.visuals.override_text_color = Some(INK);
+    style.visuals.selection.bg_fill = Color32::from_rgb(237, 229, 252);
+    style.visuals.selection.stroke = Stroke::new(1., PURPLE);
+    for widget in [&mut style.visuals.widgets.inactive, &mut style.visuals.widgets.hovered, &mut style.visuals.widgets.active] {
+        widget.corner_radius = 9.into();
+        widget.bg_stroke = Stroke::new(1., BORDER);
+    }
+    style.visuals.widgets.inactive.bg_fill = Color32::WHITE;
+    style.visuals.widgets.hovered.bg_fill = Color32::from_rgb(244, 240, 251);
+    style.visuals.widgets.active.bg_fill = Color32::from_rgb(237, 229, 252);
+}
+
+pub fn compact_nav(ui: &mut egui::Ui, label: &str, selected: bool) -> egui::Response {
+    ui.add(
+        egui::Button::new(RichText::new(label).size(14.).color(if selected { PURPLE } else { MUTED }))
+            .min_size(Vec2::new(0., 42.))
+            .fill(if selected { Color32::from_rgb(237, 229, 252) } else { Color32::TRANSPARENT })
+            .stroke(Stroke::NONE)
+            .corner_radius(10),
+    )
+}
+
+pub fn avatar(ui: &mut egui::Ui, name: Option<&str>) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(Vec2::splat(40.), egui::Sense::click());
+    let center = rect.center();
+    ui.painter().circle_filled(center, 20., if name.is_some() { PURPLE } else { Color32::from_rgb(239, 234, 249) });
+    if let Some(name) = name {
+        let initials: String = name.split_whitespace().take(2).filter_map(|s| s.chars().next()).flat_map(char::to_uppercase).collect();
+        ui.painter().text(center, Align2::CENTER_CENTER, initials, FontId::proportional(14.), Color32::WHITE);
+    } else {
+        let stroke = Stroke::new(1.7, PURPLE);
+        ui.painter().circle_stroke(center - Vec2::new(0., 5.), 4., stroke);
+        ui.painter().add(egui::Shape::line(
+            vec![
+                center + Vec2::new(-8., 9.),
+                center + Vec2::new(-8., 5.),
+                center + Vec2::new(-4., 2.),
+                center + Vec2::new(4., 2.),
+                center + Vec2::new(8., 5.),
+                center + Vec2::new(8., 9.),
+            ],
+            stroke,
+        ));
+    }
+    if response.hovered() || response.has_focus() {
+        ui.painter().circle_stroke(center, 22., Stroke::new(2., PURPLE));
+    }
+    let label = if name.is_some() { "Your account" } else { "Sign in to PhotoCraft" };
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
+    response.on_hover_text(label).on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 pub fn nav_button(ui: &mut egui::Ui, label: &str, selected: bool, index: usize) -> egui::Response {
