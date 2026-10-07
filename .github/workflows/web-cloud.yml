@@ -1,8 +1,11 @@
 name: Browser and cloud acceptance
 on:
-  push:
-    branches: [main]
   pull_request:
+  workflow_call:
+    inputs:
+      source_ref:
+        type: string
+        required: true
   workflow_dispatch:
 permissions:
   contents: read
@@ -31,6 +34,9 @@ jobs:
       PHOTOCRAFT_TEST_ARTIFACTS: ${{ github.workspace }}/test-results/browser
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@1.95.0
         with:
           targets: wasm32-unknown-unknown
@@ -48,6 +54,7 @@ jobs:
           cargo install trunk --version 0.21.14 --locked
       - name: Rust adapter checks
         run: |
+          python -m unittest discover -s tests/web -p test_upstream_release.py
           cargo fmt --all -- --check
           cargo test --locked -p photocraft-cloud
           cargo clippy --locked -p photocraft-cloud --all-targets -- -D warnings

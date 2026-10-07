@@ -139,16 +139,13 @@ fn page_icon(ui: &egui::Ui, r: Rect, w: u32, h: u32, t: &Tokens) {
 pub fn body(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
     let t = Tokens::get(ui.ctx());
     let cat = get_s(f, "__category", "Recent");
+    let compact = ui.available_width() < 800.0;
+    let grid_width = if compact { ui.available_width() } else { 520.0 };
     // Category tabs.
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 18.0;
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = vec2(8.0, 6.0);
         for (name, _) in CATEGORIES {
-            let on = cat == *name;
-            let r = ui.add(egui::Label::new(RichText::new(tl!(name)).size(13.0).color(if on { t.text } else { t.text_dim })).sense(Sense::click()));
-            if on {
-                ui.painter().line_segment([r.rect.left_bottom() + vec2(0.0, 3.0), r.rect.right_bottom() + vec2(0.0, 3.0)], Stroke::new(2.0, t.text));
-            }
-            if r.clicked() {
+            if widgets::pill_tab(ui, name, cat == *name).clicked() {
                 f.insert("__category".into(), json!(name));
             }
         }
@@ -158,14 +155,15 @@ pub fn body(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
     ui.add_space(8.0);
     let presets = CATEGORIES.iter().find(|c| c.0 == cat).map_or(CATEGORIES[0].1, |c| c.1);
     let chosen = get_s(f, "__preset", "");
-    ui.horizontal_top(|ui| {
+    ui.with_layout(if compact { egui::Layout::top_down(egui::Align::Min) } else { egui::Layout::left_to_right(egui::Align::Min) }, |ui| {
         // Left: preset grid.
         ui.vertical(|ui| {
-            ui.set_width(520.0);
+            ui.set_width(grid_width);
             ui.label(RichText::new(crate::i18n::fmt(tl!("BLANK DOCUMENT PRESETS ({n})"), &[("n", &presets.len().to_string())])).size(11.0).color(t.text_faint));
             ui.add_space(6.0);
-            let card = vec2(164.0, 112.0);
-            for row in presets.chunks(3) {
+            let columns = if compact { 2 } else { 3 };
+            let card = vec2(if compact { (grid_width - 8.0) / 2.0 } else { 164.0 }, 112.0);
+            for row in presets.chunks(columns) {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 8.0;
                     for p in row {
@@ -207,7 +205,9 @@ pub fn body(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
                 ui.add_space(8.0);
             }
         });
-        ui.add_space(10.0);
+        if !compact {
+            ui.add_space(10.0);
+        }
         // Right: Preset Details.
         ui.vertical(|ui| {
             ui.set_width(260.0);
