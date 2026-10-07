@@ -142,21 +142,6 @@ pub fn owns(f: &Map<String, Value>) -> bool {
     f.contains_key("__colorPicker")
 }
 
-/// The Color Picker, when it is the top dialog (another dialog opened over it takes the input).
-pub fn top(app: &PhotocraftApp) -> Option<u64> {
-    app.ui.dialogs.last().filter(|d| owns(&d.fields)).map(|d| d.id)
-}
-
-/// Eyedropper: the top Color Picker's new colour becomes the image's composite colour at document
-/// point (x, y). Off the image or over transparency nothing changes.
-pub fn sample_at(app: &mut PhotocraftApp, x: f64, y: f64) {
-    let Some(id) = top(app) else { return };
-    let Some(rgb) = crate::canvas::composite_color(app, x, y) else { return };
-    if let Some(d) = app.ui.dialog_mut(id) {
-        set_rgb(&mut d.fields, rgb, Keep::Nothing);
-    }
-}
-
 /// The colour in every model the dialog shows.
 pub struct Components {
     pub rgb: [f32; 3],
@@ -293,7 +278,7 @@ pub fn body(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
             ui.painter().rect_stroke(sw, 0.0, Stroke::new(1.0, t.field_border), StrokeKind::Outside);
             let click_cur = ui.interact(cur, ui.id().with("cp-current"), Sense::click());
             if click_cur.on_hover_text(tl!("Click to restore the current colour")).clicked() {
-                set_rgb(f, orig, None);
+                set_rgb(f, orig, Keep::Nothing);
             }
             ui.label(egui::RichText::new(tl!("current")).size(11.0).color(t.text_dim));
             ui.add_space(10.0);
