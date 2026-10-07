@@ -78,10 +78,11 @@ class AuthContract(unittest.TestCase):
         cls.http.trust_env = False
         for _ in range(50):
             try:
-                if cls.http.get(cls.base+'/healthz',timeout=1).ok:
+                if cls.http.get(cls.base+'/api/config',timeout=1).json().get('cloud'):
                     break
             except requests.ConnectionError:
-                time.sleep(.1)
+                pass
+            time.sleep(.1)
         else:
             raise RuntimeError('Disposable auth test service did not start')
         cls.db = psycopg.connect(DATABASE, autocommit=True)
