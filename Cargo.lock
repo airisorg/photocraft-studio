@@ -4086,8 +4086,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "photocraft-cloud"
-version = "0.2.0"
+name = "photocraft-cms"
+version = "0.3.0"
 dependencies = [
  "axum",
  "hex",
@@ -4240,7 +4240,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "photocraft-heif"
+name = "photocraft-io"
 version = "0.3.0"
 dependencies = [
  "blake3",
@@ -4328,7 +4328,7 @@ dependencies = [
 
 [[package]]
 name = "photocraft-tablet"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "block2 0.6.2",
  "objc2 0.6.4",
@@ -4340,7 +4340,7 @@ dependencies = [
 
 [[package]]
 name = "photocraft-testkit"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "memory-stats",
  "photocraft-color",
