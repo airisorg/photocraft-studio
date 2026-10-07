@@ -48,7 +48,8 @@ Version history is retained; the initial quota is 1 GB per owner including versi
 Build the editor using the existing Trunk pipeline. Package its output alongside the HTTP
 service's Dockerfile. The container serves `/` and `/healthz` on `PORT`. Set `APP_ORIGIN` to the
 Tofu-returned HTTPS origin. Tofu-managed `DATABASE_URL`, `SUPABASE_CA_CERT`, `SUPABASE_URL`, and
-`SUPABASE_ANON_KEY` stay in its environment. PostgreSQL uses verified TLS. The HTTP editor starts immediately. Cloud routes become available only after the idempotent
+`SUPABASE_ANON_KEY` stay in its environment. PostgreSQL uses verified TLS and unnamed parameterized queries for transaction-pooler
+compatibility. Disabling SQLx's statement cache alone does not disable statement names. The HTTP editor starts immediately. Cloud routes become available only after the idempotent
 schema migration commits under an advisory lock. Setup runs inside bounded cloud requests, so a serverless host cannot suspend it after an
 unrelated response. Concurrent setup is serialized and migration lock waits are bounded; the
 browser retries configuration while storage is unavailable. The public configuration exposes
