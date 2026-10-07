@@ -91,6 +91,7 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
         // Photoshop doesn't dim the window behind dialogs: previews must be judged at true contrast.
         let modal = egui::Modal::new(id).area(area).backdrop_color(egui::Color32::TRANSPARENT).show(ctx, |ui| {
             sizing = ui.is_sizing_pass();
+            ui.set_min_width(380.0);
             let wide = crate::prefs_ui::width(&d.fields);
             let file_width = crate::file_ui::dialog_width(&d.fields);
             let min_width = file_width.unwrap_or(if d.kind == DialogKind::NewDocument { 800.0 } else { wide.map_or(380.0, |w| w.min(460.0)) });
@@ -186,13 +187,12 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
         });
         shown.push(modal.inner);
         // Pin once laid out at its real size (the first frame is an invisible sizing pass).
-        if !sizing {
+        if !sizing && (pinned.is_none() || drag != egui::Vec2::ZERO) {
             let screen = ctx.content_rect();
             // Keep the whole dialog (and so its title bar) on screen.
-            let margin = egui::vec2(12.0, 28.0);
-            let room = (screen.size() - modal.response.rect.size() - margin).max(egui::Vec2::splat(12.0));
+            let room = (screen.size() - modal.response.rect.size()).max(egui::Vec2::ZERO);
             let offset = pinned.unwrap_or(modal.response.rect.min - screen.min) + drag;
-            ctx.data_mut(|m| m.insert_temp(id, offset.clamp(egui::Vec2::splat(12.0), room)));
+            ctx.data_mut(|m| m.insert_temp(id, offset.clamp(egui::Vec2::ZERO, room)));
         }
         // Esc cancels (topmost dialog, no popup open). A click outside does nothing: Photoshop keeps
         // the dialog, and the pointer may be panning or zooming the canvas under it.
