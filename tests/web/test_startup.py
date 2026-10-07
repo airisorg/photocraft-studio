@@ -1,7 +1,9 @@
 """A delayed local database must not prevent the browser editor from loading."""
 import os
+import hashlib
 from pathlib import Path
 import select
+import secrets
 import socket
 import socketserver
 import subprocess
@@ -9,9 +11,11 @@ import tempfile
 import threading
 import time
 import unittest
+import uuid
 from urllib.parse import urlparse
 
 import requests
+import psycopg
 
 DATABASE = os.environ.get('PHOTOCRAFT_TEST_DATABASE_URL', 'postgresql://photocraft_test@127.0.0.1:55438/postgres')
 
@@ -28,9 +32,12 @@ class StartupRecovery(unittest.TestCase):
             http_port = reserve.getsockname()[1]
         base = f'http://127.0.0.1:{http_port}'
         delayed_url = DATABASE.replace(target.netloc, f'{target.username}@127.0.0.1:{db_port}')
+        statement_names = []
 
         class Forward(socketserver.BaseRequestHandler):
             def handle(self):
+                client_bytes = bytearray()
+                startup_seen = False
                 with socket.create_connection((target.hostname, target.port or 5432), timeout=3) as remote:
                     peers = [self.request, remote]
                     while True:
@@ -39,6 +46,20 @@ class StartupRecovery(unittest.TestCase):
                             data = source.recv(65536)
                             if not data:
                                 return
+                            if source is self.request:
+                                client_bytes.extend(data)
+                                if not startup_seen and len(client_bytes) >= 4:
+                                    length = int.from_bytes(client_bytes[:4], 'big')
+                                    if len(client_bytes) >= length:
+                                        del client_bytes[:length]
+                                        startup_seen = True
+                                while startup_seen and len(client_bytes) >= 5:
+                                    length = int.from_bytes(client_bytes[1:5], 'big')
+                                    if len(client_bytes) < length + 1:
+                                        break
+                                    if client_bytes[0] == ord('P'):
+                                        statement_names.append(bytes(client_bytes[5:1+length]).split(b'\0', 1)[0])
+                                    del client_bytes[:length+1]
                             (remote if source is self.request else self.request).sendall(data)
 
         class Proxy(socketserver.ThreadingTCPServer):
@@ -88,6 +109,26 @@ class StartupRecovery(unittest.TestCase):
                 self.assertEqual(http.get(base+'/api/me').status_code, 401)
                 self.assertEqual(http.get(base+'/').status_code, 200)
                 self.assertIsNone(process.poll())
+                # Exercise bound row and scalar queries through the same wire observer.
+                ident, token = str(uuid.uuid4()), secrets.token_hex(32)
+                with psycopg.connect(DATABASE, autocommit=True) as database:
+                    try:
+                        database.execute('INSERT INTO photocraft.accounts(id,email,name) VALUES(%s,%s,%s)',
+                            (ident, f'{ident}@example.invalid', 'Pooler test'))
+                        database.execute('INSERT INTO photocraft.sessions(hash,account_id) VALUES(%s,%s)',
+                            (hashlib.sha256(token.encode()).hexdigest(), ident))
+                        http.cookies.set('pc_session', token)
+                        self.assertEqual(http.get(base+'/api/me', timeout=15).status_code, 200)
+                        project = http.post(base+'/api/projects', headers={'Origin':base},
+                            json={'title':'Pooler compatibility test'}, timeout=15)
+                        self.assertEqual(project.status_code, 200)
+                    finally:
+                        database.execute('DELETE FROM photocraft.projects WHERE owner_id=%s', (ident,))
+                        database.execute('DELETE FROM photocraft.sessions WHERE account_id=%s', (ident,))
+                        database.execute('DELETE FROM photocraft.accounts WHERE id=%s', (ident,))
+                self.assertTrue(statement_names, 'The wire check must observe SQL Parse messages')
+                self.assertTrue(all(name == b'' for name in statement_names),
+                    'Named prepared statements are incompatible with transaction poolers')
             finally:
                 process.terminate()
                 process.wait(timeout=5)
