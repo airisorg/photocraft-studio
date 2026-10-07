@@ -1614,12 +1614,15 @@ fn layer_row(
     }
     let mut x = rect.left() + 6.0;
     let eye = Rect::from_min_size(pos2(x, rect.center().y - 11.0), vec2(22.0, 22.0));
-    // The eye takes drags too (so a drag starting on it never reorders the row): dragging down
-    // the eyes gives every row swept over the visibility the first eye toggled to.
-    let eye_resp = ui.interact(eye, ui.id().with(("eye", l.id.0)), Sense::click_and_drag());
-    // A hidden layer's eye box is left empty (still clickable).
-    if l.visible {
-        icons::paint(ui, eye, "eye", 15.0, t.icon);
+    let eye_resp = ui.interact(eye, ui.id().with(("eye", l.id.0)), Sense::click());
+    icons::paint(ui, eye, if l.visible { "eye" } else { "eye-off" }, 15.0, if l.visible { t.icon } else { t.text_faint });
+    if eye_resp.clicked() {
+        // ⌥-click shows only this layer; ⌥-click it again to restore the others.
+        if ui.input(|i| i.modifiers.alt) {
+            actions.push(("layer.showOnly".into(), json!({"layer": l.id.0})));
+        } else {
+            actions.push(("layer.setProps".into(), json!({"layer": l.id.0, "visible": !l.visible})));
+        }
     }
     // Everything but the thumbnails, the indentation and the name, so a narrow panel squeezes
     // the indentation first, then the thumbnails (a layer with two masks has three).

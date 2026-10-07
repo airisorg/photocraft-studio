@@ -897,6 +897,23 @@ mod tests {
     }
 
     #[test]
+    fn option_click_eye_shows_one_layer_then_restores() {
+        let mut s = session(8);
+        s.execute("layer.new.layer", json!({})).unwrap();
+        let ids: Vec<LayerId> = doc(&s).layers.iter().map(|l| l.id).collect();
+        // Background, Layer 1 (hidden beforehand), Layer 2.
+        s.execute("layer.hideLayers", json!({"layer": ids[1].0})).unwrap();
+        let vis = |s: &Session| doc(s).layers.iter().map(|l| l.visible).collect::<Vec<_>>();
+        assert_eq!(s.execute("layer.showOnly", json!({"layer": ids[1].0})).unwrap()["shownAlone"], true);
+        assert_eq!(vis(&s), [false, true, false]);
+        // Another eye moves the solo; the original snapshot survives.
+        s.execute("layer.showOnly", json!({"layer": ids[2].0})).unwrap();
+        assert_eq!(vis(&s), [false, false, true]);
+        assert_eq!(s.execute("layer.showOnly", json!({"layer": ids[2].0})).unwrap()["shownAlone"], false);
+        assert_eq!(vis(&s), [true, false, true], "restored, with Layer 1 still hidden");
+    }
+
+    #[test]
     fn a_mask_turns_the_background_into_a_layer() {
         for (cmd, needs_selection) in [
             ("layer.layerMask.revealAll", false),
