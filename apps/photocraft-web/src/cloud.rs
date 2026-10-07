@@ -1,9 +1,13 @@
 //! Cloud workspace around the unmodified editor. All document operations use the Rust engine.
+use super::home;
 use eframe::App as _;
 use egui::{ColorImage, RichText, TextureHandle, Vec2};
 use gloo_net::http::{Request, RequestBuilder};
 use photocraft_doc::DocId;
-use photocraft_ui_egui::{PhotocraftApp, theme::Tokens};
+use photocraft_ui_egui::{
+    PhotocraftApp,
+    theme::{ThemeKind, Tokens},
+};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
@@ -28,6 +32,7 @@ enum Message {
     Notice(String),
     Drafts(Vec<(String, Value)>),
     Recovered(String, Vec<u8>),
+    Template(String, Vec<u8>),
 }
 #[derive(Clone)]
 struct Binding {
@@ -48,6 +53,7 @@ pub struct Cloud {
     textures: HashMap<String, TextureHandle>,
     search: String,
     filter: String,
+    template_category: String,
     status: String,
     error: bool,
     busy: bool,
@@ -171,7 +177,8 @@ impl Cloud {
             bindings: HashMap::new(),
             textures: HashMap::new(),
             search: String::new(),
-            filter: "All projects".into(),
+            filter: "Home".into(),
+            template_category: "For you".into(),
             status: "Connecting to your workspace…".into(),
             error: false,
             busy: false,
@@ -205,6 +212,15 @@ impl Cloud {
             let u = api("GET", "/api/me", None).await.ok();
             Ok(Message::Boot(c, u))
         });
+        for starter in &home::STARTERS {
+            let slug = starter.slug;
+            task(
+                &s.queue,
+                0,
+                ctx,
+                async move { Ok(Message::Preview(format!("starter/{slug}"), binary("GET", &format!("/templates/{slug}.png"), None).await?)) },
+            );
+        }
         s
     }
     fn list(&self, ctx: &egui::Context) {
@@ -272,17 +288,18 @@ impl Cloud {
                     }
                 }
                 Message::Preview(id, b) => {
-                    if let Ok(img) = photocraft_codecs::decode(&b) {
-                        if img.width() <= 512 && img.height() <= 512 {
-                            self.textures.insert(
-                                id.clone(),
-                                ctx.load_texture(
-                                    id,
-                                    ColorImage::from_rgba_unmultiplied([img.width() as usize, img.height() as usize], &img.to_rgba8()),
-                                    Default::default(),
-                                ),
-                            );
-                        }
+                    if let Ok(img) = photocraft_codecs::decode(&b)
+                        && img.width() <= 512
+                        && img.height() <= 512
+                    {
+                        self.textures.insert(
+                            id.clone(),
+                            ctx.load_texture(
+                                id,
+                                ColorImage::from_rgba_unmultiplied([img.width() as usize, img.height() as usize], &img.to_rgba8()),
+                                Default::default(),
+                            ),
+                        );
                     }
                 }
                 Message::Opened(meta, bytes) => {
@@ -319,10 +336,11 @@ impl Cloud {
                     self.epoch += 1;
                     self.bindings.clear();
                     self.projects.clear();
-                    self.textures.clear();
+                    self.textures.retain(|key, _| key.starts_with("starter/"));
                     self.drafts.clear();
                     self.user = None;
                     self.home = true;
+                    self.filter = "Home".into();
                     self.show_logout = false;
                     let _ = app.session.execute("file.closeAll", json!({}));
                     self.status = "Signed out. Private browser recovery data cleared.".into();
@@ -375,6 +393,20 @@ impl Cloud {
                     self.draft_allowed.set(true);
                 }
                 Message::Drafts(v) => self.drafts = v,
+                Message::Template(name, bytes) => {
+                    self.busy = false;
+                    match app.open_bytes(&name, &bytes) {
+                        Ok(_) => {
+                            self.home = false;
+                            self.error = false;
+                            self.status = "Your own copy. Every layer is ready to edit.".into();
+                        }
+                        Err(e) => {
+                            self.error = true;
+                            self.status = e;
+                        }
+                    }
+                }
                 Message::Recovered(name, bytes) => match app.open_bytes(&name, &bytes) {
                     Ok(_) => {
                         self.home = false;
@@ -527,7 +559,12 @@ impl Cloud {
     }
     pub fn ui(&mut self, app: &mut PhotocraftApp, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
-        let t = Tokens::get(&ctx);
+        if self.home {
+            *ui.visuals_mut() = egui::Visuals::light();
+            ui.visuals_mut().selection.bg_fill = egui::Color32::from_rgb(238, 232, 252);
+            ui.visuals_mut().selection.stroke = egui::Stroke::new(1., home::PURPLE);
+        }
+        let t = if self.home { Tokens::for_kind(ThemeKind::StudioLight) } else { Tokens::get(&ctx) };
         let binding = self.binding(app);
         let compact = ui.available_width() < 760.;
         egui::Panel::top("cloud_header").exact_size(55.).frame(egui::Frame::NONE.fill(t.card).inner_margin(egui::Margin::symmetric(18, 8))).show(ui, |ui| {
@@ -564,10 +601,9 @@ impl Cloud {
                         .add_enabled(self.sign_in, egui::Button::new(if compact { "Sign in" } else { "Continue with Google" }))
                         .on_hover_text(if self.sign_in { "Sign in to your cloud workspace" } else { "Cloud sign-in is awaiting setup" })
                         .clicked()
+                        && let Some(w) = web_sys::window()
                     {
-                        if let Some(w) = web_sys::window() {
-                            let _ = w.location().set_href("/auth/login");
-                        }
+                        let _ = w.location().set_href("/auth/login");
                     }
                     if !self.home {
                         if ui
@@ -640,14 +676,17 @@ impl Cloud {
         });
         egui::Panel::bottom("cloud_status").exact_size(27.).frame(egui::Frame::NONE.fill(t.card).inner_margin(egui::Margin::symmetric(16, 3))).show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.label(RichText::new(&self.status).small().color(if self.error { t.warning } else { t.text_dim }));
+                ui.set_max_width((ui.available_width() - 110.).max(100.));
+                ui.add(egui::Label::new(RichText::new(&self.status).small().color(if self.error { t.warning } else { t.text_dim })).truncate())
+                    .on_hover_text(&self.status);
                 if self.error && ui.small_button("Dismiss").clicked() {
                     self.error = false;
                 }
-                if self.newer && ui.small_button("Open latest in a new tab").clicked() {
-                    if let Some(b) = &binding {
-                        self.open(&ctx, b.id.clone(), None);
-                    }
+                if self.newer
+                    && ui.small_button("Open latest in a new tab").clicked()
+                    && let Some(b) = &binding
+                {
+                    self.open(&ctx, b.id.clone(), None);
                 }
             });
         });
@@ -675,170 +714,164 @@ impl Cloud {
         }
         self.dialogs(app, &ctx);
     }
+    fn home_action(&mut self, app: &mut PhotocraftApp, ctx: &egui::Context, action: home::Action) {
+        match action {
+            home::Action::New(w, h) => {
+                new_document(app, w, h, "Untitled canvas");
+                self.home = false;
+            }
+            home::Action::Open => app.open_dialog_file(),
+            home::Action::Template(index) => {
+                if let Some(starter) = home::STARTERS.get(index) {
+                    let slug = starter.slug;
+                    self.busy = true;
+                    self.status = "Opening your editable template…".into();
+                    task(&self.queue, self.epoch, ctx, async move {
+                        Ok(Message::Template(format!("{slug}.pcraft"), binary("GET", &format!("/templates/{slug}.pcraft"), None).await?))
+                    });
+                }
+            }
+        }
+    }
     fn home_ui(&mut self, app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
-        let t = Tokens::get(&ctx);
-        let narrow = ui.available_width() < 760.;
+        let t = Tokens::for_kind(ThemeKind::StudioLight);
+        let narrow = ui.available_width() < 1100.;
+        let nav = [("⌂", "Home"), ("▦", "Templates"), ("▤", "All projects"), ("☆", "Starred"), ("♧", "Shared with me"), ("♲", "Trash")];
         if !narrow {
-            egui::Panel::left("workspace_nav").exact_size(210.).frame(egui::Frame::NONE.fill(t.card).inner_margin(20)).show(ui, |ui| {
-                ui.add_space(24.);
-                ui.label(RichText::new("YOUR WORKSPACE").small().color(t.text_dim));
+            egui::Panel::left("workspace_nav").exact_size(214.).frame(egui::Frame::NONE.fill(egui::Color32::WHITE).inner_margin(18)).show(ui, |ui| {
+                ui.add_space(20.);
+                ui.label(RichText::new("YOUR WORKSPACE").size(10.).strong().color(home::MUTED));
                 ui.add_space(18.);
-                for name in ["All projects", "Starred", "Shared with me", "Trash"] {
-                    if ui.add_sized([170., 38.], egui::Button::new(name).selected(self.filter == name)).clicked() {
-                        self.filter = name.into();
+                for (index, (_, name)) in nav.iter().enumerate() {
+                    if home::nav_button(ui, name, self.filter == *name, index).clicked() {
+                        self.filter = (*name).into();
+                        self.search.clear();
                     }
+                    ui.add_space(4.);
                 }
                 ui.add_space(28.);
                 ui.separator();
-                ui.add_space(12.);
-                ui.label(RichText::new("Made for your ideas").strong());
-                ui.add_space(8.);
-                ui.label(RichText::new("Layers, masks, brushes, type, and real PSD files. All in your browser.").color(t.text_dim));
+                ui.add_space(22.);
+                ui.label(RichText::new("Made for your ideas.").size(14.).strong().color(home::INK));
+                ui.add_space(10.);
+                ui.label(RichText::new("Layers, brushes, type, and real PSD files. A little room to make something yours.").size(12.).color(home::MUTED));
                 ui.add_space(16.);
-                ui.hyperlink_to("Built on PhotoCraft ↗", "https://github.com/storytold/photocraft");
-                ui.add_space(12.);
-                ui.label(RichText::new("WebGPU · WebGL2 fallback").small().color(t.text_dim));
+                ui.hyperlink_to("Meet PhotoCraft ↗", "https://github.com/storytold/photocraft");
                 if app.session.active().is_some() {
-                    ui.add_space(20.);
-                    if ui.button("Return to editor").clicked() {
+                    ui.add_space(24.);
+                    if ui.add_sized([178., 36.], home::primary("Return to editor →")).clicked() {
                         self.home = false;
                     }
                 }
             });
         }
-        egui::CentralPanel::default().frame(egui::Frame::NONE.fill(t.canvas).inner_margin(if narrow { 18 } else { 36 })).show(ui, |ui| {
+        egui::CentralPanel::default().frame(egui::Frame::NONE.fill(home::PAPER).inner_margin(if narrow { 18 } else { 32 })).show(ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
-                ui.add_space(12.);
-                ui.label(RichText::new("SPACE TO CREATE").size(11.).strong().color(t.accent));
-                ui.add_space(10.);
-                ui.label(RichText::new("Your next idea starts here.").size(if narrow { 28. } else { 34. }).strong());
-                ui.add_space(10.);
-                ui.label(RichText::new("Make a new canvas, open a layered file, or pick up where you left off.").size(15.).color(t.text_dim));
-                ui.add_space(22.);
-                ui.horizontal_wrapped(|ui| {
-                    if ui.add_sized([145., 38.], egui::Button::new(RichText::new("+  New canvas").color(t.primary_text)).fill(t.primary_bg)).clicked() {
-                        new_document(app, 1200, 900, "Untitled canvas");
-                        self.home = false;
-                    }
-                    if ui.add_sized([145., 38.], egui::Button::new("Open a file…")).clicked() {
-                        app.open_dialog_file();
-                    }
-                    ui.label(RichText::new("PSD, PNG, JPG, .pcraft and more").small().color(t.text_dim));
-                });
-                ui.add_space(30.);
-                ui.label(RichText::new("Start with a size").size(17.).strong());
-                ui.add_space(12.);
-                let presets =
-                    [("Social post", 1080, 1080, "1:1"), ("Story", 1080, 1920, "9:16"), ("Presentation", 1920, 1080, "16:9"), ("Photo", 2400, 1600, "3:2")];
-                let cols = if narrow { 2 } else { 4 };
-                for chunk in presets.chunks(cols) {
-                    ui.columns(cols, |uis| {
-                        for (i, (name, w, h, ratio)) in chunk.iter().enumerate() {
-                            let Some(ui) = uis.get_mut(i) else {
-                                continue;
-                            };
-                            egui::Frame::new().fill(t.card).corner_radius(t.radius_lg).inner_margin(14).show(ui, |ui| {
-                                let width = ui.available_width();
-                                let (r, res) = ui.allocate_exact_size(Vec2::new(width, 86.), egui::Sense::click());
-                                ui.painter().rect_filled(r, 6., t.accent_soft);
-                                let scale = (r.width() * 0.55 / (*w as f32)).min(58. / (*h as f32));
-                                let paper = egui::Rect::from_center_size(r.center(), Vec2::new(*w as f32 * scale, *h as f32 * scale));
-                                ui.painter().rect_filled(paper, 3., t.text);
-                                ui.painter().circle_filled(paper.center(), paper.height().min(paper.width()) * 0.22, t.accent);
-                                ui.painter().line_segment(
-                                    [paper.left_bottom() + Vec2::new(4., -5.), paper.right_bottom() + Vec2::new(-4., -5.)],
-                                    egui::Stroke::new(3., t.accent_border),
-                                );
-                                ui.add_space(10.);
-                                if ui.add_sized([width, 24.], egui::Button::new(*name).frame(false)).clicked() || res.clicked() {
-                                    new_document(app, *w, *h, name);
-                                    self.home = false;
-                                }
-                                ui.label(RichText::new(format!("{w} × {h}  ·  {ratio}")).small().color(t.text_dim));
-                            });
-                        }
-                    });
-                    ui.add_space(12.);
-                }
-                ui.add_space(20.);
-                ui.separator();
-                ui.add_space(24.);
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(RichText::new(&self.filter).size(20.).strong());
-                    ui.add_space(12.);
-                    ui.add(egui::TextEdit::singleline(&mut self.search).hint_text("Search projects or folders").desired_width(250.));
-                    if self.user.is_some() && ui.button("Refresh").clicked() {
-                        self.list(&ctx);
-                    }
-                });
                 if narrow {
                     ui.horizontal_wrapped(|ui| {
-                        for name in ["All projects", "Starred", "Shared with me", "Trash"] {
+                        for (_, name) in nav {
                             ui.selectable_value(&mut self.filter, name.into(), name);
                         }
                     });
+                    ui.add_space(20.);
                 }
-                ui.add_space(18.);
-                let search = self.search.to_lowercase();
-                let items = self
-                    .projects
-                    .iter()
-                    .filter(|p| {
-                        let trashed = p.get("trashed").and_then(Value::as_bool) == Some(true);
-                        let matches = match self.filter.as_str() {
-                            "Trash" => trashed,
-                            "Starred" => !trashed && p.get("starred").and_then(Value::as_bool) == Some(true),
-                            "Shared with me" => !trashed && field(p, "role") != "owner",
-                            _ => !trashed,
-                        };
-                        matches && (format!("{} {}", field(p, "title"), field(p, "folder")).to_lowercase().contains(&search))
-                    })
-                    .cloned()
-                    .collect::<Vec<_>>();
-                if items.is_empty() {
-                    egui::Frame::new().fill(t.card).corner_radius(t.radius_lg).inner_margin(24).show(ui, |ui| {
-                        ui.set_min_width((ui.available_width() - 48.).max(100.));
-                        ui.label(
-                            RichText::new(if self.user.is_none() { "Your ideas deserve a home." } else { "A fresh canvas for your projects." })
-                                .size(18.)
-                                .strong(),
-                        );
-                        ui.add_space(8.);
-                        ui.label(if self.user.is_none() {
-                            "Sign in for cloud saves, version history, sharing, and comments. You can start editing right now."
-                        } else {
-                            "Create a canvas above, then choose Save to cloud. Your saved projects will appear here."
-                        });
-                    });
-                }
-                let cols = if narrow { 1 } else { 3 };
-                for row in items.chunks(cols) {
-                    ui.columns(cols, |uis| {
-                        for (i, p) in row.iter().enumerate() {
-                            if let Some(ui) = uis.get_mut(i) {
-                                self.project_card(ui, p, &ctx);
-                            }
-                        }
-                    });
-                    ui.add_space(16.);
-                }
-                if !self.drafts.is_empty() {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(RichText::new(if self.filter == "Home" { "Make room for a new idea." } else { &self.filter }).size(24.).strong().color(home::INK));
+                    if self.filter != "Home" {
+                        ui.add(egui::TextEdit::singleline(&mut self.search).hint_text("Search designs or folders").desired_width(220.));
+                    }
+                    if self.filter != "Home" && self.filter != "Templates" && self.user.is_some() && ui.button("Refresh").clicked() {
+                        self.list(&ctx);
+                    }
+                });
+                ui.add_space(24.);
+                if self.filter == "Home" {
+                    if let Some(a) = home::hero(ui, &self.textures) {
+                        self.home_action(app, &ctx, a);
+                    }
+                    ui.add_space(20.);
+                    if let Some(a) = home::quick_sizes(ui) {
+                        self.home_action(app, &ctx, a);
+                    }
                     ui.add_space(24.);
-                    ui.label(RichText::new("Browser recovery").size(18.).strong());
-                    ui.label("Local recovery copies stay on this browser. Open one as a separate document.");
-                    ui.add_space(8.);
-                    for (key, v) in self.drafts.clone() {
+                }
+                if self.filter == "Home" || self.filter == "Templates" {
+                    if let Some(a) = home::gallery(ui, &self.textures, &mut self.template_category, &self.search) {
+                        self.home_action(app, &ctx, a);
+                    }
+                    ui.add_space(12.);
+                }
+                if self.filter != "Templates" {
+                    if self.filter == "Home" {
                         ui.horizontal(|ui| {
-                            ui.label(field(&v, "name"));
-                            if ui.button("Recover").clicked() {
-                                let key = key.clone();
-                                task(&self.queue, self.epoch, &ctx, async move {
-                                    let (name, b) = draft_get(&key).await?;
-                                    Ok(Message::Recovered(name, b))
-                                });
+                            ui.label(RichText::new("Pick up where you left off.").size(23.).strong().color(home::INK));
+                            if ui.button("All projects →").clicked() {
+                                self.filter = "All projects".into();
                             }
                         });
+                        ui.add_space(18.);
+                    }
+                    let search = self.search.to_lowercase();
+                    let items = self
+                        .projects
+                        .iter()
+                        .filter(|p| {
+                            let trashed = p.get("trashed").and_then(Value::as_bool) == Some(true);
+                            let matches = match self.filter.as_str() {
+                                "Trash" => trashed,
+                                "Starred" => !trashed && p.get("starred").and_then(Value::as_bool) == Some(true),
+                                "Shared with me" => !trashed && field(p, "role") != "owner",
+                                _ => !trashed,
+                            };
+                            matches && (format!("{} {}", field(p, "title"), field(p, "folder")).to_lowercase().contains(&search))
+                        })
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    if items.is_empty() {
+                        egui::Frame::new().fill(t.card).corner_radius(t.radius_lg).inner_margin(24).show(ui, |ui| {
+                            ui.set_min_width((ui.available_width() - 48.).max(100.));
+                            ui.label(
+                                RichText::new(if self.user.is_none() { "Your ideas deserve a home." } else { "A fresh canvas for your projects." })
+                                    .size(18.)
+                                    .strong(),
+                            );
+                            ui.add_space(8.);
+                            ui.label(if self.user.is_none() {
+                                "Sign in for cloud saves, version history, sharing, and comments. You can start editing right now."
+                            } else {
+                                "Create a canvas above, then choose Save to cloud. Your saved projects will appear here."
+                            });
+                        });
+                    }
+                    let cols = if narrow { 1 } else { 3 };
+                    for row in items.chunks(cols) {
+                        ui.columns(cols, |uis| {
+                            for (i, p) in row.iter().enumerate() {
+                                if let Some(ui) = uis.get_mut(i) {
+                                    self.project_card(ui, p, &ctx);
+                                }
+                            }
+                        });
+                        ui.add_space(16.);
+                    }
+                    if !self.drafts.is_empty() {
+                        ui.add_space(24.);
+                        ui.label(RichText::new("Browser recovery").size(18.).strong());
+                        ui.label("Local recovery copies stay on this browser. Open one as a separate document.");
+                        ui.add_space(8.);
+                        for (key, v) in self.drafts.clone() {
+                            ui.horizontal(|ui| {
+                                ui.label(field(&v, "name"));
+                                if ui.button("Recover").clicked() {
+                                    let key = key.clone();
+                                    task(&self.queue, self.epoch, &ctx, async move {
+                                        let (name, b) = draft_get(&key).await?;
+                                        Ok(Message::Recovered(name, b))
+                                    });
+                                }
+                            });
+                        }
                     }
                 }
                 ui.add_space(32.);
@@ -846,7 +879,7 @@ impl Cloud {
         });
     }
     fn project_card(&mut self, ui: &mut egui::Ui, p: &Value, ctx: &egui::Context) {
-        let t = Tokens::get(ctx);
+        let t = Tokens::for_kind(ThemeKind::StudioLight);
         let id = field(p, "id").to_string();
         let title = field(p, "title");
         egui::Frame::new().fill(t.card).corner_radius(t.radius_lg).inner_margin(12).show(ui, |ui| {
@@ -927,12 +960,11 @@ impl Cloud {
             let mut open = true;
             egui::Window::new("Sign out of this workspace?").open(&mut open).show(ctx, |ui| {
                 ui.label("Unsaved tabs and browser recovery copies will be cleared. Download any work you want to keep first.");
-                if ui.button("Download current document").clicked() {
-                    if let Some(d) = app.session.active() {
-                        if let Ok(bytes) = photocraft_format::save_to_bytes(&d.doc, &Default::default()) {
-                            let _ = super::web::download(&format!("{}.pcraft", d.doc.name), &bytes);
-                        }
-                    }
+                if ui.button("Download current document").clicked()
+                    && let Some(d) = app.session.active()
+                    && let Ok(bytes) = photocraft_format::save_to_bytes(&d.doc, &Default::default())
+                {
+                    let _ = super::web::download(&format!("{}.pcraft", d.doc.name), &bytes);
                 }
                 if ui.add_enabled(!self.busy, egui::Button::new("Sign out and clear this browser")).clicked() {
                     self.busy = true;
@@ -1131,11 +1163,11 @@ async fn draft_list(scope: &str) -> Result<Vec<(String, Value)>, String> {
     let keys = store.get_all_keys(None, None).await.map_err(js_error)?;
     let mut out = vec![];
     for key in keys {
-        if let Some(k) = key.as_string().filter(|k| k.starts_with(&format!("{scope}:"))) {
-            if let Some(v) = store.get(key).await.map_err(js_error)? {
-                let name = js_sys::Reflect::get(&v, &JsValue::from_str("name")).ok().and_then(|v| v.as_string()).unwrap_or_else(|| "Recovered document".into());
-                out.push((k, json!({"name":name})));
-            }
+        if let Some(k) = key.as_string().filter(|k| k.starts_with(&format!("{scope}:")))
+            && let Some(v) = store.get(key).await.map_err(js_error)?
+        {
+            let name = js_sys::Reflect::get(&v, &JsValue::from_str("name")).ok().and_then(|v| v.as_string()).unwrap_or_else(|| "Recovered document".into());
+            out.push((k, json!({"name":name})));
         }
     }
     Ok(out)

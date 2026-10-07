@@ -101,3 +101,19 @@ bypass to the deployed application, and refuse to seed accounts on non-loopback 
   prevents further requests but cannot erase copies recipients have already downloaded.
 - The same-origin `photocraftCommand` automation bridge reuses the native command registry.
   It exposes no server credential or filesystem authority and is inaccessible cross-origin.
+
+## Starter designs and home
+
+The light workspace home is a small Rust/egui presentation layer in `apps/photocraft-web/src/home.rs`.
+It uses the same editor, native file format, GPU compositor and command system as upstream.
+Six original starter designs ship as `.pcraft` documents, with editable type and shape layers;
+their PNG previews are rendered by the existing PhotoCraft CLI. Documents load only when selected.
+Regenerate them with `python3 packaging/web/generate-templates.py target/debug/photocraft-cli`
+after building that binary. Previews and documents are ordinary static assets, copied by Trunk
+and included recursively in the Tofu package, rather than added to the WASM binary.
+
+The home collapses its sidebar below 1100 px and its gallery from six to three or two columns.
+Home uses a local light palette; the editor retains the user's existing theme preference.
+Template category filters, project filters, folders, trash, local recovery and cloud permissions
+remain separate operations. Opening a starter creates a local document without binding it to
+another user's project.

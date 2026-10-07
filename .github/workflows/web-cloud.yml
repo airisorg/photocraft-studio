@@ -54,7 +54,9 @@ jobs:
           cargo xtask layers
       - name: Build browser engine
         working-directory: apps/photocraft-web
-        run: NO_COLOR=true trunk build --release
+        run: |
+          cargo clippy --locked -p photocraft-web --target wasm32-unknown-unknown --no-deps -- -D warnings
+          NO_COLOR=true trunk build --release
       - name: Build service and fixture
         run: |
           mkdir -p test-results
@@ -72,7 +74,7 @@ jobs:
           target/debug/photocraft-cloud > test-results/server.log 2>&1 &
           SERVER_PID=$!
           trap 'kill "$SERVER_PID"' EXIT
-          for attempt in $(seq 1 30); do
+          for _ in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:8876/healthz; then break; fi
             sleep 1
           done

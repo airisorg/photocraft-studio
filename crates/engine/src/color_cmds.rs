@@ -376,7 +376,7 @@ impl ColorState {
     fn canvas_lut_with(&self, doc: &Document, size: usize, hdr: bool, on: Option<u32>) -> Result<Option<Vec<u8>>> {
         let size = size.max(2);
         let pv = self.proof(doc.id);
-        let display = self.canvas_display_for(doc, on)?;
+        let display = self.canvas_display(doc)?;
         if !(pv.enabled || pv.gamut_warning || hdr && crate::proof_sim::hdr_active(self, doc)) {
             return Ok(display.transform.as_ref().map(|t| Lut3d::from_transform(t, size).to_rgba8()));
         }
