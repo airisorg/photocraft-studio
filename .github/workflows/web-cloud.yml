@@ -75,10 +75,7 @@ jobs:
           target/debug/photocraft-cloud > test-results/server.log 2>&1 &
           SERVER_PID=$!
           trap 'kill "$SERVER_PID"' EXIT
-          for _ in $(seq 1 30); do
-            if python -c 'import json,sys,urllib.request; sys.exit(not json.load(urllib.request.urlopen("http://127.0.0.1:8876/api/config", timeout=2))["cloud"])'; then break; fi
-            sleep 1
-          done
+          python tests/web/wait_ready.py
           python tests/web/test_api.py
           python tests/web/test_browser.py
           python packaging/web/tofu-package.py test-results/photocraft-tofu.zip
