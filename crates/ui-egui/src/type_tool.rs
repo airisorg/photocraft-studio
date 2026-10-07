@@ -1395,6 +1395,20 @@ mod tests {
     }
 
     #[test]
+    fn a_name_from_text_after_blank_lines_keeps_following_the_text() {
+        let mut app = app();
+        pointer_up(&mut app, [50.0, 100.0], [50.0, 100.0]);
+        insert(&mut app, "\n\nTitle");
+        let id = app.ui.text_edit.as_ref().unwrap().layer;
+        commit(&mut app);
+        let name = |app: &PhotocraftApp| app.session.active().unwrap().doc.layers.last().unwrap().name.clone();
+        assert_eq!(name(&app), "Title");
+        // Edited later, outside the session that created it (#483).
+        app.run("type.edit", json!({"layer": id, "text": "\nSubtitle"})).unwrap();
+        assert_eq!(name(&app), "Subtitle");
+    }
+
+    #[test]
     fn dragging_a_box_handle_resizes_the_paragraph_box() {
         let mut app = app();
         pointer_up(&mut app, [10.0, 10.0], [110.0, 60.0]);
