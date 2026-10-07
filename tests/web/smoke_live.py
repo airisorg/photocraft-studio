@@ -30,6 +30,11 @@ with sync_playwright() as p:
     page.wait_for_function('typeof window.photocraftCommand === "function"',timeout=90000)
     page.wait_for_selector('#photocraft_loading', state='detached', timeout=90000)
     page.wait_for_timeout(400)
+    # Observe the app's existing readiness polling; do not add hosted HTTP probes.
+    for _ in range(150):
+        if configuration and configuration[-1]['body'].get('cloud'):
+            break
+        page.wait_for_timeout(100)
     page.screenshot(path=str(out/'hosted-workspace.png'))
     assert configuration and configuration[-1]['body'].get('cloud') and configuration[-1]['body'].get('signIn'),configuration
     page.mouse.click(1400,32)
