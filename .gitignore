@@ -9,3 +9,7 @@ target/
 /temp
 /book/output
 /craft-fonts
+public/
+__pycache__/
+*.pyc
+/test-results/

@@ -2,18 +2,25 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
-  <title>PhotoCraft</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#202329">
+  <meta name="description" content="A creative workspace powered by PhotoCraft. Edit layered images, keep versions, and share your work, right in your browser.">
+  <title>PhotoCraft Studio</title>
+  <link data-trunk rel="icon" href="icon.svg" type="image/svg+xml">
   <link data-trunk rel="rust" data-bin="photocraft-web" data-cargo-profile="wasm-release" data-wasm-opt="z" data-weak-refs />
   <style>
     html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #262626; }
     #photocraft_canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
     #photocraft_loading { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
       color: #b8b8b8; font: 14px system-ui, sans-serif; pointer-events: none; }
+    #tofu_credit { position: fixed; z-index: 2; right: 8px; bottom: 5px; padding: 1px 5px;
+      color: #bcb9d8; background: #1a1a1c; font: 11px system-ui, sans-serif; border-radius: 3px; }
   </style>
 </head>
 <body>
-  <canvas id="photocraft_canvas"></canvas>
-  <div id="photocraft_loading">Loading PhotoCraft&hellip;</div>
+  <canvas id="photocraft_canvas" aria-label="PhotoCraft Studio creative workspace"></canvas>
+  <div id="photocraft_loading" role="status">Opening PhotoCraft Studio&hellip; The first visit downloads the editing engine.</div>
+  <noscript>PhotoCraft Studio needs JavaScript and WebAssembly enabled to run the Rust editor in your browser.</noscript>
+  <a id="tofu_credit" href="https://trytofu.ai" target="_blank" rel="noopener noreferrer">Hosted on Tofu</a>
 </body>
 </html>

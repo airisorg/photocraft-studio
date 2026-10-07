@@ -1,0 +1,11 @@
+.git
+target
+dist
+corpus
+node_modules
+.env*
+plan
+log
+test-results
+public/*.br
+public/*.gz
