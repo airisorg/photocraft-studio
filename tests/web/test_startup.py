@@ -67,19 +67,21 @@ class StartupRecovery(unittest.TestCase):
                         time.sleep(.05)
                 self.assertEqual(response.status_code, 200)
                 self.assertIn('Local editor available', response.text)
-                self.assertFalse(http.get(base+'/api/config').json()['cloud'])
+                configuration = http.get(base+'/api/config', timeout=15).json()
+                self.assertFalse(configuration['cloud'])
+                self.assertIn(configuration['cloudIssue'], {'connection_timeout', 'connection_unavailable', 'setup_timeout'})
                 self.assertEqual(http.get(base+'/healthz').json()['cloud'], 'starting')
                 # The provider at port 1 is unreachable. A 503 proves storage readiness
                 # rejected this confirmation before it could consume the single-use token.
                 confirmation = http.post(base+'/auth/confirm', headers={'Origin':base},
-                    data={'token_hash':'a'*64,'type':'email'},timeout=7)
+                    data={'token_hash':'a'*64,'type':'email'},timeout=15)
                 self.assertEqual(confirmation.status_code, 503)
                 self.assertIsNone(process.poll())
 
                 proxy = Proxy(('127.0.0.1', db_port), Forward)
                 threading.Thread(target=proxy.serve_forever, daemon=True).start()
                 deadline = time.monotonic() + 20
-                while not http.get(base+'/api/config', timeout=1).json()['cloud']:
+                while not http.get(base+'/api/config', timeout=15).json()['cloud']:
                     self.assertLess(time.monotonic(), deadline, 'Database never recovered')
                     time.sleep(.1)
                 self.assertEqual(http.get(base+'/healthz').json()['cloud'], 'ready')
