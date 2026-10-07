@@ -23,7 +23,7 @@ from visual_assertions import (assert_header_geometry, assert_dialog_inside, ass
                                workspace_controls, workspace_quick_actions, workspace_focus_changed,
                                workspace_template_previews, workspace_project_card, workspace_recovery_controls,
                                sharing_invitation_controls, assert_invitation_feedback_geometry, native_overlay_actions,
-                               recovery_warning_action)
+                               recovery_warning_action, session_auth_controls)
 
 BASE = os.environ.get('PHOTOCRAFT_TEST_ORIGIN', 'http://127.0.0.1:8876')
 DATABASE = os.environ.get('PHOTOCRAFT_TEST_DATABASE_URL', 'postgresql://photocraft_test@127.0.0.1:55438/postgres')
@@ -167,6 +167,65 @@ class BrowserAcceptance(unittest.TestCase):
                 return projects[0]
             self.page.wait_for_timeout(250)
         self.fail(f'Cloud revision {revision} never committed')
+
+    def auth_frame(self, label):
+        data = self.page.screenshot(scale='css')
+        (ARTIFACTS/f'session-{label}.png').write_bytes(data)
+        return Image.open(io.BytesIO(data)).convert('RGB')
+
+    def auth_wait(self, paused, label, timeout=10000):
+        deadline = time.monotonic()+timeout/1000
+        while time.monotonic() < deadline:
+            try:
+                controls = session_auth_controls(Image.open(io.BytesIO(self.page.screenshot(scale='css'))))
+            except AssertionError:
+                controls = None
+            if bool(controls) == paused:
+                self.auth_frame(label)
+                return controls
+            self.page.wait_for_timeout(100)
+        self.auth_frame(label+'-timeout')
+        self.fail(f'Session paused state did not become {paused}')
+
+    def auth_click(self, action):
+        controls = session_auth_controls(self.auth_frame('action'))
+        rect = controls[['Sign in again', 'Check sign-in', 'Copy sign-in link'].index(action)]
+        self.page.mouse.click((rect[0]+rect[2])/2, (rect[1]+rect[3])/2)
+        self.page.mouse.move(0, 0)
+
+    def auth_save(self, bound=True, page=None):
+        page = page or self.page
+        actions = ['More', 'Comments', 'Save', 'Share'] if bound else ['More', 'Save']
+        controls = assert_header_geometry(self, Image.open(io.BytesIO(page.screenshot(scale='css'))), actions)
+        rect = controls[actions.index('Save')]
+        page.mouse.click((rect[0]+rect[2])/2, (rect[1]+rect[3])/2)
+        page.mouse.move(0, 0)
+
+    def auth_cookie(self, account):
+        token = secrets.token_hex(32)
+        self.db.execute('INSERT INTO photocraft.sessions(hash,account_id) VALUES(%s,%s)',
+                        (hashlib.sha256(token.encode()).hexdigest(), account))
+        self.context.add_cookies([{'name':'pc_session','value':token,'url':BASE,'httpOnly':True,'sameSite':'Lax'}])
+        return token
+
+    def auth_revision(self, pid, revision):
+        deadline = time.monotonic()+15
+        while time.monotonic() < deadline:
+            response = self.context.request.get(BASE+'/api/projects/'+pid)
+            self.assertTrue(response.ok, response.text())
+            value = response.json()
+            if value['revision'] >= revision:
+                return value
+            self.page.wait_for_timeout(100)
+        self.fail(f'Project {pid} did not reach revision {revision}')
+
+    def auth_cloud_document(self, pid):
+        meta = self.auth_revision(pid, 1)
+        data = b''.join(self.context.request.get(BASE+f"/api/projects/{pid}/content?revision={meta['revision']}&part={part}").body()
+                        for part in range((meta['content']['bytes']+524287)//524288))
+        self.assertEqual(hashlib.sha256(data).hexdigest(), meta['content']['sha256'])
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            return json.loads(archive.read('manifest.json'))['document']
 
     def test_01_workspace_new_canvas_button(self):
         self.assertEqual(self.page.title(), 'PhotoCraft Studio')
@@ -2586,6 +2645,445 @@ class BrowserAcceptance(unittest.TestCase):
         observations.append({'scenario': 'inactive-still-open', 'first_id': first_id,
                              'second_id': second_id, 'first_final_revision': metadata(first_id)['revision']})
         (ARTIFACTS/'local-file-binding-observations.json').write_text(json.dumps(observations, indent=2))
+
+
+    def test_48_session_renewal_keeps_two_dirty_native_documents_open(self):
+        self.signed_in()
+        account = self.accounts[-1]
+        projects = []
+        for width in [501, 502]:
+            self.new(width, 321)
+            self.stroke()
+            with self.page.expect_response(lambda r: r.url == BASE+'/api/projects' and r.request.method == 'POST') as created:
+                self.auth_save(bound=False)
+            pid = created.value.json()['id']
+            self.auth_revision(pid, 1)
+            self.page.wait_for_timeout(300)
+            projects.append(pid)
+        self.db.execute('DELETE FROM photocraft.sessions WHERE account_id=%s', (account,))
+        expected = []
+        for index in range(2):
+            self.execute('document.activate', {'document': index})
+            self.execute('layer.duplicate')
+            self.execute('layer.renameLayer', {'name': f'Unsaved document {index+1}'})
+            self.execute('select.all')
+            expected.append(self.inspect()['document'])
+        self.auth_wait(True, 'two-documents-expired')
+        self.assertEqual(len(self.inspect()['session']['documents']), 2)
+        for width, height in [(1440, 960), (390, 844)]:
+            self.page.set_viewport_size({'width': width, 'height': height})
+            self.page.wait_for_timeout(200)
+            controls = session_auth_controls(self.auth_frame(f'expired-{width}'))
+            for box in controls:
+                self.assertGreaterEqual(box[3]-box[1], 35)
+                self.assertGreaterEqual(box[0], 15)
+                self.assertLessEqual(box[2], width-15)
+            for previous, current in zip(controls, controls[1:]):
+                if current[1] == previous[1]:
+                    self.assertGreaterEqual(current[0]-previous[2], 7, 'Session actions overlap')
+                else:
+                    self.assertGreaterEqual(current[1]-previous[3], 7, 'Wrapped session actions overlap')
+        self.page.set_viewport_size({'width': 1440, 'height': 960})
+        self.page.wait_for_timeout(200)
+        blocked_requests = []
+        self.page.on('request', lambda r: blocked_requests.append({'method':r.method,'path':urlparse(r.url).path})
+                     if '/api/projects' in r.url or '/api/uploads' in r.url else None)
+        self.page.wait_for_timeout(1800)
+        self.assertEqual(blocked_requests, [], 'Expired session kept sending authenticated background requests')
+        original_url = self.page.url
+        self.context.route('**/auth/login', lambda route: route.fulfill(content_type='text/html', body='<title>Synthetic sign-in</title><p>Local test identity only</p>'))
+        with self.context.expect_page() as opened:
+            self.auth_click('Sign in again')
+        popup = opened.value
+        popup.wait_for_load_state('domcontentloaded')
+        self.assertEqual(urlparse(popup.url).path, '/auth/login')
+        self.assertEqual(self.page.url, original_url, 'Sign-in navigated away from the live editor')
+        self.auth_cookie(account)
+        popup.close()
+        self.auth_click('Check sign-in')
+        self.auth_wait(False, 'same-account-resumed')
+        for index, pid in enumerate(projects):
+            self.execute('document.activate', {'document': index})
+            self.assertEqual(self.inspect()['document'], expected[index], 'Session renewal lost native edits, selection or undo history')
+            saved = self.auth_revision(pid, 2)
+            self.assertEqual(saved['revision'], 2)
+            self.assertCountEqual([layer['name'] for layer in self.auth_cloud_document(pid)['layers']],
+                                  [layer['name'] for layer in expected[index]['layers']])
+        self.assertEqual(len(self.projects()), 2, 'Renewal created new cloud destinations')
+        self.auth_frame('two-documents-saved-after-renewal')
+        (ARTIFACTS/'session-two-documents.json').write_text(json.dumps({'project_ids':projects,
+            'widths':[doc['width'] for doc in expected], 'native_revisions':[doc['revision'] for doc in expected],
+            'undo_preserved':all(doc['canUndo'] for doc in expected)}, indent=2))
+
+        # Renewing the same identity must also refresh a real shared-project role.
+        collaborator, token = str(uuid.uuid4()), secrets.token_hex(32)
+        self.accounts.append(collaborator)
+        email = collaborator+'@example.invalid'
+        self.db.execute('INSERT INTO photocraft.accounts(id,email,name) VALUES(%s,%s,%s)',
+                        (collaborator, email, 'Renewal collaborator'))
+        self.db.execute('INSERT INTO photocraft.sessions(hash,account_id) VALUES(%s,%s)',
+                        (hashlib.sha256(token.encode()).hexdigest(), collaborator))
+        pid = projects[0]
+        member_path = BASE+'/api/projects/'+pid+'/members'
+        self.assertTrue(self.context.request.put(member_path, headers={'Origin':BASE},
+                                                data={'email':email,'role':'edit'}).ok)
+        owner_context, owner_page = self.context, self.page
+        other_context, other = self.context_page('?project='+pid, token=token)
+        self.context, self.page = other_context, other
+        try:
+            self.db.execute('DELETE FROM photocraft.sessions WHERE account_id=%s', (collaborator,))
+            self.execute('layer.renameLayer', {'name':'Retained after permission downgrade'})
+            retained = self.inspect()['document']
+            self.auth_wait(True, '48-collaborator-expired')
+            self.assertTrue(owner_context.request.put(member_path, headers={'Origin':BASE},
+                                                      data={'email':email,'role':'view'}).ok)
+            original_meta = owner_context.request.get(BASE+'/api/projects/'+pid).json()
+            self.auth_cookie(collaborator)
+            self.auth_click('Check sign-in')
+            self.auth_wait(False, '48-view-permission-renewed')
+            self.assertEqual(self.inspect()['document'], retained)
+            self.page.wait_for_timeout(4200)
+            self.assertEqual(owner_context.request.get(BASE+'/api/projects/'+pid).json()['revision'], original_meta['revision'])
+            with self.page.expect_download() as exported:
+                self.command('ui.menu.invoke', {'id':'file.saveAs','params':{'path':'permission-copy.pcraft'}})
+            native = ARTIFACTS/'session-permission-copy.pcraft'
+            exported.value.save_as(native)
+            controls = assert_header_geometry(self, self.auth_frame('48-save-copy-available'), ['More','Comments','Save'])
+            box = controls[2]
+            with self.page.expect_response(lambda r:r.url==BASE+'/api/projects' and r.request.method=='POST') as copied:
+                self.page.mouse.click((box[0]+box[2])/2, (box[1]+box[3])/2)
+            copy_id = copied.value.json()['id']
+            self.assertNotEqual(copy_id, pid)
+            copy_meta = self.auth_revision(copy_id, 1)
+            data = b''.join(self.context.request.get(BASE+f"/api/projects/{copy_id}/content?revision=1&part={part}").body()
+                            for part in range((copy_meta['content']['bytes']+524287)//524288))
+            self.assertEqual(hashlib.sha256(data).hexdigest(), copy_meta['content']['sha256'])
+            (ARTIFACTS/'session-cloud-permission-copy.pcraft').write_bytes(data)
+            # File > Save embeds a composite preview; cloud save omits it. Compare
+            # the entire native document and every non-preview payload byte.
+            with zipfile.ZipFile(native) as local, zipfile.ZipFile(io.BytesIO(data)) as cloud:
+                self.assertEqual(json.loads(local.read('manifest.json'))['document'],
+                                 json.loads(cloud.read('manifest.json'))['document'])
+                payloads = lambda z: {name:z.read(name) for name in z.namelist()
+                                      if name not in {'manifest.json','thumb.png','composite/preview.png'}}
+                self.assertEqual(payloads(local), payloads(cloud))
+            self.assertEqual(owner_context.request.get(BASE+'/api/projects/'+pid).json()['content']['sha256'], original_meta['content']['sha256'])
+            (ARTIFACTS/'session-permission-downgrade.json').write_text(json.dumps({
+                'original_project':pid,'original_revision':original_meta['revision'],
+                'copy_project':copy_id,'native_sha256':copy_meta['content']['sha256'],
+                'retained_native_revision':retained['revision']}, indent=2))
+        finally:
+            other_context.close()
+            self.context, self.page = owner_context, owner_page
+
+    def test_49_session_renewal_rejects_switched_account_and_stale_auth_responses(self):
+        token_a = self.signed_in()
+        account_a = self.accounts[-1]
+        account_b = str(uuid.uuid4())
+        self.accounts.append(account_b)
+        self.db.execute('INSERT INTO photocraft.accounts(id,email,name) VALUES(%s,%s,%s)',
+                        (account_b, account_b+'@example.invalid', 'Separate browser account'))
+        self.new(417, 283)
+        self.stroke()
+        self.execute('shape.create', {'kind': 'rect', 'rect': [30, 40, 80, 50],
+                                     'fill': '#ffaa00', 'name': 'Private account A layer'})
+        observations, requests, held_me, held_logout, held_presence = [], [], [], [], []
+        phase = {'name': 'ordinary503', 'reject_create': True, 'hold_me': False}
+
+        def wait(predicate, description, timeout=10000):
+            deadline = time.monotonic()+timeout/1000
+            while time.monotonic() < deadline:
+                if predicate():
+                    return
+                self.page.wait_for_timeout(100)
+            self.fail(description)
+
+        def signature():
+            doc = self.inspect()['document']
+            self.assertIsNotNone(doc)
+            return (doc['revision'], doc['width'], doc['height'],
+                    [(layer['id'], layer['name'], layer['kind']) for layer in doc['layers']])
+
+        def counts(account):
+            return [self.db.execute(sql, (account,)).fetchone()[0] for sql in [
+                'SELECT count(*) FROM photocraft.projects WHERE owner_id=%s',
+                'SELECT count(*) FROM photocraft.uploads WHERE author_id=%s',
+                'SELECT count(*) FROM photocraft.comments WHERE author_id=%s']]
+
+        def recovery_keys():
+            return self.page.evaluate('''async () => await new Promise((resolve,reject) => {
+              const request=indexedDB.open('photocraft-studio-recovery');
+              request.onsuccess=()=>{const db=request.result;
+                const read=db.transaction('drafts').objectStore('drafts').getAllKeys();
+                read.onsuccess=()=>{resolve(read.result);db.close()};read.onerror=()=>reject(read.error)};
+              request.onerror=()=>reject(request.error);
+            })''')
+
+        def trace(label):
+            observations.append({'phase': label, 'document': signature(),
+                                 'account_a_rows': counts(account_a), 'account_b_rows': counts(account_b),
+                                 'recovery_keys': recovery_keys()})
+            (ARTIFACTS/'session-account-switch-observations.json').write_text(json.dumps(
+                {'observations': observations, 'requests': requests}, indent=2))
+
+        def projects(route):
+            request = route.request
+            entry = {'phase': phase['name'], 'method': request.method, 'path': '/api/projects',
+                     'expected_account': request.header_value('x-photocraft-account')}
+            if request.method == 'POST' and phase['reject_create']:
+                phase['reject_create'] = False
+                entry['status'] = 503
+                requests.append(entry)
+                route.fulfill(status=503, json={'error': 'Synthetic temporary storage failure'})
+            else:
+                response = route.fetch()
+                entry['status'] = response.status
+                requests.append(entry)
+                route.fulfill(response=response)
+
+        def identity(route):
+            if phase['hold_me']:
+                phase['hold_me'] = False
+                response = route.fetch()
+                self.assertEqual(response.status, 200)
+                self.assertEqual(response.json()['id'], account_a)
+                held_me.append((route, response))
+            else:
+                route.continue_()
+
+        def logout(route):
+            response = route.fetch()
+            requests.append({'phase': phase['name'], 'method': 'POST', 'path': '/api/logout',
+                             'expected_account': route.request.header_value('x-photocraft-account'),
+                             'status': response.status})
+            held_logout.append((route, response))
+
+        self.context.route(BASE+'/api/projects', projects)
+        self.context.route(BASE+'/api/me', identity)
+        self.context.route(BASE+'/api/logout', logout)
+        original = signature()
+        try:
+            self.auth_save(bound=False)
+            wait(lambda: any(r['status'] == 503 for r in requests), 'Synthetic503 was not observed')
+            self.page.wait_for_timeout(200)
+            self.auth_wait(False, '49-ordinary503-is-not-expiry')
+            self.assertEqual(signature(), original)
+
+            phase['name'] = 'expired-session'
+            self.db.execute("UPDATE photocraft.sessions SET expires_at=now()-interval '1 minute' WHERE hash=%s",
+                            (hashlib.sha256(token_a.encode()).hexdigest(),))
+            self.auth_save(bound=False)
+            self.auth_wait(True, '49-expired-session')
+            self.assertEqual(signature(), original)
+            self.assertEqual(counts(account_a), [0, 0, 0])
+
+            self.auth_cookie(account_a)
+            phase.update(name='held-identity-cookie-switch', hold_me=True)
+            self.auth_click('Check sign-in')
+            wait(lambda: bool(held_me), 'Identity check was not held after authenticating accountA')
+            token_b = self.auth_cookie(account_b)
+            route, response = held_me.pop()
+            route.fulfill(response=response)
+            wait(lambda: any(r['phase'] == phase['name'] and r['method'] == 'GET' and r['status'] == 401
+                             for r in requests), 'AccountB cookie bypassed expected-account precondition')
+            self.page.wait_for_timeout(200)
+            self.auth_wait(True, '49-switched-cookie-rejected')
+            self.assertEqual(signature(), original)
+            rejected = [r for r in requests if r['phase'] == phase['name'] and r['method'] == 'GET']
+            self.assertTrue(rejected)
+            self.assertTrue(all(r['expected_account'] == account_a and r['status'] == 401 for r in rejected))
+            self.assertEqual(counts(account_b), [0, 0, 0])
+
+            # A normal check now sees B directly. It must not adopt B or fetch B's list.
+            phase['name'] = 'wrong-account'
+            listings = len(requests)
+            with self.page.expect_response(BASE+'/api/me') as checked:
+                self.auth_click('Check sign-in')
+            self.assertEqual(checked.value.json()['id'], account_b)
+            self.page.wait_for_timeout(300)
+            self.auth_wait(True, '49-wrong-account-keeps-native-editor')
+            self.assertEqual(len(requests), listings)
+            self.assertEqual(signature(), original)
+            self.auth_save(bound=False)  # The visible Save control must be disabled.
+            self.page.wait_for_timeout(200)
+            self.assertEqual(len(requests), listings)
+
+            layer = self.inspect()['document']['layers'][0]
+            self.execute('layer.renameLayer', {'layer': layer['id'], 'name': 'Account A keeps this edit'})
+            changed = signature()
+            self.page.wait_for_timeout(2200)
+            keys = recovery_keys()
+            self.assertEqual(len([key for key in keys if key.startswith(account_a+':')]), 1)
+            self.assertFalse(any(key.startswith(account_b+':') or key.startswith('guest:') for key in keys))
+            trace('wrong-account-edits-and-recovery-preserved')
+
+            # The actual confirmation must not revoke B or clear A's local editor.
+            before = self.auth_frame('49-before-rejected-logout')
+            self.page.mouse.click(1400, 32)
+            self.page.mouse.move(0, 0)
+            self.page.wait_for_timeout(200)
+            actions = native_overlay_actions(before, self.auth_frame('49-account-menu'))
+            self.assertEqual(len(actions), 2, 'Expired account menu needs Sign in again and Sign out')
+            rect = actions[-1]
+            self.page.mouse.click((rect[0]+rect[2])/2, (rect[1]+rect[3])/2)
+            self.page.mouse.move(0, 0)
+            self.page.wait_for_timeout(200)
+            actions = native_overlay_actions(before, self.auth_frame('49-logout-confirmation'))
+            self.assertEqual(len(actions), 2)
+            rect = actions[-1]
+            phase['name'] = 'wrong-account-logout'
+            point = ((rect[0]+rect[2])/2, (rect[1]+rect[3])/2)
+            self.page.mouse.click(*point)
+            wait(lambda: bool(held_logout), 'Actual logout request was not sent')
+            self.page.mouse.click(*point)
+            self.page.wait_for_timeout(200)
+            self.assertEqual(len(held_logout), 1, 'Pending logout allowed a duplicate request')
+            route, response = held_logout.pop()
+            self.assertEqual(response.status, 401)
+            self.assertNotIn('set-cookie', response.headers)
+            route.fulfill(response=response)
+            self.page.wait_for_timeout(300)
+            self.assertEqual(signature(), changed)
+            self.assertEqual(recovery_keys(), keys)
+            actual = self.context.request.get(BASE+'/api/me')
+            self.assertTrue(actual.ok)
+            self.assertEqual(actual.json()['id'], account_b)
+            self.assertEqual(self.db.execute('SELECT count(*) FROM photocraft.sessions WHERE hash=%s',
+                                            (hashlib.sha256(token_b.encode()).hexdigest(),)).fetchone()[0], 1)
+            self.page.keyboard.press('Escape')
+            self.page.wait_for_timeout(100)
+            self.auth_wait(True, '49-rejected-logout-preserves-original')
+            self.assertEqual(counts(account_b), [0, 0, 0])
+            trace('wrong-account-logout-rejected')
+
+            phase['name'] = 'original-account-resumed'
+            self.auth_cookie(account_a)
+            self.auth_click('Check sign-in')
+            self.auth_wait(False, '49-original-account-resumed')
+            self.assertEqual(signature(), changed)
+            self.auth_save(bound=False)
+            project = self.wait_revision(1)
+            pid = project['id']
+            self.assertEqual(self.db.execute('SELECT owner_id::text FROM photocraft.projects WHERE id=%s', (pid,)).fetchone()[0], account_a)
+            self.assertEqual(counts(account_b), [0, 0, 0])
+            saved = self.auth_cloud_document(pid)
+            self.assertTrue(any(layer['name'] == 'Account A keeps this edit' for layer in saved['layers']))
+
+            # An old request's401 must not expire a successfully renewed generation.
+            presence_count = {'value': 0}
+            def presence(route):
+                presence_count['value'] += 1
+                if presence_count['value'] == 1:
+                    held_presence.append(route)
+                elif presence_count['value'] == 2:
+                    route.fulfill(status=401, json={'error': 'Synthetic current-generation expiry'})
+                else:
+                    route.continue_()
+            presence_path = BASE+f'/api/projects/{pid}/presence'
+            self.context.route(presence_path, presence)
+            try:
+                wait(lambda: bool(held_presence), 'First presence request was not held')
+                self.auth_wait(True, '49-second-request-expired-generation')
+                self.auth_cookie(account_a)
+                self.auth_click('Check sign-in')
+                self.auth_wait(False, '49-new-auth-generation')
+                held_presence.pop().fulfill(status=401, json={'error': 'Synthetic stale-generation expiry'})
+                self.page.wait_for_timeout(500)
+                self.auth_wait(False, '49-stale401-does-not-repause')
+                self.assertEqual(signature(), changed)
+                self.execute('layer.renameLayer', {'layer': layer['id'], 'name': 'Autosave after stale401'})
+                self.auth_revision(pid, 2)
+                self.assertTrue(any(item['name'] == 'Autosave after stale401' for item in self.auth_cloud_document(pid)['layers']))
+                self.assertEqual(counts(account_b), [0, 0, 0])
+                trace('stale401-ignored-and-autosave-resumed')
+            finally:
+                for route in held_presence:
+                    route.abort()
+                self.context.unroute(presence_path, presence)
+        finally:
+            for route, _ in held_me+held_logout:
+                route.abort()
+            self.context.unroute(BASE+'/api/projects', projects)
+            self.context.unroute(BASE+'/api/me', identity)
+            self.context.unroute(BASE+'/api/logout', logout)
+            (ARTIFACTS/'session-account-switch-observations.json').write_text(json.dumps(
+                {'observations': observations, 'requests': requests}, indent=2))
+
+    def test_50_merged_save_acknowledgment_survives_concurrent_session_expiry(self):
+        token = self.signed_in()
+        self.new(503, 323)
+        self.stroke()
+        self.execute('shape.create', {'kind':'rect','rect':[50,50,100,80],'fill':'#cc66aa','name':'Original shape'})
+        with self.page.expect_response(lambda r: r.url == BASE+'/api/projects' and r.request.method == 'POST') as created:
+            self.auth_save(bound=False)
+        pid = created.value.json()['id']
+        self.auth_revision(pid, 1)
+        self.page.wait_for_timeout(300)
+        other_context, other = self.context_page('?project='+pid, token=token)
+        layers = self.inspect()['document']['layers']
+        self.context.set_offline(True)
+        self.execute('layer.renameLayer', {'layer':layers[0]['id'],'name':'Owner local shape'})
+        self.execute('layer.renameLayer', {'layer':layers[1]['id'],'name':'Remote background'}, page=other)
+        self.auth_save(page=other)
+        response = other_context.request.get(BASE+'/api/projects/'+pid)
+        deadline = time.monotonic()+10
+        while response.json()['revision'] < 2 and time.monotonic() < deadline:
+            other.wait_for_timeout(100)
+            response = other_context.request.get(BASE+'/api/projects/'+pid)
+        self.assertEqual(response.json()['revision'], 2)
+        other_context.close()
+        held, attempts = [], []
+        state = {'expire':False}
+
+        def commit(route):
+            response = route.fetch()
+            self.assertTrue(response.ok, response.text())
+            self.assertTrue(response.json()['merged'], 'The real server did not produce the required merge')
+            held.append((route, response))
+
+        def upload(route):
+            attempts.append(route.request.post_data_json)
+            route.continue_()
+
+        def presence(route):
+            if state['expire']:
+                route.fulfill(status=401, content_type='text/html', body='<p>Session expired</p>')
+            else:
+                route.continue_()
+
+        self.context.route('**/api/uploads/*/commit', commit)
+        self.context.route('**/api/projects/*/uploads', upload)
+        self.context.route('**/api/projects/*/presence', presence)
+        self.context.set_offline(False)
+        self.auth_save()
+        deadline = time.monotonic()+10
+        while not held and time.monotonic() < deadline:
+            self.page.wait_for_timeout(100)
+        self.assertEqual(len(held), 1)
+        state['expire'] = True
+        self.auth_wait(True, 'merged-ack-expired')
+        before = self.inspect()['document']
+        held[0][0].fulfill(response=held[0][1])
+        self.page.wait_for_timeout(500)
+        self.assertEqual(self.inspect()['document'], before, 'An expired session applied an unchecked cloud result')
+        saved = self.auth_revision(pid, 3)
+        self.assertNotEqual(saved['content']['sha256'], attempts[0]['sha256'], 'Merged content must differ from the submitted local snapshot')
+        state['expire'] = False
+        self.auth_click('Check sign-in')
+        self.auth_wait(False, 'merged-ack-session-resumed')
+        names = {'Owner local shape','Remote background'}
+        deadline = time.monotonic()+10
+        while {layer['name'] for layer in self.inspect()['document']['layers']} != names and time.monotonic() < deadline:
+            self.page.wait_for_timeout(100)
+        self.assertEqual({layer['name'] for layer in self.inspect()['document']['layers']}, names,
+                         'The successful merged acknowledgment was lost while authentication paused')
+        self.assertCountEqual([layer['name'] for layer in self.auth_cloud_document(pid)['layers']], names)
+        self.assertEqual(self.auth_revision(pid, 3)['revision'], 3, 'Resuming a confirmed merge made a duplicate version')
+        self.assertEqual(len(attempts), 1)
+        self.auth_frame('merged-ack-applied-after-renewal')
+        (ARTIFACTS/'session-merged-ack.json').write_text(json.dumps({'revision':3,'merged':True,
+            'uploaded_sha256':attempts[0]['sha256'],'saved_sha256':saved['content']['sha256'],
+            'upload_attempts':len(attempts),'layer_names':sorted(names)}, indent=2))
 
 
 if __name__ == '__main__':
