@@ -66,6 +66,11 @@ choice!(
     /// crashes inside the graphics driver moves this to the next safer choice.
     GpuBackend { Auto = "auto", Vulkan = "vulkan", Dx12 = "dx12", Metal = "metal", Gl = "gl", Cpu = "cpu" } default Auto
 );
+choice!(
+    /// Rendering policy, independent of the advanced graphics backend selection.
+    /// CPU disables image acceleration; the native window may still need hardware graphics.
+    RenderingMode { Auto = "auto", Gpu = "gpu", Cpu = "cpu" } default Auto
+);
 choice!(UiFontSize { Tiny = "tiny", Small = "small", Medium = "medium", Large = "large" } default Small);
 choice!(LogDestination { Metadata = "metadata", TextFile = "textFile", Both = "both" } default Metadata);
 choice!(LogDetail { SessionsOnly = "sessionsOnly", Concise = "concise", Detailed = "detailed" } default Concise);
@@ -389,6 +394,8 @@ pub struct Performance {
     pub cache_tile_size: u32,
     /// Draw the canvas with the GPU (applies at next launch).
     pub use_gpu: bool,
+    /// Explicit rendering policy. None preserves older useGpu/gpuBackend preferences.
+    pub rendering_mode: Option<RenderingMode>,
     /// Graphics backend (applies at next launch; see [`GpuBackend`]).
     pub gpu_backend: GpuBackend,
     /// Memory budget of the layer-effect cache, in MB.
@@ -417,6 +424,7 @@ impl Default for Performance {
             cache_levels: 4,
             cache_tile_size: 8192,
             use_gpu: true,
+            rendering_mode: None,
             gpu_backend: GpuBackend::Auto,
             effect_cache_mb: 768,
             legacy_compositing: false,
@@ -890,6 +898,7 @@ pub fn choices(path: &str) -> Option<&'static [&'static str]> {
         "rawDefaults.bitDepth" => RawDepth::NAMES,
         "rawDefaults.sharpenFor" => RawSharpen::NAMES,
         "performance.gpuBackend" => GpuBackend::NAMES,
+        "performance.renderingMode" => RenderingMode::NAMES,
         _ => return None,
     })
 }
