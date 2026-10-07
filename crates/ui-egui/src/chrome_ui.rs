@@ -101,8 +101,15 @@ pub fn status_info_text(doc: &Document, key: &str, tool: &str, profile: &str) ->
 }
 
 fn profile_name(doc: &Document) -> String {
-    if doc.icc_profile.is_none() {
-        return crate::i18n::fmt(tl!("Untagged {mode}"), &[("mode", tl!(&crate::canvas::mode_label(doc)))]);
+    let mode = crate::canvas::mode_label(doc);
+    let Some(bytes) = doc.icc_profile.as_ref() else {
+        return crate::i18n::fmt(tl!("Untagged {mode}"), &[("mode", tl!(mode))]);
+    };
+    let Ok(profile) = photocraft_engine::color_cmds::profile_from_bytes(bytes) else {
+        return crate::i18n::fmt(tl!("Invalid {mode} profile"), &[("mode", tl!(mode))]);
+    };
+    if profile.color_space != photocraft_engine::color_cmds::mode_space(doc.mode) {
+        return crate::i18n::fmt(tl!("Invalid {mode} profile"), &[("mode", tl!(mode))]);
     }
     let name: String = profile.description.chars().filter(|c| !c.is_control()).take(128).collect();
     let name = name.trim();
