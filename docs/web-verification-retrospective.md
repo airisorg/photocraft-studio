@@ -124,8 +124,11 @@ Each row needs a UI journey and server authorization evidence; API coverage alon
 
 ## Immediate blockers and next checkpoints
 
-- Complete and verify the new dropdown, display-density and saved-renderer regressions.
-- Review the final phone New Document and Share screenshots; use their actual controls.
+- Dropdown, display-density, saved-renderer and phone New Document regressions now pass
+  within the final 31-case local browser suite. Native forms cover 33 viewport states and
+  cloud windows cover 20; this does not establish every field or physical-device journey.
+- Wide native Preferences forms remain horizontally scrollable on phones. Being inside
+  the viewport is not equivalent to a complete mobile interaction design.
 - Keep the explicit hidden-preference list distinct from the scorecard's heuristic read count.
 - Real invitation delivery needs the exact approved email address. Local synthetic accounts
   must never be inserted into the hosted database.
@@ -134,6 +137,29 @@ Each row needs a UI journey and server authorization evidence; API coverage alon
 - Full native behavior parity, live cursors, simultaneous-stroke collaboration, accessible
   DOM controls, physical-device acceptance and worker offload are open work, not hidden
   behind this UI patch.
+
+## Release evidence on 2026-10-07
+
+Tofu deployment `dpl_FnLvDT6zhYaFW3j11qG9tJugTF7S` serves source
+`43a839fedc9d0561aed859765d972678e94127f0`, including upstream
+`3a3984075a1fd06d1af3e660aa376ee5368c4f73`. The hosted guest journey created four
+native layers, checked exact pixels in a 960 × 640 PNG export, reimported it, passed the
+header geometry assertion and reported no page errors. The downloaded WASM SHA-256 was
+`8821000905941dd69b3cad5107e56ced8367f95bff362615aae8ec54cfc2771c`, matching the
+tested package. A separate existing signed-in browser session displayed the new workspace;
+this is not a fresh OAuth callback, email-delivery or independent-user collaboration test.
+
+Local final-source checks: 3,487 native tests passed, 25 ignored; the opt-in corpus run
+passed 1,698 with 14 ignored (overlapping unit tests, not an additive total); 31 browser,
+34 API, 11 simulated-auth, one startup and six release-pipeline tests passed. Strict
+native/WASM lint, layers, WASM, scorecard, explicit adversarial-command test and workflow
+lint also passed. GitHub-hosted CI remains blocked by the account restriction.
+
+One diagnostic 6,000 × 4,000 document run recorded a 1,277 ms main-thread long task and
+1,266.6 ms worst frame gap for the original Box Blur at radius 20, despite a 16.7 ms p95
+frame gap. This exposes a worker-offload requirement; one sample is neither a benchmark
+distribution nor a passed performance budget. Preserve the native engine while moving
+heavy jobs behind a worker boundary with cancellation and document-revision validation.
 
 ## Continuous upstream updates
 
