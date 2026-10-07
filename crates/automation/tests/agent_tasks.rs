@@ -21,15 +21,15 @@ impl ClientHandler for Client {
 
 type Conn = RunningService<RoleClient, Client>;
 
-async fn connect(root: &std::path::Path) -> Conn {
+async fn connect(root: &std::path::Path) -> (Conn, tokio::task::JoinHandle<()>) {
     let (s, c) = tokio::io::duplex(1 << 20);
     let workspace = AuthorizedWorkspace::new(Some(root), Some(root)).expect("test workspace");
-    tokio::spawn(async move {
+    let server = tokio::spawn(async move {
         if let Ok(running) = PhotocraftMcp::headless_with_workspace(workspace).serve(s).await {
             let _ = running.waiting().await;
         }
     });
-    Client.serve(c).await.expect("client init")
+    (Client.serve(c).await.expect("client init"), server)
 }
 
 fn text(r: &CallToolResult) -> String {
@@ -96,7 +96,7 @@ fn close(a: &[f64], b: &[f64], tol: f64) -> bool {
 async fn agent_completes_ten_scripted_tasks() {
     let dir = tmp("tasks");
     let png = gradient_png(&dir);
-    let c = connect(&dir).await;
+    let (c, server) = connect(&dir).await;
 
     // 1. Make a title card: type layer with a drop shadow, exported as PNG.
     tool(&c, "doc_new", json!({"width": 200, "height": 120, "background": "white"})).await;
@@ -212,5 +212,7 @@ async fn agent_completes_ten_scripted_tasks() {
     assert_eq!(doc["layers"].as_array().unwrap().len(), 4, "task 10");
 
     c.cancel().await.unwrap();
+    // Wait for the server to drop its authorized directory handles before Windows cleanup.
+    server.await.unwrap();
     std::fs::remove_dir_all(dir).unwrap();
 }
