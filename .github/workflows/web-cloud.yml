@@ -76,7 +76,7 @@ jobs:
           SERVER_PID=$!
           trap 'kill "$SERVER_PID"' EXIT
           for _ in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:8876/api/config | python -c 'import json,sys; sys.exit(not json.load(sys.stdin)["cloud"])'; then break; fi
+            if python -c 'import json,sys,urllib.request; sys.exit(not json.load(urllib.request.urlopen("http://127.0.0.1:8876/api/config", timeout=2))["cloud"])'; then break; fi
             sleep 1
           done
           python tests/web/test_api.py
