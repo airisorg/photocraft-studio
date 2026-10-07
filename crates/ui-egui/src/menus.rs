@@ -32,6 +32,7 @@ pub const UI_COMMANDS: &[(&str, &str, &[&str], Option<&str>)] = &[
     ("view.show.targetPath", "Target Path", &["View", "Show"], Some("Cmd+Shift+H")),
     ("view.screenMode.cycle", "Cycle Screen Mode", &[], Some("F")),
     ("edit.freeTransformCopy", "Free Transform a Copy", &[], Some("Cmd+Alt+T")),
+    ("type.editText", "Edit Type", &[], None),
     ("view.zoomIn", "Zoom In", &["View"], Some("Cmd+=")),
     ("view.zoomOut", "Zoom Out", &["View"], Some("Cmd+-")),
     ("view.fitOnScreen", "Fit on Screen", &["View"], Some("Cmd+0")),
