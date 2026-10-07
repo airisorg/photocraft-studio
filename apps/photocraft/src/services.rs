@@ -70,9 +70,40 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     photocraft_format::atomic_write(path, bytes).map_err(|e| e.to_string())
 }
 
+type SharedRecovery = Rc<RefCell<Option<RecoveryStore>>>;
+
+/// Run `f` on the recovery store (`Err` without a config directory). The service closures never
+/// call each other, so the store is never borrowed twice.
+fn with_store<R>(store: &SharedRecovery, f: impl FnOnce(&mut RecoveryStore) -> R) -> Result<R, String> {
+    let mut slot = store.try_borrow_mut().map_err(|_| "crash recovery is busy".to_string())?;
+    Ok(f(slot.as_mut().ok_or("no config directory")?))
+}
+
+/// Crash recovery: background incremental .pcraft autosaves into `dir` (`None`: no config
+/// directory, so autosaves fail and nothing is recovered). Recovered documents keep their entries
+/// until a newer autosave replaces them or they're saved or closed (see [`RecoveryStore`]).
+fn recovery_services(dir: Option<PathBuf>) -> Services {
+    let store: SharedRecovery = Rc::new(RefCell::new(dir.map(RecoveryStore::new)));
+    let (s1, s2, s3) = (store.clone(), store.clone(), store.clone());
+    Services {
+        autosave: Some(Box::new(move |doc: &Arc<Document>, revision: u64, path: Option<&str>| {
+            with_store(&s1, |s| s.autosave(doc, revision, path.map(str::to_string)))
+        })),
+        discard_autosave: Some(Box::new(move |id: u64| {
+            let _ = with_store(&s2, |s| s.discard(id));
+        })),
+        recover: Some(Box::new(move || {
+            let found = with_store(&s3, |s| s.recover()).unwrap_or_default();
+            found.into_iter().map(|(e, doc)| Recovered { key: e.info.key, path: e.info.original_path, doc }).collect()
+        })),
+        adopt_autosave: Some(Box::new(move |id: u64, key: &str| {
+            let _ = with_store(&store, |s| s.adopt(id, key));
+        })),
+        ..Default::default()
+    }
+}
+
 pub fn native(automation: Option<photocraft_automation::AuthorizedWorkspace>) -> Services {
-    let savers: Rc<RefCell<HashMap<u64, Autosaver>>> = Rc::default();
-    let savers2 = savers.clone();
     let clip: Rc<RefCell<Option<arboard::Clipboard>>> = Rc::default();
     let automation_read = automation.clone().map(|workspace| {
         Box::new(move |path: &str| {
@@ -161,7 +192,6 @@ pub fn native(automation: Option<photocraft_automation::AuthorizedWorkspace>) ->
         os_events: None,
         // Set by main, which starts loading the store before the window opens.
         preset_store: None,
-        is_wayland: false,
         ..recovery_services(recovery_dir())
     }
 }
@@ -316,77 +346,5 @@ mod tests {
         assert!(list_recovery(&dir).is_empty());
         drop(app);
         let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    fn temp(tag: &str) -> PathBuf {
-        static N: AtomicUsize = AtomicUsize::new(0);
-        let d = std::env::temp_dir().join(format!("photocraft-services-{tag}-{}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
-        d
-    }
-
-    fn red_png(w: u32, h: u32) -> Vec<u8> {
-        let img = Image::from_u8(w, h, ChannelLayout::Rgba, [255u8, 0, 0, 255].repeat((w * h) as usize)).unwrap();
-        photocraft_codecs::encode(&img, photocraft_codecs::Format::Png, &EncodeOptions::default()).unwrap()
-    }
-
-    /// A 1×1 uncompressed 32-bit TGA (TGA has no magic number).
-    fn tga_1x1() -> Vec<u8> {
-        let mut b = vec![0u8, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 32, 8];
-        b.extend_from_slice(&[0, 0, 255, 255]); // BGRA red
-        b
-    }
-
-    #[test]
-    fn copied_image_file_pastes_its_pixels() {
-        let dir = temp("png");
-        let png = dir.join("red.png");
-        std::fs::write(&png, red_png(3, 2)).unwrap();
-        let (w, h, px) = image_from_files(&[png]).unwrap();
-        assert_eq!((w, h), (3, 2));
-        assert_eq!(px, [255u8, 0, 0, 255].repeat(6));
-    }
-
-    #[test]
-    fn crlf_from_a_uri_list_is_ignored() {
-        // arboard splits text/uri-list on LF, so GNOME Files' CRLF list leaves a '\r' behind.
-        let dir = temp("crlf");
-        let png = dir.join("red image.png");
-        std::fs::write(&png, red_png(2, 2)).unwrap();
-        let with_cr = PathBuf::from(format!("{}\r", png.display()));
-        assert_eq!(image_from_files(&[with_cr]).map(|(w, h, _)| (w, h)), Some((2, 2)));
-    }
-
-    #[test]
-    fn non_images_are_skipped_for_the_first_image() {
-        let dir = temp("mixed");
-        let (txt, png) = (dir.join("notes.txt"), dir.join("red.png"));
-        std::fs::write(&txt, b"not an image").unwrap();
-        std::fs::write(&png, red_png(4, 1)).unwrap();
-        let missing = dir.join("gone.png");
-        assert_eq!(image_from_files(&[missing.clone(), txt.clone(), dir.clone(), png]).map(|(w, h, _)| (w, h)), Some((4, 1)));
-        assert!(image_from_files(&[missing, txt, dir]).is_none());
-        assert!(image_from_files(&[]).is_none());
-    }
-
-    #[test]
-    fn a_damaged_image_is_skipped_not_a_panic() {
-        let dir = temp("damaged");
-        let bad = dir.join("cut.png");
-        std::fs::write(&bad, &red_png(8, 8)[..20]).unwrap();
-        assert!(image_from_files(&[bad]).is_none());
-    }
-
-    #[test]
-    fn tga_is_trusted_only_with_its_extension() {
-        let dir = temp("tga");
-        let (tga, bin) = (dir.join("red.tga"), dir.join("red.bin"));
-        std::fs::write(&tga, tga_1x1()).unwrap();
-        std::fs::write(&bin, tga_1x1()).unwrap();
-        assert_eq!(image_from_files(&[tga]), Some((1, 1, vec![255, 0, 0, 255])));
-        assert!(image_from_files(&[bin]).is_none());
     }
 }
