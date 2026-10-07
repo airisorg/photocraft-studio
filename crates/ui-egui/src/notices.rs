@@ -28,7 +28,7 @@ pub struct Notice {
 }
 
 /// Show a notice (newest last); returns its id.
-pub fn post(app: &mut PhotocraftApp, title: impl Into<String>, lines: Vec<String>, error: bool, dismiss_pref: Option<&str>) -> u64 {
+pub fn post(app: &mut PhotocraftApp, title: impl Into<String>, lines: Vec<String>, error: bool) -> u64 {
     let id = app.ui.alloc_id();
     app.ui.notices.push(Notice { id, title: title.into(), lines, error, dismiss_pref: dismiss_pref.map(str::to_owned) });
     cap_notices(app);
@@ -69,6 +69,7 @@ fn dismiss(app: &mut PhotocraftApp, id: u64) {
             prefs.dialogs.insert(key, serde_json::Value::Bool(true));
         });
     }
+    id
 }
 
 /// Report import/export `warnings` for the file operation `what` (e.g. "Opened a.psd"): the status

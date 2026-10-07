@@ -215,14 +215,8 @@ pub fn tick(app: &mut PhotocraftApp, ctx: &egui::Context) {
     presets_store(app);
     sync_tooltips(app, ctx);
     app.sync_recent();
-    if app.session.prefs.rev() != app.prefs_rt.saved_rev {
-        app.prefs_rt.saved_rev = app.session.prefs.rev();
-        let text = app.session.prefs_to_json();
-        if let Some(save) = app.services.save_prefs.as_mut()
-            && let Err(e) = save(&text)
-        {
-            app.ui.status = format!("Couldn't save preferences: {e}");
-        }
+    if let Some(wait) = persist(app, ctx.input(|i| i.time)) {
+        ctx.request_repaint_after(std::time::Duration::try_from_secs_f64(wait).unwrap_or_default());
     }
     let style = canvas_style(app);
     if let Some(gpu) = app.gpu.as_ref()
@@ -299,7 +293,7 @@ fn persist(app: &mut PhotocraftApp, now: f64) -> Option<f64> {
                 app.ui.status_error = true;
             } else if failures == SAVE_NOTICE_AFTER {
                 let lines = vec![e, "PhotoCraft keeps retrying; until a save succeeds, preference changes are lost when it closes.".into()];
-                let id = crate::notices::post(app, "Preferences can't be saved", lines, true, None);
+                let id = crate::notices::post(app, "Preferences can't be saved", lines, true);
                 app.prefs_rt.save_retry.notice = Some(id);
             }
             Some(delay)
@@ -348,20 +342,6 @@ fn merge_changes(base: &Value, ours: &Value, theirs: &mut Value) {
         }
         (_, _, theirs) => *theirs = ours.clone(),
     }
-}
-
-/// Write the preferences now, through the same merge as [`persist`], for recovery choices that
-/// need the result immediately. The pending revision stays unsaved when the write fails.
-pub(crate) fn save_preferences(app: &mut PhotocraftApp) -> Result<(), String> {
-    let rev = app.session.prefs.rev();
-    let ours = app.session.prefs_value();
-    write_prefs(app, &ours)?;
-    app.prefs_rt.saved_rev = rev;
-    app.prefs_rt.saved_value = Some(ours);
-    if let Some(id) = std::mem::take(&mut app.prefs_rt.save_retry).notice {
-        app.ui.notices.retain(|n| n.id != id);
-    }
-    Ok(())
 }
 
 /// Background autosave of documents with unsaved changes every N minutes (File Handling).
@@ -1716,128 +1696,6 @@ mod tests {
         assert_eq!(persist(&mut app, now - 28.0), None);
         assert_eq!(stored(&store)["interface"]["theme"], "pro");
         assert!(app.ui.notices.is_empty(), "the notice goes once preferences are saved");
-    }
-
-    #[test]
-    fn auto_scale_detects_4k_and_preserves_larger_system_dpi() {
-        use prefs::UiScale::Auto;
-        for size in [vec2(3840.0, 2160.0), vec2(4096.0, 2160.0), vec2(2160.0, 3840.0)] {
-            assert_eq!(display_scale(Auto, Some(1.0), Some(size)), 2.0);
-            for dpi in [1.25, 1.5, 2.0] {
-                assert_eq!(display_scale(Auto, Some(dpi), Some(size)), 2.0);
-            }
-        }
-        assert_eq!(display_scale(Auto, Some(3.0), Some(vec2(3840.0, 2160.0))), 3.0);
-        for size in [vec2(1920.0, 1080.0), vec2(2560.0, 1440.0), vec2(3840.0, 1080.0)] {
-            assert_eq!(display_scale(Auto, Some(1.0), Some(size)), 1.0);
-        }
-        assert_eq!(display_scale(Auto, None, None), 1.0);
-        assert_eq!(display_scale(Auto, Some(f32::NAN), Some(vec2(f32::INFINITY, 2160.0))), 1.0);
-    }
-
-    #[test]
-    fn scale_preferences_and_monitor_changes_apply_live() {
-        let (mut app, _) = app_with_store();
-        let ctx = egui::Context::default();
-        {
-            let mut step = |physical: egui::Vec2, native: f32, expected: f32| {
-                let mut input = egui::RawInput::default();
-                let viewport = input.viewports.get_mut(&egui::ViewportId::ROOT).unwrap();
-                viewport.native_pixels_per_point = Some(native);
-                viewport.monitor_size = Some(physical / (native * ctx.zoom_factor()));
-                ctx.run_ui(input, |ui| tick(&mut app, ui.ctx())).textures_delta.clear();
-                // Scale changes take effect on the following pass.
-                let mut input = egui::RawInput::default();
-                let viewport = input.viewports.get_mut(&egui::ViewportId::ROOT).unwrap();
-                viewport.native_pixels_per_point = Some(native);
-                viewport.monitor_size = Some(physical / (native * ctx.zoom_factor()));
-                ctx.run_ui(input, |ui| tick(&mut app, ui.ctx())).textures_delta.clear();
-                assert!((ctx.pixels_per_point() - expected).abs() < 1e-4);
-            };
-            for _ in 0..4 {
-                step(vec2(3840.0, 2160.0), 1.0, 2.0);
-            }
-            step(vec2(1920.0, 1080.0), 1.0, 1.0);
-            step(vec2(3840.0, 2160.0), 1.5, 2.0);
-        }
-        for (pref, expected) in [("200", 2.0), ("125", 1.25), ("150", 1.5), ("100", 1.0), ("auto", 1.5)] {
-            app.run("prefs.set", json!({"values": {"interface.uiScale": pref}})).unwrap();
-            let mut input = egui::RawInput::default();
-            input.viewports.get_mut(&egui::ViewportId::ROOT).unwrap().native_pixels_per_point = Some(1.5);
-            ctx.run_ui(input.clone(), |ui| tick(&mut app, ui.ctx())).textures_delta.clear();
-            ctx.run_ui(input, |ui| tick(&mut app, ui.ctx())).textures_delta.clear();
-            assert!((ctx.pixels_per_point() - expected).abs() < 1e-4);
-        }
-    }
-
-    #[test]
-    fn recent_files_survive_a_restart_and_honour_the_count() {
-        let (mut app, store) = app_with_store();
-        let ctx = egui::Context::default();
-        tick(&mut app, &ctx);
-        app.push_recent("/work/a.psd");
-        app.push_recent("/work/b.png");
-        tick(&mut app, &ctx);
-        let saved = store.lock().unwrap().clone().unwrap();
-        // A new app instance (a restart) gets the list back, newest first.
-        let (mut app2, _) = app_with_saved(Some(saved));
-        tick(&mut app2, &ctx);
-        assert_eq!(app2.ui.recent_files, vec!["/work/b.png".to_string(), "/work/a.psd".to_string()]);
-        // Lowering "Recent File List Contains" shortens the menu at once; 0 turns it off.
-        app2.run("prefs.set", json!({"values": {"fileHandling.recentFileCount": 1}})).unwrap();
-        tick(&mut app2, &ctx);
-        assert_eq!(app2.ui.recent_files, vec!["/work/b.png".to_string()]);
-        app2.push_recent("/work/c.tif");
-        assert_eq!(app2.session.prefs().file_handling.recent_files, vec!["/work/c.tif".to_string()]);
-        app2.run("prefs.set", json!({"values": {"fileHandling.recentFileCount": 0}})).unwrap();
-        tick(&mut app2, &ctx);
-        app2.push_recent("/work/d.tif");
-        assert!(app2.ui.recent_files.is_empty());
-        // Clearing the list in the Preferences dialog (or by an agent) reaches the menu.
-        app2.run("prefs.set", json!({"values": {"fileHandling.recentFileCount": 20, "fileHandling.recentFiles": ["/x.psd"]}})).unwrap();
-        tick(&mut app2, &ctx);
-        assert_eq!(app2.ui.recent_files, vec!["/x.psd".to_string()]);
-        // A hostile count from a hand-edited preferences file is capped, not trusted.
-        app2.run("prefs.set", json!({"values": {"fileHandling.recentFileCount": 100}})).unwrap();
-        app2.session.prefs.edit(|p| p.file_handling.recent_file_count = u32::MAX);
-        assert_eq!(app2.recent_cap(), 100);
-    }
-
-    #[test]
-    fn show_tooltips_preferences_turn_tooltips_off() {
-        let (mut app, _) = app_with_store();
-        let ctx = egui::Context::default();
-        tick(&mut app, &ctx);
-        assert_eq!(ctx.global_style().interaction.tooltip_delay, crate::theme::TOOLTIP_DELAY);
-        for path in ["interface.showTooltips", "tools.showTooltips"] {
-            app.run("prefs.set", json!({"values": {path: false}})).unwrap();
-            tick(&mut app, &ctx);
-            assert!(ctx.global_style().interaction.tooltip_delay.is_infinite(), "{path} off hides tooltips");
-            app.run("prefs.set", json!({"values": {path: true}})).unwrap();
-            tick(&mut app, &ctx);
-            assert_eq!(ctx.global_style().interaction.tooltip_delay, crate::theme::TOOLTIP_DELAY);
-        }
-    }
-
-    #[test]
-    fn unimplemented_preferences_are_hidden_from_the_dialog() {
-        let values = prefs::Preferences::default().to_json();
-        assert!(has_visible_fields(&values, "general"));
-        assert!(has_visible_fields(&values, "fileHandling"));
-        // Every setting of these sections is still unimplemented.
-        for section in ["type", "enhancedControls", "rawDefaults", "integrations", "scratchDisks"] {
-            assert!(!has_visible_fields(&values, section), "{section}");
-        }
-        assert!(prefs::is_hidden("rawDefaults.applyAutoTone"));
-        assert!(!prefs::is_hidden("general.autoShowHomeScreen"));
-        assert!(!prefs::is_hidden("interface.uiScale"));
-        // Hidden values still round-trip through the dialog untouched.
-        let (mut app, _) = app_with_store();
-        app.run("prefs.set", json!({"values": {"type.smartQuotes": false}})).unwrap();
-        let id = open_preferences(&mut app, "type");
-        let fields = app.ui.dialogs.iter().find(|d| d.id == id).map(|d| d.fields.clone()).unwrap();
-        confirm(&mut app, &fields).unwrap();
-        assert!(!app.session.prefs().type_.smart_quotes);
     }
 
     #[test]

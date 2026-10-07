@@ -13,19 +13,23 @@
   <style>
     html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #faf9f7; }
     #photocraft_canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
-    #photocraft_loading { position: absolute; inset: 0; display: flex; flex-direction: column; gap: 16px; align-items: center; justify-content: center;
-      color: #736e7c; font: 14px system-ui, sans-serif; pointer-events: none; text-align: center; padding: 28px; }
-    #photocraft_loading img { width: 56px; height: 56px; }
-    #photocraft_loading strong { color: #23202d; font-size: 26px; letter-spacing: -1px; }
-    #photocraft_loading small { max-width: 310px; line-height: 1.6; }
-    #tofu_credit { position: fixed; z-index: 2; right: 8px; bottom: 5px; padding: 1px 5px;
-      color: #bcb9d8; background: #1a1a1c; font: 11px system-ui, sans-serif; border-radius: 3px; }
+    #photocraft_loading { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+      padding: 0 16px; text-align: center; color: #b8b8b8; font: 14px system-ui, sans-serif; pointer-events: none; }
+    #photocraft_loading p { margin: 0 0 8px; max-width: 420px; line-height: 1.5; }
+    #photocraft_loading a { color: #e0e0e0; pointer-events: auto; }
+    /* The app removes this element once it runs. If the WebAssembly never downloads or doesn't match
+       this page, no Rust runs to say so, so the page itself shows what to do after a while. */
+    #photocraft_stalled { color: #8c8c8c; visibility: hidden; animation: photocraft-stalled 0s 20s forwards; }
+    @keyframes photocraft-stalled { to { visibility: visible; } }
   </style>
 </head>
 <body>
-  <canvas id="photocraft_canvas" aria-label="PhotoCraft Studio creative workspace"></canvas>
-  <div id="photocraft_loading" role="status"><strong>PhotoCraft Studio</strong><span>A little space for your next great idea.</span><small>Opening your workspace&hellip;<br>The first visit takes a moment to load the editor.</small></div>
-  <noscript>PhotoCraft Studio needs JavaScript and WebAssembly enabled to run the Rust editor in your browser.</noscript>
-  <a id="tofu_credit" href="https://trytofu.ai" target="_blank" rel="noopener noreferrer">Hosted on Tofu</a>
+  <canvas id="photocraft_canvas"></canvas>
+  <div id="photocraft_loading">
+    <p>Loading PhotoCraft&hellip;</p>
+    <p id="photocraft_stalled">This is taking longer than usual. If PhotoCraft doesn't start, its files may have failed to
+      download or come from a different version of this page. <a href="">Reload</a> to try again; the browser
+      console lists what failed.</p>
+  </div>
 </body>
 </html>
