@@ -3,6 +3,7 @@
 Creates a synthetic document only in this disposable browser, draws, exports PNG, imports
 that download and records pixels, renderer, resource timing and a screenshot.
 """
+import base64
 import hashlib
 import json
 import os
@@ -24,16 +25,28 @@ with sync_playwright() as p:
     browser = p.chromium.launch(executable_path=os.environ.get('PHOTOCRAFT_CHROME'), headless=True, args=['--enable-unsafe-webgpu'])
     context = browser.new_context(viewport={'width':1440,'height':960}, accept_downloads=True)
     page = context.new_page()
+    # The native editor's WASM exceeds Chromium's default inspector response cache.
+    # Keep the already-downloaded bytes long enough to fingerprint this exact release.
+    network = context.new_cdp_session(page)
+    network.send('Network.enable', {'maxTotalBufferSize':128 * 1024 * 1024,
+                                    'maxResourceBufferSize':64 * 1024 * 1024})
     errors=[]
     configuration=[]
-    wasm_responses=[]
-    page.on('response',lambda response:wasm_responses.append(response) if urlparse(response.url).path.endswith('.wasm') else None)
+    wasm_requests=[]
+    network.on('Network.responseReceived',lambda event:wasm_requests.append(event['requestId']) if urlparse(event['response']['url']).path.endswith('.wasm') else None)
     page.on('pageerror',lambda error:errors.append(str(error)))
     page.on('response',lambda response: configuration.append({'status':response.status,'body':response.json()}) if urlparse(response.url).path=='/api/config' and response.status==200 else None)
     response=page.goto(url,wait_until='networkidle',timeout=120000)
     assert response.status==200,response.status
     page.wait_for_function('typeof window.photocraftCommand === "function"',timeout=90000)
     page.wait_for_selector('#photocraft_loading', state='detached', timeout=90000)
+    assert len(wasm_requests)==1, len(wasm_requests)
+    body=network.send('Network.getResponseBody',{'requestId':wasm_requests[0]})
+    wasm_bytes=base64.b64decode(body['body']) if body['base64Encoded'] else body['body'].encode()
+    wasm_sha256=hashlib.sha256(wasm_bytes).hexdigest()
+    expected=os.environ.get('PHOTOCRAFT_EXPECTED_WASM_SHA256')
+    if expected:
+        assert wasm_sha256==expected,(wasm_sha256,expected)
     page.wait_for_timeout(400)
     # Observe the app's existing readiness polling; do not add hosted HTTP probes.
     for _ in range(150):
@@ -85,11 +98,6 @@ with sync_playwright() as p:
     assert len(before['document']['layers'])==4
     assert not errors,errors
     resources=page.evaluate('performance.getEntriesByType("resource").filter(e=>e.name.endsWith(".wasm")).map(e=>({url:e.name,durationMs:e.duration,encodedBytes:e.encodedBodySize,decodedBytes:e.decodedBodySize}))')
-    assert len(wasm_responses)==1, len(wasm_responses)
-    wasm_sha256=hashlib.sha256(wasm_responses[0].body()).hexdigest()
-    expected=os.environ.get('PHOTOCRAFT_EXPECTED_WASM_SHA256')
-    if expected:
-        assert wasm_sha256==expected,(wasm_sha256,expected)
     (out/'hosted-evidence.json').write_text(json.dumps({'url':url,'browser':browser.version,'renderer':before['perf']['timings']['gpuInfo'],
         'beforeLayers':len(before['document']['layers']),'exportSize':[960,640],'reimportSize':[after['document']['width'],after['document']['height']],
         'pageErrors':errors,'wasmSha256':wasm_sha256,'wasmResources':resources,'configuration':configuration,'headerRects':header_rects},indent=2))
