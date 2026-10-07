@@ -18,7 +18,8 @@
 
 #[cfg(target_arch = "wasm32")]
 mod cloud;
-#[cfg(target_arch = "wasm32")]
+#[cfg(any(target_arch = "wasm32", test))]
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 mod home;
 #[cfg(target_arch = "wasm32")]
 mod web;

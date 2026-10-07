@@ -152,8 +152,38 @@ Regenerate them with `python3 packaging/web/generate-templates.py target/debug/p
 after building that binary. Previews and documents are ordinary static assets, copied by Trunk
 and included recursively in the Tofu package, rather than added to the WASM binary.
 
-The home collapses its sidebar below 1100 px and its gallery from six to three or two columns.
-Home uses a local light palette; the editor retains the user's existing theme preference.
+The home collapses its sidebar below 900 px. Template and project grids choose one to six
+columns from the available width, reserving space for titles and project menus. Primary buttons
+and cards reuse Studio Light theme tokens; editor dialogs retain the current PhotoCraft theme.
 Template category filters, project filters, folders, trash, local recovery and cloud permissions
 remain separate operations. Opening a starter creates a local document without binding it to
 another user's project.
+
+
+## Workspace component review (2026-10-07)
+
+The reference review covered Figma's workspace, account menu, search, filters, project menu,
+list/grid views, editor and sharing dialog, plus Canva's template gallery and preview. Reference
+screenshots remain in local QA output, outside this repository and deployment package.
+The native PhotoCraft application was built and driven through its existing control channel:
+editable template, five themes, native New Document and Image Size dialogs, brush, undo/redo,
+and native save. The editor is retained instead of reproduced in a second frontend.
+
+The web workspace now has a single persistent creation action that invokes the original New
+Document dialog, a separate search row with Clear, contextual empty states, adaptive cards,
+truncated titles with reserved menu space, light workspace menus, and centered cloud dialogs.
+Guest onboarding is shorter; signed-in Home goes straight to recent projects. Escape dismisses
+cloud dialogs without changing the document. These are presentation changes in the existing
+Rust adapter; no frontend library, editor command or dependency was added.
+
+The browser suite includes actual UI interaction for creation, template opening, recovery,
+long-title search and clear, dialog dismissal, project star/trash/restore, sharing, comments and
+version history. Native file, PSD and PNG round trips, renderer fallbacks, WebKit, interrupted
+network requests, and independent local account collaboration remain in the same suite.
+Four Rust web tests cover startup wiring, project filtering, empty states and grid sizing.
+
+Native gaps must remain distinct from web regressions. The upstream scorecard documents
+incomplete tool interactions, dead preferences, type coverage, file compatibility and expensive
+large-document operations. Those are not fixed by workspace styling or additional database
+capacity. See `docs/scorecard.md` and its dated performance baseline; no new performance
+measurement or comprehensive native parity claim is made by this UI review.

@@ -136,7 +136,14 @@ class BrowserAcceptance(unittest.TestCase):
 
     def test_01_workspace_new_canvas_button(self):
         self.assertEqual(self.page.title(), 'PhotoCraft Studio')
-        self.page.mouse.click(340, 412)
+        self.page.mouse.click(1340, 116)
+        self.page.wait_for_timeout(200)
+        dialog = self.inspect()['dialogs'][0]
+        self.assertEqual(dialog['kind'], 'NewDocument')
+        self.page.screenshot(path=str(ARTIFACTS/'native-new-document.png'))
+        for field, value in [('width', 1200), ('height', 900)]:
+            self.command('ui.dialog.set', {'dialog': dialog['id'], 'field': field, 'value': value})
+        self.command('ui.dialog.confirm', {'dialog': dialog['id']})
         self.page.wait_for_timeout(300)
         doc = self.inspect()['document']
         self.assertEqual((doc['width'], doc['height']), (1200, 900))
@@ -213,7 +220,7 @@ class BrowserAcceptance(unittest.TestCase):
         self.assertIsNone(self.inspect()['document'])
         self.assertTrue(drafts[0])
         self.page.screenshot(path=str(ARTIFACTS/"recovery-controls.png"))
-        self.page.mouse.click(430,396)
+        self.page.mouse.click(430,462)
         self.page.wait_for_timeout(500)
         self.assertEqual(self.inspect()['document']['width'], 320)
 
@@ -350,7 +357,9 @@ class BrowserAcceptance(unittest.TestCase):
 
 
     def test_15_home_template_card_opens_native_document(self):
-        self.page.mouse.click(330,710)
+        self.page.mouse.click(100,218)
+        self.page.wait_for_timeout(200)
+        self.page.mouse.click(330,410)
         self.page.wait_for_timeout(900)
         doc = self.inspect()['document']
         self.assertIsNotNone(doc)
@@ -419,7 +428,7 @@ class BrowserAcceptance(unittest.TestCase):
         self.page.mouse.click(100,276)
         self.page.wait_for_timeout(250)
         self.page.screenshot(path=str(ARTIFACTS/'guest-work-after-sign-in.png'))
-        self.page.mouse.click(430,396)
+        self.page.mouse.click(430,462)
         self.page.wait_for_timeout(500)
         self.assertEqual(self.inspect()['document']['width'],320)
 
@@ -439,6 +448,157 @@ class BrowserAcceptance(unittest.TestCase):
         self.assertEqual(self.inspect()['document']['width'],320)
         self.page.screenshot(path=str(ARTIFACTS/'startup-session-recovered.png'))
 
+
+    def test_19_project_search_clear_and_responsive_cards(self):
+        self.signed_in()
+        self.new(640, 480)
+        self.page.mouse.click(1320,32)
+        project = self.wait_revision(1)
+        response = self.context.request.patch(BASE+'/api/projects/'+project['id'],
+            headers={'Origin':BASE},
+            data={'title': 'Summer café — an intentionally long project title that must not displace its menu', 'folder':'Brand'})
+        self.assertTrue(response.ok, response.text())
+        self.page.mouse.click(80,32)
+        self.page.mouse.click(100,276)
+        self.page.wait_for_timeout(300)
+        self.page.screenshot(path=str(ARTIFACTS/'project-long-title.png'))
+        self.page.mouse.click(380,180)
+        self.page.keyboard.type('no-match-at-all')
+        self.page.wait_for_timeout(150)
+        self.page.screenshot(path=str(ARTIFACTS/'project-search-empty.png'))
+        opened=[]
+        self.page.on('request',lambda request: opened.append(request.url) if request.method=='GET' and request.url==BASE+'/api/projects/'+project['id'] else None)
+        self.page.mouse.click(350,320)
+        self.page.wait_for_timeout(150)
+        self.assertEqual(opened, [], 'Empty search must not leave a stale clickable project')
+        self.page.mouse.click(700,180)  # Clear, alongside the full-width search field.
+        self.page.wait_for_timeout(150)
+        self.page.mouse.click(350,320)
+        self.page.wait_for_timeout(600)
+        self.assertEqual(len(opened),1)
+        self.assertEqual(self.inspect()['document']['width'],640)
+        self.page.mouse.click(80,32)
+        for width,height in [(390,844),(768,1024),(1440,960),(2200,1100)]:
+            with self.subTest(width=width):
+                self.page.set_viewport_size({'width':width,'height':height})
+                self.page.wait_for_timeout(250)
+                self.page.screenshot(path=str(ARTIFACTS/f'project-grid-{width}.png'))
+                self.assertEqual(self.page.locator('canvas').count(),1)
+                self.assertLessEqual(self.page.evaluate('document.documentElement.scrollWidth'),width)
+
+    def test_20_share_escape_preserves_canvas_and_native_dialog(self):
+        self.signed_in()
+        self.new(640,480)
+        self.execute('edit.fill',{'color':'#ebe4fc'})
+        self.page.mouse.click(1320,32)
+        self.wait_revision(1)
+        self.page.wait_for_timeout(300)
+        before = Image.open(io.BytesIO(self.page.screenshot())).convert('RGB').crop((510,300,900,650))
+        document = self.inspect()['document']
+        self.page.mouse.click(1230,32)
+        self.page.wait_for_timeout(200)
+        opened = Image.open(io.BytesIO(self.page.screenshot())).convert('RGB').crop((510,300,900,650))
+        self.assertNotEqual(before.tobytes(),opened.tobytes())
+        self.page.screenshot(path=str(ARTIFACTS/'share-dialog.png'))
+        self.page.keyboard.press('Escape')
+        self.page.wait_for_timeout(200)
+        closed = Image.open(io.BytesIO(self.page.screenshot())).convert('RGB').crop((510,300,900,650))
+        self.assertEqual(before.tobytes(),closed.tobytes(), 'Escape must restore the canvas without the sharing overlay')
+        self.assertEqual(self.inspect()['document']['layers'],document['layers'])
+        self.command('ui.menu.invoke',{'id':'image.imageSize'})
+        dialog = self.inspect()['dialogs'][0]
+        self.assertEqual(dialog['title'],'Image Size')
+        self.page.screenshot(path=str(ARTIFACTS/'native-image-size.png'))
+        self.command('ui.dialog.cancel',{'dialog':dialog['id']})
+        self.assertEqual(self.inspect()['document']['width'],640)
+
+
+
+    def test_21_project_menu_star_trash_and_restore(self):
+        self.signed_in()
+        self.new(640,480)
+        self.page.mouse.click(1320,32)
+        project = self.wait_revision(1)
+        self.page.mouse.click(80,32)
+        self.page.mouse.click(100,276)
+        self.page.wait_for_timeout(200)
+        for nav, row, field, expected in [(276,613,'starred',True), (330,650,'trashed',True), (444,650,'trashed',False)]:
+            with self.subTest(action=(field,expected)):
+                self.page.mouse.click(100,nav)
+                self.page.wait_for_timeout(150)
+                self.page.mouse.click(493,455)
+                self.page.wait_for_timeout(150)
+                self.page.screenshot(path=str(ARTIFACTS/f'project-menu-{field}-{expected}.png'))
+                with self.page.expect_response(lambda r: r.url==BASE+'/api/projects/'+project['id'] and r.request.method=='PATCH') as event:
+                    self.page.mouse.click(535,row)
+                self.assertTrue(event.value.ok)
+                self.page.wait_for_timeout(150)
+                state = self.context.request.get(BASE+'/api/projects').json()
+                current = next(p for p in state if p['id']==project['id'])
+                self.assertEqual(current[field],expected)
+        self.page.mouse.click(100,276)
+        self.page.wait_for_timeout(150)
+        self.page.mouse.click(493,455)
+        self.page.wait_for_timeout(150)
+        self.page.mouse.click(535,574)
+        self.page.wait_for_timeout(150)
+        self.page.screenshot(path=str(ARTIFACTS/'project-details.png'))
+        self.page.mouse.click(650,467)
+        self.page.keyboard.press('ControlOrMeta+A')
+        self.page.keyboard.type('Renamed native project')
+        with self.page.expect_response(lambda r: r.url==BASE+'/api/projects/'+project['id'] and r.request.method=='PATCH') as event:
+            self.page.mouse.click(590,590)
+        self.assertTrue(event.value.ok)
+        self.assertEqual(self.projects()[0]['title'],'Renamed native project')
+
+    def test_22_sharing_comments_and_history_controls(self):
+        self.signed_in()
+        self.new(640,480)
+        self.page.mouse.click(1320,32)
+        project = self.wait_revision(1)
+        self.page.mouse.click(1230,32)
+        self.page.wait_for_timeout(200)
+        self.page.mouse.click(850,406)
+        self.page.wait_for_timeout(150)
+        self.page.screenshot(path=str(ARTIFACTS/'share-role-dropdown.png'))
+        self.page.mouse.click(850,443)  # Can view.
+        self.page.wait_for_timeout(150)
+        with self.page.expect_response(lambda r: r.url.endswith('/share') and r.request.method=='POST') as event:
+            self.page.mouse.click(610,620)
+        self.assertTrue(event.value.ok)
+        key=event.value.json()['url'].split('share=')[1]
+        self.assertTrue(self.context.request.get(BASE+'/api/share/'+key).ok)
+        self.page.wait_for_timeout(150)
+        self.page.screenshot(path=str(ARTIFACTS/'share-created-link.png'))
+        with self.page.expect_response(lambda r: r.url.endswith('/share') and r.request.method=='DELETE') as event:
+            self.page.mouse.click(610,708)
+        self.assertTrue(event.value.ok)
+        self.assertEqual(self.context.request.get(BASE+'/api/share/'+key).status,404)
+        self.page.keyboard.press('Escape')
+        self.page.wait_for_timeout(150)
+        self.page.mouse.click(1140,32)
+        self.page.wait_for_timeout(200)
+        self.page.mouse.click(625,370)
+        self.page.keyboard.type('Keep the native PhotoCraft controls.')
+        with self.page.expect_response(lambda r: r.url.endswith('/comments') and r.request.method=='POST') as event:
+            self.page.mouse.click(580,433)
+        self.assertTrue(event.value.ok)
+        self.page.wait_for_timeout(200)
+        comments=self.context.request.get(BASE+'/api/projects/'+project['id']+'/comments').json()
+        self.assertEqual(comments[0]['body'],'Keep the native PhotoCraft controls.')
+        self.page.screenshot(path=str(ARTIFACTS/'comments-posted.png'))
+        self.page.keyboard.press('Escape')
+        self.page.wait_for_timeout(150)
+        self.page.mouse.click(1070,32)
+        self.page.wait_for_timeout(150)
+        with self.page.expect_response(lambda r: r.url.endswith('/versions')) as event:
+            self.page.mouse.click(1100,183)
+        self.assertTrue(event.value.ok)
+        self.assertEqual(len(event.value.json()),1)
+        self.page.wait_for_timeout(150)
+        self.page.screenshot(path=str(ARTIFACTS/'version-history.png'))
+        self.page.keyboard.press('Escape')
+        self.assertEqual(self.inspect()['document']['width'],640)
 
 
 if __name__ == '__main__':
