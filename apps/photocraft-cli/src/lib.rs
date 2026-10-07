@@ -304,8 +304,6 @@ fn batch(a: &Args, out: &mut dyn Write, err: &mut dyn Write) -> R {
     inputs.sort();
     let (mut ok, mut failed) = (0, 0);
     let mut written = photocraft_engine::file_cmds::OutputClaims::default();
-    // `--format .jpg` names outputs `<stem>.jpg`, as `--format jpg` does (#490).
-    let format = a.get("--format").map(|f| f.strip_prefix('.').unwrap_or(f));
     for input in &inputs {
         let ext = format.map(str::to_owned).or_else(|| input.extension().map(|e| e.to_string_lossy().into_owned())).unwrap_or_else(|| "png".into());
         let stem = input.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
