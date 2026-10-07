@@ -25,7 +25,7 @@ use std::{
     str::FromStr,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU8, Ordering},
     },
 };
 use tower_http::{
@@ -41,6 +41,8 @@ const ACCOUNT_QUOTA: i64 = 1024 * 1024 * 1024;
 pub struct AppState {
     pub db: Option<PgPool>,
     pub ready: Arc<AtomicBool>,
+    pub setup_lock: Arc<tokio::sync::Mutex<()>>,
+    pub setup_issue: Arc<AtomicU8>,
     pub origin: String,
     pub supabase: String,
     pub anon: String,
@@ -82,13 +84,60 @@ fn db(s: &App) -> Result<&PgPool> {
     Ok(pool)
 }
 async fn ready_db(s: &App) -> Result<&PgPool> {
-    for _ in 0..50 {
-        if s.db.is_none() || s.ready.load(Ordering::Acquire) {
-            break;
+    if s.db.is_none() || s.ready.load(Ordering::Acquire) {
+        return db(s);
+    }
+    // Keep setup inside an active request: serverless hosts may freeze detached tasks.
+    let result = tokio::time::timeout(std::time::Duration::from_secs(12), async {
+        let _guard = s.setup_lock.lock().await;
+        if s.ready.load(Ordering::Acquire) {
+            return Ok(());
         }
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let pool = s.db.as_ref().ok_or(sqlx::Error::PoolClosed)?;
+        let mut tx = pool.begin().await?;
+        sqlx::query("SET LOCAL lock_timeout = '5s'").execute(&mut *tx).await?;
+        sqlx::query("SELECT pg_advisory_xact_lock(735193624)").execute(&mut *tx).await?;
+        sqlx::Executor::execute(&mut *tx, include_str!("../migrations/001_cloud.sql")).await?;
+        tx.commit().await?;
+        s.ready.store(true, Ordering::Release);
+        Ok::<(), sqlx::Error>(())
+    })
+    .await;
+    let issue = match result {
+        Ok(Ok(())) => 0,
+        Ok(Err(sqlx::Error::PoolTimedOut)) => 1,
+        Ok(Err(sqlx::Error::Tls(_))) => 2,
+        Ok(Err(sqlx::Error::Io(_))) => 3,
+        Ok(Err(sqlx::Error::Database(error))) => match error.code().as_deref() {
+            Some("28P01") => 4,
+            Some("53300") => 5,
+            Some("42501") => 6,
+            Some("55P03") => 7,
+            _ => 8,
+        },
+        Ok(Err(_)) => 9,
+        Err(_) => 10,
+    };
+    s.setup_issue.store(issue, Ordering::Release);
+    if issue != 0 {
+        eprintln!("PhotoCraft cloud setup is delayed: {}", startup_issue(s).unwrap_or("setup"));
     }
     db(s)
+}
+fn startup_issue(s: &App) -> Option<&'static str> {
+    match s.setup_issue.load(Ordering::Acquire) {
+        0 => None,
+        1 => Some("connection_timeout"),
+        2 => Some("certificate_verification"),
+        3 => Some("connection_unavailable"),
+        4 => Some("database_authentication"),
+        5 => Some("connection_limit"),
+        6 => Some("database_permissions"),
+        7 => Some("migration_lock_timeout"),
+        8 => Some("database_setup"),
+        10 => Some("setup_timeout"),
+        _ => Some("setup_unavailable"),
+    }
 }
 fn text(value: &str, max: usize) -> Result<String> {
     let v = value.trim();
@@ -155,37 +204,13 @@ pub async fn application() -> std::result::Result<Router, Box<dyn std::error::Er
     let s = Arc::new(AppState {
         db: pool,
         ready: Arc::new(AtomicBool::new(false)),
+        setup_lock: Arc::new(tokio::sync::Mutex::new(())),
+        setup_issue: Arc::new(AtomicU8::new(0)),
         origin,
         supabase: std::env::var("SUPABASE_URL").unwrap_or_default(),
         anon: std::env::var("SUPABASE_ANON_KEY").unwrap_or_default(),
         http: reqwest::Client::builder().timeout(std::time::Duration::from_secs(15)).redirect(reqwest::redirect::Policy::none()).build()?,
     });
-    if let Some(pool) = s.db.clone() {
-        let ready = s.ready.clone();
-        // Serve the editor immediately. A database wake-up must not take down static pages
-        // or kill the process; cloud routes stay unavailable until migration commits.
-        tokio::spawn(async move {
-            let mut retry_seconds = 1;
-            loop {
-                let result: std::result::Result<(), sqlx::Error> = async {
-                    let mut tx = pool.begin().await?;
-                    sqlx::query("SELECT pg_advisory_xact_lock(735193624)").execute(&mut *tx).await?;
-                    sqlx::Executor::execute(&mut *tx, include_str!("../migrations/001_cloud.sql")).await?;
-                    tx.commit().await
-                }
-                .await;
-                if result.is_ok() {
-                    ready.store(true, Ordering::Release);
-                    println!("PhotoCraft cloud storage is ready");
-                    break;
-                }
-                // Do not log connection strings or provider error payloads.
-                eprintln!("PhotoCraft cloud setup is delayed; the editor remains available. Retrying in {retry_seconds}s");
-                tokio::time::sleep(std::time::Duration::from_secs(retry_seconds)).await;
-                retry_seconds = (retry_seconds * 2).min(30);
-            }
-        });
-    }
     let public = std::env::var("PUBLIC_DIR").unwrap_or_else(|_| "public".into());
     Ok(router(s)
         .fallback_service(ServeDir::new(&public).not_found_service(ServeFile::new(format!("{public}/index.html"))))
@@ -250,9 +275,10 @@ async fn guard(State(s): State<App>, req: axum::extract::Request, next: Next) ->
     r
 }
 async fn config(State(s): State<App>) -> Json<Value> {
+    let _ = ready_db(&s).await;
     let ready = s.ready.load(Ordering::Acquire);
     Json(
-        json!({"cloud":ready,"cloudState":cloud_state(&s),"signIn":ready&&!s.supabase.is_empty()&&!s.anon.is_empty()&&!s.origin.is_empty(),"chunkBytes":CHUNK,"maxFileBytes":MAX_FILE,"version":env!("CARGO_PKG_VERSION")}),
+        json!({"cloud":ready,"cloudState":cloud_state(&s),"cloudIssue":startup_issue(&s),"signIn":ready&&!s.supabase.is_empty()&&!s.anon.is_empty()&&!s.origin.is_empty(),"chunkBytes":CHUNK,"maxFileBytes":MAX_FILE,"version":env!("CARGO_PKG_VERSION")}),
     )
 }
 fn cloud_state(s: &App) -> &'static str {

@@ -49,8 +49,10 @@ Build the editor using the existing Trunk pipeline. Package its output alongside
 service's Dockerfile. The container serves `/` and `/healthz` on `PORT`. Set `APP_ORIGIN` to the
 Tofu-returned HTTPS origin. Tofu-managed `DATABASE_URL`, `SUPABASE_CA_CERT`, `SUPABASE_URL`, and
 `SUPABASE_ANON_KEY` stay in its environment. PostgreSQL uses verified TLS. The HTTP editor starts immediately. Cloud routes become available only after the idempotent
-schema migration commits under an advisory lock. Temporary database startup failures retry
-with bounded exponential backoff. `/healthz` distinguishes `starting`, `ready` and `disabled`
+schema migration commits under an advisory lock. Setup runs inside bounded cloud requests, so a serverless host cannot suspend it after an
+unrelated response. Concurrent setup is serialized and migration lock waits are bounded; the
+browser retries configuration while storage is unavailable. The public configuration exposes
+only fixed diagnostic categories, never connection strings or provider error payloads. `/healthz` distinguishes `starting`, `ready` and `disabled`
 cloud storage while reporting HTTP availability. Sign-in waits briefly for readiness and
 establishes a database transaction before consuming a one-time authentication token.
 
