@@ -314,6 +314,17 @@ replaced by a local import. The existing single-save pipeline remains serialized
 unrelated template result cannot release it. Case 47 holds creation, committed-save, sync
 and error responses across close/reopen and compares the original project and local copy.
 
+The final local release candidate passed all 47 browser scenarios in 746.378 seconds.
+The runtime and test-file hashes were identical before and after the run: WASM
+`40b153b034d98c3d3b881968e435cfe58cbcdc45fdf18db7e9890e5474459b26`, and local service
+`7ab7cd6b407a0d5098c2181926b80bc590081e8f9f83eec7086f584737d551ea`.
+The evidence includes 329 screenshots and 46 workspace state measurements at widths
+390, 831 and 1440 with DPR 1 and 2. The new recovery action measures 28 px high on
+desktop and phone. Chromium and WebKit recovery checks inspect actual IndexedDB bytes;
+WebKit automation is not physical Safari-device acceptance. Seven release-provenance
+tests also passed, including untracked-source dirty detection. These are local results;
+the deployment and real-account journeys require their own evidence.
+
 ## Continuous upstream updates
 
 See [upstream updates](upstream-updates.md). The scheduled workflow preserves the original
