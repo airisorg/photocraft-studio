@@ -4,14 +4,6 @@ The owner requested that the current work be committed, merged, deployed, and th
 This checkpoint preserves the accepted implementation and the remaining work. It is not
 a claim of complete Figma/Canva parity or exhaustive verification of every native feature.
 
-Historical checkpoint notice, 2026-10-08: the implementation timings and remaining-work
-list below describe the 2026-10-07 release and are superseded where later changes apply.
-In particular, the old 3.5-second save delay, 1.5-second collaboration poll and absence of
-live cursors are not the current contract. See [collaboration architecture](collaboration-architecture.md)
-and [artifact-specific performance evidence](collaboration-performance.md) for current
-bounds and verification. The original hashes, results and unresolved acceptance boundaries
-below are retained as historical evidence, not attributed to later candidates.
-
 ## Accepted implementation
 
 The original PhotoCraft Rust editor, document model, commands, native file format and
@@ -36,8 +28,7 @@ preserves the original editor state.
 
 - The complete 50-case browser suite passed in 675.501 seconds on the frozen
   runtime and test files. Focused cases 48–50 also passed together in 52.195 seconds.
-- Before the email-confirmation correction below, the service passed 41 API cases,
-  12 auth cases, 4 startup cases, 8 Rust unit tests,
+- The final service passed 41 API cases, 12 auth cases, 4 startup cases, 8 Rust unit tests,
   and strict all-targets Clippy. The same 41 API cases passed through the rotating-backend
   fixture, with 2,427 idle backend swaps and no SQLSTATE errors. That fixture is a local
   protocol fault model, not actual production Supavisor.
@@ -53,7 +44,7 @@ preserves the original editor state.
   recorded separately after publication; local passes do not establish hosted behavior.
 
 On this Mac the evidence is under
-`$WORKSPACE/outputs/verification/`:
+`~/Documents/Codex/2026-10-06/ca/outputs/verification/`:
 `2026-10-07-spacing/session-recovery/` contains full50 logs, screenshots and before/after
 hashes; `2026-10-07-session-recovery/` contains service checks; and
 `2026-10-07-final-release/` contains the final package/deployment/hosted acceptance record.
@@ -65,35 +56,6 @@ native file/PNG/PSD round trips, physical IndexedDB eviction, request supersessi
 retries and account/permission boundaries. WebKit automation is not physical Safari or
 iPhone acceptance. Local simulated identities do not prove real invitation delivery or
 two-person hosted collaboration. Full cross-platform native CI is not established here.
-
-## Email confirmation correction before pause
-
-The owner reported an origin error after clicking Continue from an invitation link.
-Both Chromium and WebKit reproduced a browser-generated `Origin: null` and HTTP 403
-against the frozen old service. The confirmation page's `no-referrer` policy caused it;
-the earlier HTTP test supplied `Origin` manually and missed the actual browser transition.
-
-This correction uses `strict-origin` only on `/auth/confirm`, in the HTML and both header
-layers. The token path/query stay out of `Referer`; the exact-origin guard is unchanged.
-The actual rendered-form journey now runs in both engines as a mandatory part of
-`python tests/web/test_auth.py`, including session identity, scanner-safe GET, single-use
-replay rejection and missing/null/foreign-origin denial.
-
-The corrected candidate passed all 50 browser cases in 683.564 seconds, 13 auth cases,
-41 API cases, 4 startup cases, 8 Rust unit cases, 7 source-provenance cases, formatting
-and strict all-targets cloud Clippy. Before/after runtime/source/test hashes matched.
-The local corrected service SHA-256 is
-`a0730644fe554733fae9d255c9d8eed079d69826ac699dea6bc8dfae6f87c106`.
-The previously accepted WASM is unchanged. Production compiles Linux service code from
-the release source; this Mac binary hash does not identify that Linux executable.
-
-Evidence is under `outputs/verification/2026-10-07-auth-confirm-origin/` in the workspace.
-Its final release record separately names the published source/deployment and hosted
-confirmation-policy check. That check deliberately submits an invalid synthetic token
-to exercise origin validation without redeeming an invitation or contacting the provider.
-Real inbox delivery, Google return and independent hosted collaboration remain distinct
-acceptance boundaries. The retrospective now maps these gaps and requires UI transitions
-to be tested directly rather than replaced by headers, cookies or delivery fixtures.
 
 ## Remaining work when development resumes
 
@@ -130,6 +92,3 @@ to be tested directly rather than replaced by headers, cookies or delivery fixtu
 
 Resume with reliability and UI defects first, then the real two-account hosted journey.
 Keep the accepted release serving while the next candidate is developed and tested in isolation.
-
-Local evidence paths use `$WORKSPACE` for the local evidence workspace and
-`$CHECKOUT` for the source checkout; neither names a contributor’s home directory.
