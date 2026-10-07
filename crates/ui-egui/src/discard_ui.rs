@@ -155,9 +155,14 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
     let buttons: &[(&str, Key, bool, f32, Answer)] = if reverts {
         &[("Cancel", Key::C, false, 84.0, Answer::Cancel), ("Revert", Key::R, true, 84.0, Answer::Discard)]
     } else {
-        &[("Don't Save", Key::D, false, 100.0, Answer::Discard), ("Cancel", Key::C, false, 84.0, Answer::Cancel), ("Save", Key::S, true, 84.0, Answer::Save)]
+        &[
+            ("Don't Save", Key::D, false, 100.0, Answer::Discard),
+            ("Cancel", Key::C, false, 84.0, Answer::Cancel),
+            ("Save", Key::S, true, 84.0, Answer::Save),
+        ]
     };
-    let mut answer = ctx.input_mut(|i| buttons.iter().find(|b| i.consume_key(egui::Modifiers::NONE, b.1)).map(|b| b.4));
+    let mut answer =
+        ctx.input_mut(|i| buttons.iter().find(|b| i.consume_key(egui::Modifiers::NONE, b.1)).map(|b| b.4));
     // egui's Tab order follows the right-to-left layout below; walk the buttons left to right instead.
     let step = ctx.input_mut(|i| {
         if i.consume_key(egui::Modifiers::SHIFT, Key::Tab) {
@@ -181,13 +186,29 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
         ui.add_space(12.0);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 10.0;
-            if reverts {
-                discard_it = crate::widgets::primary_button(ui, tl!("Revert"), 84.0).clicked();
-                cancel = crate::widgets::secondary_button(ui, tl!("Cancel"), 84.0).clicked();
-            } else {
-                save_it = crate::widgets::primary_button(ui, tl!("Save"), 84.0).clicked();
-                cancel = crate::widgets::secondary_button(ui, tl!("Cancel"), 84.0).clicked();
-                discard_it = crate::widgets::secondary_button(ui, tl!("Don't Save"), 100.0).clicked();
+            let mut drawn: Vec<_> = buttons
+                .iter()
+                .rev()
+                .map(|&(label, key, primary, width, a)| {
+                    let label = mnemonic(label, key);
+                    let r = if primary {
+                        crate::widgets::primary_button(ui, &label, width)
+                    } else {
+                        crate::widgets::secondary_button(ui, &label, width)
+                    };
+                    if r.clicked() {
+                        answer = Some(a);
+                    }
+                    r
+                })
+                .collect();
+            drawn.reverse();
+            if step != 0 {
+                let n = drawn.len() as i32;
+                let at = drawn.iter().position(|r| r.has_focus()).map_or(if step > 0 { -1 } else { n }, |i| i as i32);
+                if let Some(r) = drawn.get((at + step).rem_euclid(n) as usize) {
+                    r.request_focus();
+                }
             }
         });
     });
@@ -346,7 +367,9 @@ mod tests {
         PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::ALL[0]);
         assert!(intercept(h.state_mut(), "file.closeAll", &Value::Null));
         h.run_steps(2);
-        let focused = |h: &Harness<'_, PhotocraftApp>| ["(D)on't Save", "(C)ancel", "(S)ave"].into_iter().find(|l| h.get_by_label(l).is_focused());
+        let focused = |h: &Harness<'_, PhotocraftApp>| {
+            ["(D)on't Save", "(C)ancel", "(S)ave"].into_iter().find(|l| h.get_by_label(l).is_focused())
+        };
         for want in ["(D)on't Save", "(C)ancel", "(S)ave", "(D)on't Save"] {
             h.key_press(Key::Tab);
             h.run_steps(2);
