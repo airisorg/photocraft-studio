@@ -32,6 +32,7 @@ mod services;
 // Windows gets pen pressure from winit (WM_POINTER); the web runner has its own listener.
 #[cfg(any(target_os = "macos", target_os = "linux", test))]
 mod tablet;
+mod ui_state;
 
 use photocraft_engine::Session;
 use photocraft_ui_egui::PhotocraftApp;
@@ -56,6 +57,9 @@ fn native_options() -> eframe::NativeOptions {
             .with_titlebar_shown(false)
             .with_title_shown(false),
         centered: true,
+        // eframe saves native window geometry and egui panel/window sizes on exit.
+        // Keep that state beside preferences, including config overrides and portable mode.
+        persistence_path: services::config_dir().map(|dir| dir.join("ui.ron")),
         ..Default::default()
     }
 }
@@ -137,22 +141,25 @@ fn main() -> eframe::Result {
     #[cfg(target_os = "macos")]
     let _tablet = tablet::install_macos(&stylus_feed);
 
-    // Read the main display's ICC profile while the window opens (colour-managed canvas).
+    // Read the displays' ICC profiles while the window opens (colour-managed canvas; `None`
+    // where the platform has no reader).
     let monitor = monitor_profile::detect_async();
     // Brush presets load in the background; the app attaches them when they arrive.
     let presets = services::presets_dir().map(photocraft_engine::preset_store::open_dir_async);
     let mut options = native_options();
+    // eframe restores the saved window layout before our code runs; drop values that would crash it.
+    ui_state::sanitize(options.persistence_path.as_deref());
     // Crash-safe GPU startup (#4): pick the backend (a marker left by a start that died in the
     // driver moves to a safer one), and lock this start's marker until the first frames render.
     let t_sentinel = std::time::Instant::now();
     let os = gpu_startup::Os::current();
-    let (pref, _) = gpu_startup::read_prefs(services::prefs_file().as_deref());
+    let (pref, mode) = gpu_startup::read_rendering_prefs(services::prefs_file().as_deref());
     let (previous, sentinel) = match services::config_dir() {
         Some(dir) => gpu_startup::Sentinel::begin(&dir),
         None => (gpu_startup::Previous::Clean, None),
     };
     let env_backend = std::env::var("WGPU_BACKEND").ok();
-    let plan = gpu_startup::plan(pref, previous.crashed(), env_backend.as_deref(), safe_gpu, os);
+    let plan = gpu_startup::plan_with_mode(pref, mode, previous.crashed(), env_backend.as_deref(), safe_gpu, os);
     if let Some(m) = previous.crashed() {
         log::warn!("the previous start didn't finish (GPU backend {}, adapter {:?}); {}", m.backend, m.adapter, plan.reason.as_deref().unwrap_or(""));
     }
@@ -172,33 +179,61 @@ fn main() -> eframe::Result {
     gpu_startup::configure(&mut options.wgpu_options.wgpu_setup, &plan, os, sentinel.clone(), gpu_note.clone());
     let sentinel_ms = t_sentinel.elapsed().as_secs_f64() * 1000.0;
     log::info!("GPU startup: {:?} ({sentinel_ms:.2} ms)", plan);
+    let retry_cpu = !safe_gpu && plan.backend != photocraft_engine::prefs::GpuBackend::Cpu;
+    let app_created = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let created_in_callback = app_created.clone();
     let started_sentinel = sentinel.clone();
     let result = eframe::run_native(
-        "Photocraft",
+        "PhotoCraft",
         options,
         Box::new(move |cc| {
+            created_in_callback.store(true, std::sync::atomic::Ordering::Relaxed);
             let automation = control.as_ref().map(|(_, _, workspace)| workspace.clone());
             let mut services = services::native(automation);
             services.preset_store = presets;
+            #[cfg(target_os = "linux")]
+            let display = tablet::DisplayKind::of(cc);
+            #[cfg(target_os = "linux")]
+            {
+                services.is_wayland = display == Some(tablet::DisplayKind::Wayland);
+            }
             let mut app = PhotocraftApp::new(Session::new(), services);
             app.integrated_titlebar = cfg!(target_os = "macos");
             // Long commands and file opens run as background jobs with progress and Cancel (#210).
             app.background_jobs = std::env::var_os("PHOTOCRAFT_INLINE_JOBS").is_none();
-            if let Ok(Some(icc)) = monitor.recv_timeout(std::time::Duration::from_secs(2)) {
-                app.session.color.monitor_profile = Some(std::sync::Arc::new(icc));
+            // Displays and their profiles (#569): wait briefly so the first frames already use
+            // the right profile; a slower reading is applied when it arrives, and the shell reads
+            // again when the displays may have changed.
+            if let Some(rx) = monitor {
+                app.services.read_displays = Some(std::sync::Arc::new(monitor_profile::detect_async));
+                match rx.recv_timeout(std::time::Duration::from_secs(2)) {
+                    Ok(r) => photocraft_ui_egui::monitor_status::apply(&mut app, r),
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => photocraft_ui_egui::monitor_status::pending(&mut app, rx),
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                        photocraft_ui_egui::monitor_status::apply(&mut app, Err("the display profile reader stopped without an answer".into()));
+                    }
+                }
             }
             // Preferences › Performance › Use Graphics Processor (and the GPU backend: `cpu`
             // composites on the CPU).
             let info = &mut app.perf.gpu_info;
             info.preference = pref.name().to_string();
             info.selected = if plan.env.is_some() { "env".into() } else { plan.backend.name().to_string() };
-            info.fallback = plan.reason.clone().or_else(|| gpu_note.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone());
+            info.fallback = match (plan.reason.clone(), gpu_note.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()) {
+                (Some(reason), Some(note)) => Some(format!("{reason}. {note}")),
+                (reason, note) => reason.or(note),
+            };
             info.canvas = "cpu".into();
             if let Some(rs) = cc.wgpu_render_state.clone() {
                 app.perf.gpu_info.set_adapter(&rs.adapter.get_info());
-                if plan.backend != photocraft_engine::prefs::GpuBackend::Cpu
+                let software_window = rs.adapter.get_info().device_type == eframe::wgpu::DeviceType::Cpu;
+                if software_window && mode != photocraft_engine::prefs::RenderingMode::Cpu {
+                    app.perf.gpu_info.fallback = Some("No compatible hardware graphics adapter; using software graphics.".into());
+                }
+                if !software_window
+                    && plan.backend != photocraft_engine::prefs::GpuBackend::Cpu
                     && std::env::var_os("PHOTOCRAFT_CPU_CANVAS").is_none()
-                    && app.session.prefs().performance.use_gpu
+                    && app.session.prefs().performance.effective_rendering_mode() != photocraft_engine::prefs::RenderingMode::Cpu
                 {
                     app.set_wgpu(rs);
                 } else {
@@ -206,12 +241,32 @@ fn main() -> eframe::Result {
                     let _ = photocraft_ui_egui::gpu_canvas::DeviceHealth::watch(&rs.device);
                 }
             }
+            let fallback_reason = std::env::var("PHOTOCRAFT_GPU_STARTUP_FAILURE").ok().or_else(|| {
+                (app.perf.gpu_info.canvas == "cpu" && mode != photocraft_engine::prefs::RenderingMode::Cpu)
+                    .then(|| app.perf.gpu_info.fallback.clone())
+                    .flatten()
+            });
+            if let Some(reason) = fallback_reason {
+                photocraft_ui_egui::gpu_status::queue_fallback_notice(&mut app, &reason);
+            }
             app.perf.span("gpuSentinel", sentinel_ms);
             // Once the first frames rendered: clear the marker, and keep a crash fallback.
+            let remember_cpu =
+                std::env::var_os("PHOTOCRAFT_GPU_STARTUP_FAILURE").is_some() || (plan.remember && plan.backend == photocraft_engine::prefs::GpuBackend::Cpu);
             let remember = plan.remember.then_some(plan.backend);
             app.on_started(move |app| {
                 if let Some(s) = started_sentinel.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
                     s.finish();
+                }
+                if remember_cpu
+                    && let Err(error) = app.run(
+                        "prefs.set",
+                        serde_json::json!({"values": {
+                            "performance.renderingMode": "cpu", "performance.useGpu": false
+                        }}),
+                    )
+                {
+                    log::warn!("couldn't remember CPU recovery: {error}");
                 }
                 if let Some(b) = remember
                     && app.session.prefs().performance.gpu_backend != b
@@ -232,12 +287,12 @@ fn main() -> eframe::Result {
             // and the X11 reader write into this feed.
             app.stylus.feed = stylus_feed;
             #[cfg(target_os = "linux")]
-            tablet::spawn_x11(&app.stylus.feed, tablet::DisplayKind::of(cc));
+            tablet::spawn_x11(&app.stylus.feed, display);
             // Paths on the command line (Linux/Windows file associations, `photocraft a.psd`).
             app.open_paths(&files);
             // Portable marker found but its data folder isn't writable (#228): say where settings went.
             if let Some(w) = &app_dirs::current().warning {
-                photocraft_ui_egui::notices::post(&mut app, "Portable mode is off", vec![w.clone()], false);
+                photocraft_ui_egui::notices::post(&mut app, "Portable mode is off", vec![w.clone()], false, None);
             }
             Ok(Box::new(app))
         }),
@@ -249,11 +304,69 @@ fn main() -> eframe::Result {
     {
         s.finish();
     }
+    // Retry in a fresh process: winit event loops cannot be recreated reliably in-process.
+    // Only renderer initialization failures qualify; never restart after editing has begun.
+    if retry_cpu && !app_created.load(std::sync::atomic::Ordering::Relaxed) && matches!(&result, Err(eframe::Error::Wgpu(_))) {
+        let reason = result.as_ref().err().map(ToString::to_string).unwrap_or_default();
+        if let Some(s) = sentinel.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
+            s.finish();
+        }
+        if let Ok(exe) = std::env::current_exe() {
+            let launched = std::process::Command::new(exe)
+                .args(std::env::args_os().skip(1))
+                .arg("--safe-gpu")
+                .env_remove("WGPU_BACKEND")
+                .env("PHOTOCRAFT_GPU_STARTUP_FAILURE", &reason)
+                .spawn();
+            match launched {
+                Ok(_) => return Ok(()),
+                Err(error) => log::error!("could not start CPU compatibility mode: {error}"),
+            }
+        }
+    }
     result
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn window_and_panel_geometry_survive_a_restart() {
+        let options = super::native_options();
+        assert!(options.persist_window);
+        assert_eq!(options.persistence_path, super::services::config_dir().map(|dir| dir.join("ui.ron")));
+
+        #[derive(Default)]
+        struct Storage(std::collections::BTreeMap<String, String>);
+        impl eframe::Storage for Storage {
+            fn get_string(&self, key: &str) -> Option<String> {
+                self.0.get(key).cloned()
+            }
+            fn set_string(&mut self, key: &str, value: String) {
+                self.0.insert(key.into(), value);
+            }
+            fn remove_string(&mut self, key: &str) {
+                self.0.remove(key);
+            }
+            fn flush(&mut self) {}
+        }
+        let ctx = egui::Context::default();
+        let input = || egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 800.0))), ..Default::default() };
+        let mut output = ctx.run_ui(input(), |ui| {
+            egui::Panel::right("dock").exact_size(410.0).show(ui, |ui| ui.set_min_width(ui.available_width()));
+        });
+        output.textures_delta.clear();
+        let mut storage = Storage::default();
+        ctx.memory(|memory| eframe::set_value(&mut storage, "egui", memory));
+        let restored = egui::Context::default();
+        restored.memory_mut(|memory| *memory = eframe::get_value(&storage, "egui").unwrap());
+        let mut output = restored.run_ui(input(), |ui| {
+            egui::Panel::right("dock").default_size(290.0).show(ui, |ui| ui.set_min_width(ui.available_width()));
+        });
+        output.textures_delta.clear();
+        let panel = egui::containers::panel::PanelState::load(&restored, egui::Id::new("dock")).unwrap();
+        assert_eq!(panel.size().x, 410.0);
+    }
+
     #[test]
     fn the_window_opens_centred_at_its_default_size() {
         let o = super::native_options();

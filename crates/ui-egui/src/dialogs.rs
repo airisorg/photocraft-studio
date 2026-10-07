@@ -37,10 +37,41 @@ pub fn pan_delta(ctx: &egui::Context, canvas: egui::Rect, hand: bool) -> Option<
     (panning && canvas.contains(origin) && !rects.iter().any(|r| r.contains(origin))).then_some(delta)
 }
 
+/// A click or drag with the primary button started on the free canvas under an open dialog, Space
+/// not held: where the pointer is this frame. The press itself counts even when it is released in
+/// the same frame (a quick click, `ui.click`); the drag only while it stays on the free canvas.
+pub fn free_press(ctx: &egui::Context, canvas: egui::Rect) -> Option<egui::Pos2> {
+    if egui::Popup::is_any_open(ctx) {
+        return None;
+    }
+    let rects = rects(ctx);
+    let free = |p: egui::Pos2| canvas.contains(p) && !rects.iter().any(|r| r.contains(p));
+    ctx.input(|i| {
+        if i.key_down(egui::Key::Space) {
+            return None;
+        }
+        let pressed = i.events.iter().rev().find_map(|e| match e {
+            egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, .. } => Some(*pos),
+            _ => None,
+        });
+        if let Some(p) = pressed {
+            return free(p).then_some(p);
+        }
+        let held = i.pointer.primary_down() && i.pointer.press_origin().is_some_and(free);
+        i.pointer.latest_pos().filter(|p| held && free(*p))
+    })
+}
+
 pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
     let dialogs = app.ui.dialogs.clone();
     let mut shown = Vec::new();
     for d in dialogs {
+        let lang = if crate::prefs_ui::is_preferences(&d.fields) {
+            crate::i18n::Lang::from_pref(d.fields.get("values").and_then(|v| v.pointer("/interface/language")).and_then(Value::as_str).unwrap_or("auto"))
+        } else {
+            crate::i18n::current()
+        };
+        let _language = crate::i18n::language_scope(lang);
         let mut fields = d.fields.clone();
         let mut outcome: Option<bool> = None; // Some(true)=OK, Some(false)=Cancel
         let mut apply_requested = false;
@@ -118,7 +149,13 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
                 DialogKind::Command if fields.contains_key("__export") => crate::export_dialog::body(app, ui, &mut fields),
                 DialogKind::Command if fields.contains_key("__sizing") => crate::sizing::body(ui, &mut fields),
                 DialogKind::Command if crate::adjust_dialog::owns(&fields) => crate::adjust_dialog::body(app, ui, &mut fields),
-                DialogKind::Command if fields.contains_key("__filter") => crate::filter_dialog::body(ui, &mut fields),
+                DialogKind::Command if fields.contains_key("__filter") => {
+                    // Color Settings: the monitor profile in use can change while it is open.
+                    if fields.get("__command").and_then(Value::as_str) == Some("edit.colorSettings") {
+                        fields.insert("__note".into(), Value::String(crate::monitor_status::note(app)));
+                    }
+                    crate::filter_dialog::body(ui, &mut fields)
+                }
                 DialogKind::Command if fields.contains_key("__form") => crate::view_cmds::form_body(ui, &mut fields),
                 DialogKind::Command => {}
                 DialogKind::LayerStyle => crate::layer_style::body(ui, &mut fields),

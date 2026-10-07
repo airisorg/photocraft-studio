@@ -88,14 +88,36 @@ fn shows_own_layout(doc: &Document, t: &TextLayer) -> bool {
 /// Start editing an existing type layer. Like Photoshop, editing shows the text as the type
 /// engine lays it out, so a PSD layer is re-rendered first (inside the edit session's history
 /// step, so Cancel brings Photoshop's pixels back).
-fn begin_edit(app: &mut PhotocraftApp, id: LayerId, key: &str) {
-    let Some(st) = app.session.active() else { return };
+fn begin_edit(app: &mut PhotocraftApp, id: LayerId, key: &str) -> Result<(), String> {
+    let st = app.session.active().ok_or("no document open")?;
     let doc = st.doc.clone();
     if let Some(t) = text_layer(&doc, id)
         && !shows_own_layout(&doc, t)
     {
-        let _ = app.run("type.edit", json!({"layer": id.0, "coalesce": key}));
+        app.run("type.edit", json!({"layer": id.0, "coalesce": key}))?;
     }
+    Ok(())
+}
+
+/// Edit the active type layer from its thumbnail, selecting all text like Photoshop. Reuse the
+/// current session when already editing it, so Cancel and undo still cover the whole edit.
+pub fn edit_active(app: &mut PhotocraftApp) -> Result<(), String> {
+    let st = app.session.active().ok_or("no document open")?;
+    let id = st.active_layer.ok_or("no active layer")?;
+    let n = text_layer(&st.doc, id).ok_or("active layer is not a type layer")?.text.chars().count();
+    if app.ui.text_edit.as_ref().is_none_or(|ed| ed.layer != id.0) {
+        commit(app);
+        let key = session_key(app);
+        begin_edit(app, id, &key)?;
+        app.ui.text_edit = Some(TextEdit { layer: id.0, caret: n, anchor: 0, session: key, created: false, dragging: false, resize: None, preedit: None });
+    } else if let Some(ed) = app.ui.text_edit.as_mut() {
+        ed.anchor = 0;
+        ed.caret = n;
+    }
+    app.ui.tool = crate::state::Tool::Type;
+    app.ui.mask_target = false;
+    app.ui.vector_mask_target = false;
+    Ok(())
 }
 
 fn hit_offset(app: &mut PhotocraftApp, id: LayerId, x: f64, y: f64) -> usize {
@@ -202,7 +224,9 @@ pub fn pointer_down(app: &mut PhotocraftApp, x: f64, y: f64, shift: bool) -> boo
     if let Some(id) = hit_layer(app, x, y) {
         let _ = app.session.select_layer(id);
         let key = session_key(app);
-        begin_edit(app, id, &key);
+        if begin_edit(app, id, &key).is_err() {
+            return true;
+        }
         let off = hit_offset(app, id, x, y);
         app.ui.text_edit = Some(TextEdit { layer: id.0, caret: off, anchor: off, session: key, created: false, dragging: true, resize: None, preedit: None });
         return true;
@@ -553,7 +577,7 @@ pub fn commit(app: &mut PhotocraftApp) {
     if text.trim().is_empty() && ed.created {
         let _ = app.run("layer.delete", json!({"layer": ed.layer}));
     } else if ed.created {
-        let name: String = text.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim().chars().take(40).collect();
+        let name = photocraft_engine::type_cmds::layer_name(&text);
         let _ = app.run("type.edit", json!({"layer": ed.layer, "name": name, "coalesce": ed.session}));
     }
 }
@@ -757,6 +781,15 @@ fn apply(app: &mut PhotocraftApp, ctx: &egui::Context, props: serde_json::Value)
     let _ = app.run("type.setStyle", p);
 }
 
+/// While characters are selected in a type layer, a new foreground colour (Color and Swatches
+/// panels, the Color Picker) recolours them, in the editing session's history step.
+pub fn foreground_changed(app: &mut PhotocraftApp) {
+    let Some((layer, Some(range))) = target(app) else { return };
+    let Some(ed) = app.ui.text_edit.as_ref() else { return };
+    let p = json!({"layer": layer, "range": range, "color": hex(app.session.tools.foreground), "coalesce": ed.session});
+    let _ = app.run("type.setStyle", p);
+}
+
 /// Photoshop's Type options bar.
 pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let t = crate::theme::Tokens::get(ui.ctx());
@@ -847,7 +880,7 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     ui.painter().rect_filled(rect, 2.0, Color32::from_rgb(q(c[0]), q(c[1]), q(c[2])));
     ui.painter().rect_stroke(rect, 2.0, Stroke::new(1.0, t.field_border), egui::StrokeKind::Outside);
     let resp = resp.on_hover_text(tl!("Set the text color"));
-    egui::Popup::from_toggle_button_response(&resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+    crate::widgets::swatch_popup(&resp).show(|ui| {
         let mut col = Color32::from_rgb(q(c[0]), q(c[1]), q(c[2]));
         if egui::color_picker::color_picker_color32(ui, &mut col, egui::color_picker::Alpha::Opaque) {
             apply(app, ui.ctx(), json!({"color": format!("#{:02x}{:02x}{:02x}", col.r(), col.g(), col.b())}));
@@ -1152,7 +1185,7 @@ fn type_sections(app: &mut PhotocraftApp, ui: &mut egui::Ui, character: bool, pa
                 ui.painter().rect_filled(rect, t.radius_sm, Color32::from_rgb(q(rgb[0]), q(rgb[1]), q(rgb[2])));
                 ui.painter().rect_stroke(rect, t.radius_sm, Stroke::new(1.0, t.field_border), egui::StrokeKind::Inside);
                 let resp = resp.on_hover_text(tl!("Text color"));
-                egui::Popup::from_toggle_button_response(&resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+                crate::widgets::swatch_popup(&resp).show(|ui| {
                     let mut col = Color32::from_rgb(q(rgb[0]), q(rgb[1]), q(rgb[2]));
                     if egui::color_picker::color_picker_color32(ui, &mut col, egui::color_picker::Alpha::Opaque) {
                         apply(app, ui.ctx(), json!({"color": format!("#{:02x}{:02x}{:02x}", col.r(), col.g(), col.b())}));
@@ -1383,6 +1416,20 @@ mod tests {
         let doc = &app.session.active().unwrap().doc;
         assert_eq!(doc.layers.last().unwrap().name, "Héllo world");
         assert!(app.ui.text_edit.is_none());
+    }
+
+    #[test]
+    fn a_name_from_text_after_blank_lines_keeps_following_the_text() {
+        let mut app = app();
+        pointer_up(&mut app, [50.0, 100.0], [50.0, 100.0]);
+        insert(&mut app, "\n\nTitle");
+        let id = app.ui.text_edit.as_ref().unwrap().layer;
+        commit(&mut app);
+        let name = |app: &PhotocraftApp| app.session.active().unwrap().doc.layers.last().unwrap().name.clone();
+        assert_eq!(name(&app), "Title");
+        // Edited later, outside the session that created it (#483).
+        app.run("type.edit", json!({"layer": id, "text": "\nSubtitle"})).unwrap();
+        assert_eq!(name(&app), "Subtitle");
     }
 
     #[test]
