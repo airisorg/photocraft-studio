@@ -38,6 +38,9 @@ class Provider(BaseHTTPRequestHandler):
     def do_POST(self):
         Provider.calls.append(self.path)
         body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+        if self.path.startswith('/auth/v1/otp'):
+            self.response(503 if Provider.mode=='mail_failed' else 200, {})
+            return
         token = body.get('token_hash')
         if Provider.mode == 'expired' or token in Provider.used:
             self.response(403, {'error':'Expired single-use token'})
@@ -89,6 +92,7 @@ class AuthContract(unittest.TestCase):
         cls.process.wait(timeout=10)
         cls.provider.shutdown()
         cls.provider.server_close()
+        cls.db.execute('DELETE FROM photocraft.projects WHERE owner_id=%s',(Provider.ident,))
         cls.db.execute('DELETE FROM photocraft.sessions WHERE account_id=%s',(Provider.ident,))
         cls.db.execute('DELETE FROM photocraft.accounts WHERE id=%s',(Provider.ident,))
         cls.db.close()
@@ -151,6 +155,57 @@ class AuthContract(unittest.TestCase):
 
     def test_unknown_token_type_never_redeems(self):
         self.assertEqual(self.callback(kind='recovery').status_code,400)
+        self.assertEqual(Provider.calls,[])
+
+    def test_email_link_get_does_not_consume_token(self):
+        params={'token_hash':secrets.token_hex(32),'type':'email'}
+        url=self.base+'/auth/confirm?'+urlencode(params)
+        for _ in range(2):
+            r=self.http.get(url)
+            self.assertEqual(r.status_code,200)
+            self.assertIn('Continue to PhotoCraft',r.text)
+        self.assertEqual(Provider.calls,[])
+        r=self.http.post(self.base+'/auth/confirm',data=params,headers={'Origin':ORIGIN},allow_redirects=False)
+        self.assertEqual(r.status_code,303)
+        self.assertIn('pc_session',r.cookies)
+        r=self.http.post(self.base+'/auth/confirm',data=params,headers={'Origin':ORIGIN},allow_redirects=False)
+        self.assertEqual(r.status_code,400)
+
+    def test_email_confirmation_rejects_foreign_origin(self):
+        r=self.http.post(self.base+'/auth/confirm',data={'token_hash':'a'*64,'type':'email'},headers={'Origin':'https://evil.invalid'})
+        self.assertEqual(r.status_code,403)
+        self.assertEqual(Provider.calls,[])
+
+    def invite_fixture(self):
+        auth=self.callback()
+        h={'Cookie':'pc_session='+auth.cookies.get('pc_session'),'Origin':ORIGIN}
+        r=self.http.post(self.base+'/api/projects',json={'title':'Invitation contract'},headers=h)
+        self.assertEqual(r.status_code,200,r.text)
+        return r.json()['id'],h
+
+    def test_invitation_sends_mail_and_preserves_access_on_delivery_failure(self):
+        pid,h=self.invite_fixture()
+        for failed in [False,True]:
+            email=str(uuid.uuid4())+'@example.invalid'
+            Provider.mode='mail_failed' if failed else 'success'
+            r=self.http.post(self.base+f'/api/projects/{pid}/invite',json={'email':email,'role':'edit'},headers=h)
+            self.assertEqual(r.status_code,502 if failed else 200,r.text)
+            member=self.db.execute('SELECT role FROM photocraft.members WHERE project_id=%s AND email=%s',(pid,email)).fetchone()
+            self.assertEqual(member,('edit',))
+            delivery=self.db.execute('SELECT status FROM photocraft.invitation_deliveries WHERE project_id=%s AND email=%s',(pid,email)).fetchone()
+            self.assertEqual(delivery,('failed' if failed else 'sent',))
+            repeat=self.http.post(self.base+f'/api/projects/{pid}/invite',json={'email':email,'role':'edit'},headers=h)
+            self.assertEqual(repeat.status_code,429)
+        self.assertEqual(sum(path.startswith('/auth/v1/otp') for path in Provider.calls),2)
+
+    def test_invitation_validates_owner_email_and_role_before_mail(self):
+        pid,h=self.invite_fixture()
+        Provider.calls=[]
+        for payload in [{'email':'broken','role':'edit'},{'email':'a@b.test','role':'owner'}]:
+            r=self.http.post(self.base+f'/api/projects/{pid}/invite',json=payload,headers=h)
+            self.assertEqual(r.status_code,400)
+        r=self.http.post(self.base+f'/api/projects/{pid}/invite',json={'email':'a@b.test','role':'edit'},headers={'Origin':ORIGIN})
+        self.assertEqual(r.status_code,401)
         self.assertEqual(Provider.calls,[])
 
 

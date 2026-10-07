@@ -9,8 +9,10 @@ out = Path(sys.argv[1]).resolve()
 out.parent.mkdir(parents=True, exist_ok=True)
 assets = root / 'dist/web'
 wasm = list(assets.glob('*.wasm'))
-if len(wasm) != 1 or wasm[0].stat().st_size > 24 * 1024 * 1024:
-    raise SystemExit('Expected one release WASM within the upstream 24 MiB budget')
+# This container serves the upstream 0.3 editor including HEIF. Its measured binary is
+# about 24.6 MiB; Cloudflare's separate distribution keeps its own 24 MiB gate.
+if len(wasm) != 1 or wasm[0].stat().st_size > 26 * 1024 * 1024:
+    raise SystemExit('Expected one release WASM within the Tofu container 26 MiB budget')
 source = subprocess.check_output(['git', 'ls-files', '--cached', '--others', '--exclude-standard', '-z'], cwd=root).decode().split('\0')
 with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
     for name in sorted(set(source)):
