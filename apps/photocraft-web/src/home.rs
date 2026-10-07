@@ -52,7 +52,7 @@ pub fn empty_message(filter: &str, searching: bool, signed_in: bool) -> (&'stati
         "Trash" => ("Trash is empty", "Projects you move to Trash will appear here. You can restore them at any time."),
         "Starred" => ("Keep your favorites close", "Open a project's menu and choose Star project to find it here."),
         "Shared with me" => ("Create together", "Projects shared with your sign-in email will appear here."),
-        _ => ("Make your first project", "Create a design or open a file, then choose Save to cloud in the editor."),
+        _ => ("Make your first project", "Create a design or open a file, then choose Save design in the editor."),
     }
 }
 

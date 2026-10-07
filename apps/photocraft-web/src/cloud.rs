@@ -697,6 +697,22 @@ impl Cloud {
             ))
         });
     }
+    pub fn handle_input(&mut self, ctx: &egui::Context) {
+        // Handle the workspace modal before the native editor can consume Escape.
+        if (self.show_logout || self.show_share || self.show_history || self.show_comments || self.show_details)
+            && ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+        {
+            if egui::Popup::is_any_open(ctx) {
+                egui::Popup::close_all(ctx);
+            } else {
+                self.show_logout = false;
+                self.show_share = false;
+                self.show_history = false;
+                self.show_comments = false;
+                self.show_details = false;
+            }
+        }
+    }
     pub fn ui(&mut self, app: &mut PhotocraftApp, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         if self.home {
@@ -709,6 +725,11 @@ impl Cloud {
         let binding = self.binding(app);
         let compact = ui.available_width() < 760.;
         egui::Panel::top("cloud_header").exact_size(64.).frame(egui::Frame::NONE.fill(t.card).inner_margin(egui::Margin::symmetric(20, 12))).show(ui, |ui| {
+            // Header actions share one density; the native editor keeps its compact controls.
+            ui.spacing_mut().interact_size.y = 36.;
+            ui.spacing_mut().button_padding = Vec2::new(12., 8.);
+            ui.spacing_mut().item_spacing.x = 8.;
+            ui.style_mut().text_styles.insert(egui::TextStyle::Button, egui::FontId::proportional(14.));
             ui.horizontal_centered(|ui| {
                 if ui.add(egui::Button::new(RichText::new("PhotoCraft").size(18.).strong()).frame(false)).on_hover_text("Open your workspace").clicked() {
                     self.home = !self.home;
@@ -726,7 +747,10 @@ impl Cloud {
                         self.list(&ctx);
                     }
                     if ui.available_width() > 700. {
-                        ui.label(RichText::new(app.session.active().map(|d| d.doc.name.as_str()).unwrap_or("Untitled")).strong());
+                        let title = app.session.active().map(|d| d.doc.name.as_str()).unwrap_or("Untitled");
+                        // Reserve room for actions so long names cannot push them off-screen.
+                        ui.add_sized([ui.available_width() - 440., 36.], egui::Label::new(RichText::new(title).strong()).halign(egui::Align::Min).truncate())
+                            .on_hover_text(title);
                     }
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -774,37 +798,42 @@ impl Cloud {
                             }
                         });
                     if !self.home {
-                        if ui
-                            .add_enabled(
-                                !self.busy && app.session.active().is_some(),
-                                egui::Button::new(
-                                    RichText::new(if binding.as_ref().is_some_and(|b| b.role == "view") {
-                                        "Save a copy"
-                                    } else if compact {
-                                        "Save"
-                                    } else {
-                                        "Save to cloud"
-                                    })
-                                    .color(t.primary_text),
-                                )
-                                .fill(t.primary_bg),
-                            )
-                            .clicked()
+                        if let Some(b) = binding.as_ref().filter(|b| b.role == "owner")
+                            && ui.add_sized([88., 36.], egui::Button::new(RichText::new("Share").strong().color(t.primary_text)).fill(t.primary_bg)).clicked()
                         {
+                            self.show_share = true;
+                            self.share_url.clear();
+                            self.data(&ctx, "members", format!("/api/projects/{}/members", b.id));
+                        }
+                        let can_save = !self.busy && app.session.active().is_some();
+                        let save = ui
+                            .add_enabled_ui(can_save, |ui| {
+                                if binding.as_ref().is_some_and(|b| b.role != "view") {
+                                    header_icon(ui, "cloud", "Save now · edits also save automatically")
+                                } else {
+                                    ui.add_sized(
+                                        [if compact { 76. } else { 104. }, 36.],
+                                        egui::Button::new(
+                                            RichText::new(if binding.is_some() { "Save a copy" } else { "Save design" }).strong().color(t.primary_text),
+                                        )
+                                        .fill(t.primary_bg),
+                                    )
+                                    .on_hover_text("Save this design to your cloud workspace")
+                                }
+                            })
+                            .inner;
+                        if save.clicked() {
                             self.save(app, &ctx, binding.as_ref().is_some_and(|b| b.role == "view"));
                         }
-                        if let Some(b) = binding.as_ref() {
-                            if b.role == "owner" && ui.add_sized([70., 36.], home::primary("Share")).clicked() {
-                                self.show_share = true;
-                                self.share_url.clear();
-                                self.data(&ctx, "members", format!("/api/projects/{}/members", b.id));
-                            }
-                            if !compact && ui.button("Comments").clicked() {
-                                self.show_comments = true;
-                                self.data(&ctx, "comments", format!("/api/projects/{}/comments", b.id));
-                            }
+                        if let Some(b) = binding.as_ref()
+                            && !compact
+                            && header_icon(ui, "message-square", "Comments").clicked()
+                        {
+                            self.show_comments = true;
+                            self.data(&ctx, "comments", format!("/api/projects/{}/comments", b.id));
                         }
-                        ui.menu_button("More", |ui| {
+                        let more = header_icon(ui, "ellipsis", "More actions");
+                        egui::Popup::menu(&more).show(|ui| {
                             if compact {
                                 ui.checkbox(&mut self.compact_panels, "Show editing panels");
                                 if ui.button("Fit canvas").clicked() {
@@ -855,8 +884,23 @@ impl Cloud {
                             }
                         });
                     }
-                    if self.busy {
-                        ui.spinner();
+                    if !compact && let Some(b) = binding.as_ref() {
+                        let saved = app.session.active().is_some_and(|d| d.revision == b.saved_local);
+                        ui.add_sized(
+                            [100., 36.],
+                            egui::Label::new(
+                                RichText::new(if saved {
+                                    "Saved"
+                                } else if self.busy {
+                                    "Saving…"
+                                } else {
+                                    "Unsaved changes"
+                                })
+                                .small()
+                                .color(t.text_dim),
+                            ),
+                        )
+                        .on_hover_text(&self.status);
                     }
                 });
             });
@@ -1166,16 +1210,14 @@ impl Cloud {
         });
     }
     fn dialogs(&mut self, app: &mut PhotocraftApp, ctx: &egui::Context) {
-        if ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
-            self.show_logout = false;
-            self.show_share = false;
-            self.show_history = false;
-            self.show_comments = false;
-            self.show_details = false;
+        if self.show_logout || self.show_share || self.show_history || self.show_comments || self.show_details {
+            egui::Area::new(egui::Id::new("workspace-dialog-backdrop")).order(egui::Order::Background).fixed_pos(ctx.content_rect().min).show(ctx, |ui| {
+                ui.allocate_rect(ctx.content_rect(), egui::Sense::click_and_drag());
+            });
         }
         if self.show_logout {
             let mut open = true;
-            workspace_window("Sign out of this workspace?", ctx, 440.).default_height(220.).open(&mut open).show(ctx, |ui| {
+            workspace_window("Sign out of this workspace?", ctx, 440.).default_height(280.).open(&mut open).show(ctx, |ui| {
                 ui.style_mut().text_styles.insert(egui::TextStyle::Body, egui::FontId::proportional(14.));
                 ui.style_mut().text_styles.insert(egui::TextStyle::Button, egui::FontId::proportional(14.));
                 ui.spacing_mut().item_spacing = Vec2::new(10., 12.);
@@ -1213,7 +1255,13 @@ impl Cloud {
         if self.show_share {
             let mut open = true;
             workspace_window("Share & permissions", ctx, 440.)
-                .min_height(if self.share_url.is_empty() { 0. } else { 560_f32.min((ctx.content_rect().height() - 100.).max(200.)) })
+                .min_height(
+                    (480.
+                        + if ctx.content_rect().width() < 520. { 48. } else { 0. }
+                        + 64. * self.members.len().min(3) as f32
+                        + if self.share_url.is_empty() { 0. } else { 84. })
+                    .min((ctx.content_rect().height() - 100.).max(200.)),
+                )
                 .open(&mut open)
                 .show(ctx, |ui| {
                     ui.style_mut().text_styles.insert(egui::TextStyle::Body, egui::FontId::proportional(14.));
@@ -1256,16 +1304,41 @@ impl Cloud {
                         });
                     }
                     for m in self.members.clone() {
+                        let email = field(&m, "email");
+                        let mut role = field(&m, "role").to_string();
                         ui.horizontal(|ui| {
-                            ui.label(format!("{} · {}", field(&m, "email"), field(&m, "role")));
-                            if ui.small_button("Remove").clicked() {
-                                let path = format!("/api/projects/{pid}/members");
-                                task(&self.queue, self.epoch, ctx, async move {
-                                    api("PUT", &path, Some(json!({"email":field(&m,"email"),"role":"remove"}))).await?;
-                                    Ok(Message::Data("members", api("GET", &path, None).await?))
-                                });
-                            }
+                            ui.add_sized([(ui.available_width() - 130.).max(80.), 36.], egui::Label::new(email).halign(egui::Align::Min).truncate())
+                                .on_hover_text(email);
+                            egui::ComboBox::from_id_salt(("access", email)).selected_text(if role == "edit" { "Can edit" } else { "Can view" }).show_ui(
+                                ui,
+                                |ui| {
+                                    ui.selectable_value(&mut role, "view".into(), "Can view");
+                                    ui.selectable_value(&mut role, "edit".into(), "Can edit");
+                                    ui.separator();
+                                    ui.selectable_value(&mut role, "remove".into(), "Remove access");
+                                },
+                            );
                         });
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(match field(&m, "delivery") {
+                                    "failed" => "Email not sent · access granted",
+                                    "sent" => "Invitation sent",
+                                    _ => "Access granted",
+                                })
+                                .small()
+                                .color(Tokens::get(ctx).text_dim),
+                            )
+                            .wrap(),
+                        );
+                        if role != field(&m, "role") {
+                            let path = format!("/api/projects/{pid}/members");
+                            let email = email.to_string();
+                            task(&self.queue, self.epoch, ctx, async move {
+                                api("PUT", &path, Some(json!({"email":email,"role":role}))).await?;
+                                Ok(Message::Data("members", api("GET", &path, None).await?))
+                            });
+                        }
                     }
                     ui.add_space(14.);
                     ui.separator();
@@ -1396,10 +1469,25 @@ impl Cloud {
     }
 }
 
+fn header_icon(ui: &mut egui::Ui, icon: &str, label: &str) -> egui::Response {
+    let t = Tokens::get(ui.ctx());
+    let response = ui.add(egui::Button::image(photocraft_ui_egui::icons::image(icon, 18., t.icon)).small().min_size(Vec2::splat(36.)));
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label));
+    response.on_hover_text(label)
+}
+
 fn workspace_window<'a>(title: &'a str, ctx: &egui::Context, width: f32) -> egui::Window<'a> {
     let t = Tokens::get(ctx);
     let width = width.min((ctx.content_rect().width() - 64.).max(240.));
+    let id = egui::Id::new(("workspace-dialog", title));
+    // Reuse egui's modal focus boundary so sharing never paints the canvas behind it.
+    ctx.memory_mut(|memory| memory.set_modal_layer(egui::LayerId::new(egui::Order::Middle, id)));
+    if !egui::Popup::is_any_open(ctx) {
+        ctx.move_to_top(egui::LayerId::new(egui::Order::Middle, id));
+    }
     egui::Window::new(title)
+        .id(id)
+        .order(egui::Order::Middle)
         .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
         .collapsible(false)
         .resizable(false)
