@@ -107,6 +107,19 @@ def recovery_warning_action(image):
     return controls[0]
 
 
+def session_auth_controls(image):
+    """Locate the three real actions in the session warning above the editor."""
+    image = image.convert('RGB')
+    background = image.getpixel((2, 76))
+    regions = _workspace_surfaces(image, 65, min(360, image.height-100), background=background,
+                                  minimum_size=(65, 30))
+    controls = sorted((r for r in regions if 65 <= r[2]-r[0] <= 240 and 34 <= r[3]-r[1] <= 42),
+                      key=lambda r: (r[1], r[0]))
+    if len(controls) != 3:
+        raise AssertionError(f'Expected three visible session actions: {controls}')
+    return controls
+
+
 def workspace_project_card(image):
     """Locate the first rendered project and its visible recovery actions."""
     search = workspace_controls(image)['search']

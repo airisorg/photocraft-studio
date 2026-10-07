@@ -200,6 +200,20 @@ struct Account {
     email: String,
     name: String,
 }
+fn expected_account(h: &HeaderMap) -> Result<Option<Uuid>> {
+    let mut values = h.get_all("x-photocraft-account").iter();
+    let Some(value) = values.next() else {
+        return Ok(None);
+    };
+    if values.next().is_some() {
+        return Err(bad("Invalid workspace account identity"));
+    }
+    let value = value.to_str().map_err(|_| bad("Invalid workspace account identity"))?;
+    Uuid::parse_str(value).map(Some).map_err(|_| bad("Invalid workspace account identity"))
+}
+fn account_changed() -> ApiError {
+    ApiError(StatusCode::UNAUTHORIZED, "This browser is signed in to another account. Sign in with the original workspace account to resume.".into())
+}
 async fn account(s: &App, h: &HeaderMap) -> Result<Account> {
     let t = cookie(h, "pc_session").ok_or(ApiError(StatusCode::UNAUTHORIZED, "Sign in to use your cloud workspace".into()))?;
     if t.len() != 64 {
@@ -214,7 +228,13 @@ async fn account(s: &App, h: &HeaderMap) -> Result<Account> {
             .await?
             .ok_or(ApiError(StatusCode::UNAUTHORIZED, "Session expired. Sign in again.".into()))?;
     tx.commit().await?;
-    Ok(Account { id: r.get("id"), email: r.get("email"), name: r.get("name") })
+    let account = Account { id: r.get("id"), email: r.get("email"), name: r.get("name") };
+    // The cookie establishes authority. The optional client identity only prevents
+    // another tab's account switch from redirecting this editor's reads or writes.
+    if expected_account(h)?.is_some_and(|expected| expected != account.id) {
+        return Err(account_changed());
+    }
+    Ok(account)
 }
 async fn role(s: &App, a: &Account, id: Uuid, write: bool, owner: bool) -> Result<String> {
     let mut tx = db(s)?.begin().await?;
@@ -409,9 +429,19 @@ async fn finish_sign_in(s: &App, t: &str, ty: &str) -> Result<Response> {
     Ok(r)
 }
 async fn logout(State(s): State<App>, h: HeaderMap) -> Result<Response> {
+    let expected = expected_account(&h)?;
     if let Some(t) = cookie(&h, "pc_session") {
         let mut tx = ready_db(&s).await?.begin().await?;
-        query("DELETE FROM photocraft.sessions WHERE hash=$1").bind(hash(t)).execute(&mut *tx).await?;
+        let digest = hash(t);
+        if let Some(expected) = expected {
+            // Expired or already-removed sessions may still be cleared locally, but
+            // a stale editor must never revoke another account's current session.
+            let actual: Option<Uuid> = scalar("SELECT account_id FROM photocraft.sessions WHERE hash=$1").bind(&digest).fetch_optional(&mut *tx).await?;
+            if actual.is_some_and(|actual| actual != expected) {
+                return Err(account_changed());
+            }
+        }
+        query("DELETE FROM photocraft.sessions WHERE hash=$1").bind(digest).execute(&mut *tx).await?;
         tx.commit().await?;
     }
     let mut r = Json(json!({"ok":true})).into_response();

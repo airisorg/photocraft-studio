@@ -473,6 +473,104 @@ class CloudContract(unittest.TestCase):
         self.assertEqual(self.req(self.owner, 'GET', path, params=valid).json(), [])
         self.assertEqual(self.req(self.owner, 'GET', path).json(), [])
 
+    def test_39_expected_account_requires_cookie_auth_and_preserves_native_roundtrip(self):
+        expected = {'X-Photocraft-Account': self.accounts[0][0]}
+        self.req(self.anon, 'GET', '/api/me', status=401, headers=expected)
+        self.req(self.anon, 'POST', '/api/projects', status=401,
+                 headers=expected, json={'title': 'No cookie authority'})
+        self.assertEqual(self.req(self.owner, 'GET', '/api/me', headers=expected).json()['id'], self.accounts[0][0])
+        self.assertEqual(self.req(self.owner, 'GET', '/api/me').json()['id'], self.accounts[0][0])
+        pid = self.req(self.owner, 'POST', '/api/projects', headers=expected,
+                       json={'title': 'Expected account roundtrip'}).json()['id']
+        payload = {'base_revision': 0, 'bytes': len(self.fixture),
+                   'parts': (len(self.fixture)+CHUNK-1)//CHUNK,
+                   'sha256': hashlib.sha256(self.fixture).hexdigest(),
+                   'title': 'Expected account save', 'width': 64, 'height': 48}
+        uid = self.req(self.owner, 'POST', f'/api/projects/{pid}/uploads', headers=expected, json=payload).json()['id']
+        for part, offset in enumerate(range(0, len(self.fixture), CHUNK)):
+            self.req(self.owner, 'PUT', f'/api/uploads/{uid}/{part}', headers=expected, data=self.fixture[offset:offset+CHUNK])
+        self.assertEqual(self.req(self.owner, 'POST', f'/api/uploads/{uid}/commit', headers=expected, json={}).json()['revision'], 1)
+        self.assertEqual(self.req(self.owner, 'GET', f'/api/projects/{pid}/content?part=0', headers=expected).content, self.fixture)
+        self.req(self.owner, 'POST', f'/api/projects/{pid}/comments', headers=expected, json={'body': 'Same-account comment'})
+        self.assertEqual(len(self.req(self.owner, 'GET', f'/api/projects/{pid}/comments', headers=expected).json()), 1)
+        # A matching header is not project authorization, either.
+        self.req(self.outsider, 'GET', f'/api/projects/{pid}', status=404,
+                 headers={'X-Photocraft-Account': self.accounts[3][0]})
+
+    def test_40_cookie_switch_rejects_stale_workspace_before_reads_or_mutations(self):
+        stale = {'X-Photocraft-Account': self.accounts[0][0]}
+        # The shared cookie now belongs to B, and B's resources are otherwise writable.
+        # This is the boundary between A's successful /me check and its next request.
+        pid = self.req(self.outsider, 'POST', '/api/projects', json={'title': 'Account B project'}).json()['id']
+        uid = self.begin(pid, session=self.outsider)
+        payload = {'base_revision': 0, 'bytes': len(self.fixture),
+                   'parts': (len(self.fixture)+CHUNK-1)//CHUNK,
+                   'sha256': hashlib.sha256(self.fixture).hexdigest(),
+                   'title': 'Must not upload A work', 'width': 64, 'height': 48}
+        def snapshot():
+            account = self.accounts[3][0]
+            return (
+                self.db.execute('SELECT count(*) FROM photocraft.projects WHERE owner_id=%s', (account,)).fetchone()[0],
+                self.db.execute('SELECT count(*) FROM photocraft.uploads WHERE author_id=%s', (account,)).fetchone()[0],
+                self.db.execute('SELECT count(*) FROM photocraft.comments WHERE author_id=%s', (account,)).fetchone()[0],
+                self.db.execute('SELECT count(*) FROM photocraft.chunks WHERE upload_id=%s', (uid,)).fetchone()[0],
+                self.db.execute('SELECT revision,title,thumbnail FROM photocraft.projects WHERE id=%s', (pid,)).fetchone(),
+            )
+        before = snapshot()
+        requests_to_reject = [
+            ('GET', '/api/me', {}),
+            ('GET', '/api/projects', {}),
+            ('GET', f'/api/projects/{pid}', {}),
+            ('POST', '/api/projects', {'json': {'title': 'Must not create under B'}}),
+            ('PATCH', f'/api/projects/{pid}', {'json': {'title': 'Must not rename'}}),
+            ('POST', f'/api/projects/{pid}/uploads', {'json': payload}),
+            ('PUT', f'/api/uploads/{uid}/0', {'data': self.fixture}),
+            ('POST', f'/api/uploads/{uid}/commit', {'json': {}}),
+            ('DELETE', f'/api/uploads/{uid}', {}),
+            ('PUT', f'/api/projects/{pid}/thumbnail', {'data': b'No cross-account bytes'}),
+            ('POST', f'/api/projects/{pid}/comments', {'json': {'body': 'Must not post A text'}}),
+        ]
+        for method, path, kwargs in requests_to_reject:
+            with self.subTest(method=method, path=path):
+                self.req(self.outsider, method, path, status=401, headers=stale, **kwargs)
+                self.assertEqual(snapshot(), before)
+        self.assertEqual(self.req(self.outsider, 'GET', '/api/me').json()['id'], self.accounts[3][0])
+
+    def test_41_expected_account_logout_and_malformed_header_fail_closed(self):
+        original = {'X-Photocraft-Account': self.accounts[0][0]}
+        rejected = self.req(self.outsider, 'POST', '/api/logout', status=401, headers=original, json={})
+        self.assertNotIn('Set-Cookie', rejected.headers)
+        self.assertEqual(self.req(self.outsider, 'GET', '/api/me').json()['id'], self.accounts[3][0])
+        count = self.db.execute('SELECT count(*) FROM photocraft.projects WHERE owner_id=%s', (self.accounts[0][0],)).fetchone()[0]
+        for value in ['', 'not-a-uuid', self.accounts[0][0] + ',' + self.accounts[3][0]]:
+            with self.subTest(header=value):
+                malformed = {'X-Photocraft-Account': value}
+                self.req(self.owner, 'POST', '/api/projects', status=400, headers=malformed, json={'title': 'Malformed identity'})
+                self.req(self.owner, 'GET', '/api/me', status=400, headers=malformed)
+                rejected = self.req(self.owner, 'POST', '/api/logout', status=400, headers=malformed, json={})
+                self.assertNotIn('Set-Cookie', rejected.headers)
+                self.assertEqual(self.db.execute('SELECT count(*) FROM photocraft.projects WHERE owner_id=%s',
+                                                 (self.accounts[0][0],)).fetchone()[0], count)
+                self.assertEqual(self.req(self.owner, 'GET', '/api/me').json()['id'], self.accounts[0][0])
+        # Use additional synthetic tokens so the suite's account sessions stay intact.
+        for expired in [False, True]:
+            with self.subTest(expired=expired):
+                token = secrets.token_hex(32)
+                digest = hashlib.sha256(token.encode()).hexdigest()
+                self.db.execute('INSERT INTO photocraft.sessions(hash,account_id,expires_at) '
+                                "VALUES(%s,%s,now() + %s * interval '1 hour')",
+                                (digest, self.accounts[0][0], -1 if expired else 1))
+                session = requests.Session()
+                session.trust_env = False
+                session.headers['Origin'] = BASE
+                session.cookies.set('pc_session', token)
+                self.req(session, 'POST', '/api/logout', headers=original, json={})
+                self.assertEqual(self.db.execute('SELECT count(*) FROM photocraft.sessions WHERE hash=%s', (digest,)).fetchone()[0], 0)
+                self.req(session, 'GET', '/api/me', status=401)
+                session.close()
+        # No remaining session is still an idempotent local sign-out.
+        self.req(self.anon, 'POST', '/api/logout', headers=original, json={})
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
