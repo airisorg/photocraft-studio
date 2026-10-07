@@ -2269,12 +2269,22 @@ fn alt_eyedropper(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers)
 }
 
 fn sample_eyedropper(app: &mut PhotocraftApp, x: f64, y: f64, mods: egui::Modifiers) {
-    if let Ok(v) = app.run("document.pixel", json!({"x": x.floor(), "y": y.floor()})) {
-        let color: Vec<f32> = serde_json::from_value(v).unwrap_or_default();
-        if color.len() == 4 && color[3] > 0.0 {
-            let key = if mods.alt { "background" } else { "foreground" };
-            let _ = app.run("tools.setColors", json!({ key: [color[0], color[1], color[2], 1.0] }));
-        }
+    if let Some([r, g, b]) = composite_color(app, x, y) {
+        let key = if mods.alt { "background" } else { "foreground" };
+        let _ = app.run("tools.setColors", json!({ key: [r, g, b, 1.0] }));
+    }
+}
+
+/// The active document's composite colour at document point (x, y): what the Eyedropper picks.
+/// `None` off the image or over transparency.
+pub(crate) fn composite_color(app: &mut PhotocraftApp, x: f64, y: f64) -> Option<[f32; 3]> {
+    if !(x.is_finite() && y.is_finite()) {
+        return None;
+    }
+    let v = app.run("document.pixel", json!({"x": x.floor(), "y": y.floor()})).ok()?;
+    match serde_json::from_value::<Vec<f32>>(v).ok()?[..] {
+        [r, g, b, a] if a > 0.0 => Some([r, g, b]),
+        _ => None,
     }
 }
 
