@@ -58,7 +58,13 @@ pub(crate) async fn invite(State(s): State<App>, h: HeaderMap, Path(id): Path<Uu
         .send()
         .await
         .is_ok_and(|r| r.status().is_success());
-    query("UPDATE photocraft.invitation_deliveries SET status=$2 WHERE id=$1").bind(delivery).bind(if sent { "sent" } else { "failed" }).execute(pool).await?;
+    let mut tx = pool.begin().await?;
+    query("UPDATE photocraft.invitation_deliveries SET status=$2 WHERE id=$1")
+        .bind(delivery)
+        .bind(if sent { "sent" } else { "failed" })
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
     if !sent {
         return Err(ApiError(
             StatusCode::BAD_GATEWAY,
