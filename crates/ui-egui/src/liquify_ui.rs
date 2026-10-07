@@ -599,7 +599,11 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
         let mut strip = ui.new_child(egui::UiBuilder::new().max_rect(left.shrink2(vec2(6.0, 8.0))));
         strip.spacing_mut().item_spacing.y = 4.0;
         for tool in LiquifyTool::ALL {
-            let tip = format!("{} ({})", tl!(tool.label()), shortcut(tool));
+            let tip = match tool {
+                // The lasso works on the same freeze mask as Freeze/Thaw.
+                LiquifyTool::LassoMask => tl!("Freeze Lasso: drag to freeze an area, Alt-drag to thaw it (L)").to_string(),
+                _ => format!("{} ({})", tl!(tool.label()), shortcut(tool)),
+            };
             if crate::icons::button(&mut strip, tool_icon(tool), 34.0, d.opts.tool == tool, &tip).clicked() {
                 d.opts.tool = tool;
             }
@@ -1007,6 +1011,37 @@ mod tests {
         assert_eq!((d.strokes.len(), d.redo.len()), (2, 0));
         control(&mut app, &json!({"redo": true})).unwrap();
         assert_eq!(app.distort.liquify.as_ref().unwrap().strokes.len(), 2, "redo after a new stroke is a no-op");
+    }
+
+    /// The Freeze Lasso freezes the dragged polygon (⌥ thaws it) as one recorded stroke, and a
+    /// new lasso clears Redo like any other stroke.
+    #[test]
+    fn freeze_lasso_records_a_stroke_and_clears_redo() {
+        let ctx = egui::Context::default();
+        let mut app = app_with_layer();
+        open(&mut app, &ctx).unwrap();
+        control(&mut app, &json!({"tool": "lassoMask"})).unwrap();
+        let lasso = |app: &mut PhotocraftApp, m: egui::Modifiers, r: [f64; 4]| {
+            pointer(app, ToolEvent::Down { x: r[0], y: r[1], pressure: 1.0 }, m);
+            for (x, y) in [(r[2], r[1]), (r[2], r[3]), (r[0], r[3])] {
+                pointer(app, ToolEvent::Move { x, y, pressure: 1.0 }, m);
+            }
+            pointer(app, ToolEvent::Up { x: r[0], y: r[3] }, m);
+        };
+        lasso(&mut app, egui::Modifiers::NONE, [20.0, 20.0, 80.0, 60.0]);
+        let d = app.distort.liquify.as_ref().unwrap();
+        assert_eq!(d.strokes.len(), 1);
+        assert_eq!(d.field.freeze_at(50.0, 40.0), 1.0, "frozen inside");
+        assert_eq!(d.field.freeze_at(5.0, 5.0), 0.0, "not outside");
+        lasso(&mut app, egui::Modifiers::ALT, [40.0, 30.0, 60.0, 50.0]);
+        let d = app.distort.liquify.as_ref().unwrap();
+        assert_eq!(d.field.freeze_at(50.0, 40.0), 0.0, "⌥ thaws");
+        assert_eq!(d.field.freeze_at(25.0, 25.0), 1.0);
+        control(&mut app, &json!({"undo": true})).unwrap();
+        assert_eq!(app.distort.liquify.as_ref().unwrap().field.freeze_at(50.0, 40.0), 1.0, "undo replays the first lasso");
+        assert_eq!(app.distort.liquify.as_ref().unwrap().redo.len(), 1);
+        lasso(&mut app, egui::Modifiers::NONE, [0.0, 0.0, 10.0, 10.0]);
+        assert_eq!(app.distort.liquify.as_ref().unwrap().redo.len(), 0, "a new lasso clears redo");
     }
 
     #[test]
