@@ -911,7 +911,6 @@ impl Cloud {
                 new_document(app, w, h, "Untitled canvas");
                 self.home = false;
             }
-            home::Action::Open => app.open_dialog_file(),
             home::Action::Template(index) => {
                 if let Some(starter) = home::STARTERS.get(index) {
                     let slug = starter.slug;
@@ -927,7 +926,7 @@ impl Cloud {
     fn home_ui(&mut self, app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         let t = Tokens::for_kind(ThemeKind::StudioLight);
-        let narrow = ui.available_width() < 1100.;
+        let narrow = ui.available_width() < 900.;
         let nav = [("⌂", "Home"), ("▦", "Templates"), ("▤", "All projects"), ("☆", "Starred"), ("♧", "Shared with me"), ("♲", "Trash")];
         if !narrow {
             egui::Panel::left("workspace_nav").exact_size(214.).frame(egui::Frame::NONE.fill(egui::Color32::WHITE).inner_margin(18)).show(ui, |ui| {
@@ -970,32 +969,44 @@ impl Cloud {
                     });
                     ui.add_space(20.);
                 }
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(RichText::new(if self.filter == "Home" { "Make room for a new idea." } else { &self.filter }).size(24.).strong().color(home::INK));
-                    if self.filter != "Home" {
-                        ui.add(
-                            egui::TextEdit::singleline(&mut self.search)
-                                .hint_text("Search designs or folders")
-                                .desired_width(220.)
-                                .margin(egui::Margin::symmetric(12, 10)),
-                        );
+                if narrow {
+                    ui.label(RichText::new(&self.filter).size(24.).strong().color(home::INK));
+                    ui.add_space(8.);
+                }
+                ui.horizontal(|ui| {
+                    if !narrow {
+                        ui.label(RichText::new(&self.filter).size(24.).strong().color(home::INK));
                     }
-                    if self.filter != "Home" && self.filter != "Templates" && self.user.is_some() && ui.button("Refresh").clicked() {
-                        self.list(&ctx);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.add_sized([132., 40.], home::primary("Create a design")).clicked() {
+                            let _ = photocraft_ui_egui::menus::invoke(app, &ctx, "file.new", json!({}));
+                            self.home = false;
+                        }
+                        if ui.add_sized([88., 40.], egui::Button::new("Open file")).clicked() {
+                            app.open_dialog_file();
+                        }
+                    });
+                });
+                ui.add_space(16.);
+                ui.horizontal(|ui| {
+                    let hint = if self.filter == "Templates" { "Search templates" } else { "Search projects or folders" };
+                    let reserve = if self.search.is_empty() { 0. } else { 66. };
+                    let width = (ui.available_width() - reserve).clamp(100., 420.);
+                    ui.add_sized([width, 40.], egui::TextEdit::singleline(&mut self.search).hint_text(hint).margin(egui::Margin::symmetric(12, 10)));
+                    if !self.search.is_empty() && ui.button("Clear").clicked() {
+                        self.search.clear();
                     }
                 });
                 ui.add_space(24.);
-                if self.filter == "Home" {
-                    if let Some(a) = home::hero(ui, &self.textures) {
-                        self.home_action(app, &ctx, a);
-                    }
+                if self.filter == "Home" && self.user.is_none() && self.search.is_empty() {
+                    home::hero(ui, &self.textures);
                     ui.add_space(20.);
                     if let Some(a) = home::quick_sizes(ui) {
                         self.home_action(app, &ctx, a);
                     }
                     ui.add_space(24.);
                 }
-                if self.filter == "Home" || self.filter == "Templates" {
+                if self.filter == "Templates" || (self.filter == "Home" && self.user.is_none() && self.search.is_empty()) {
                     if let Some(a) = home::gallery(ui, &self.textures, &mut self.template_category, &self.search) {
                         self.home_action(app, &ctx, a);
                     }
@@ -1004,46 +1015,24 @@ impl Cloud {
                 if self.filter != "Templates" {
                     if self.filter == "Home" {
                         ui.horizontal(|ui| {
-                            ui.label(RichText::new("Pick up where you left off.").size(23.).strong().color(home::INK));
+                            ui.label(RichText::new("Recent projects").size(20.).strong().color(home::INK));
                             if ui.button("All projects →").clicked() {
                                 self.filter = "All projects".into();
                             }
                         });
                         ui.add_space(18.);
                     }
-                    let search = self.search.to_lowercase();
-                    let items = self
-                        .projects
-                        .iter()
-                        .filter(|p| {
-                            let trashed = p.get("trashed").and_then(Value::as_bool) == Some(true);
-                            let matches = match self.filter.as_str() {
-                                "Trash" => trashed,
-                                "Starred" => !trashed && p.get("starred").and_then(Value::as_bool) == Some(true),
-                                "Shared with me" => !trashed && field(p, "role") != "owner",
-                                _ => !trashed,
-                            };
-                            matches && (format!("{} {}", field(p, "title"), field(p, "folder")).to_lowercase().contains(&search))
-                        })
-                        .cloned()
-                        .collect::<Vec<_>>();
+                    let items = self.projects.iter().filter(|p| home::project_matches(p, &self.filter, &self.search)).cloned().collect::<Vec<_>>();
                     if items.is_empty() {
                         egui::Frame::new().fill(t.card).corner_radius(t.radius_lg).inner_margin(24).show(ui, |ui| {
                             ui.set_min_width((ui.available_width() - 48.).max(100.));
-                            ui.label(
-                                RichText::new(if self.user.is_none() { "Your ideas deserve a home." } else { "A fresh canvas for your projects." })
-                                    .size(18.)
-                                    .strong(),
-                            );
+                            let (title, help) = home::empty_message(&self.filter, !self.search.trim().is_empty(), self.user.is_some());
+                            ui.label(RichText::new(title).size(18.).strong().color(home::INK));
                             ui.add_space(8.);
-                            ui.label(if self.user.is_none() {
-                                "Sign in for cloud saves, version history, sharing, and comments. You can start editing right now."
-                            } else {
-                                "Create a canvas above, then choose Save to cloud. Your saved projects will appear here."
-                            });
+                            ui.label(RichText::new(help).color(home::MUTED));
                         });
                     }
-                    let cols = if narrow { 1 } else { 3 };
+                    let cols = home::grid_columns(ui.available_width(), 240., 6);
                     for row in items.chunks(cols) {
                         ui.columns(cols, |uis| {
                             for (i, p) in row.iter().enumerate() {
@@ -1054,7 +1043,7 @@ impl Cloud {
                         });
                         ui.add_space(16.);
                     }
-                    if !self.drafts.is_empty() {
+                    if !self.drafts.is_empty() && matches!(self.filter.as_str(), "Home" | "All projects") {
                         ui.add_space(24.);
                         ui.label(RichText::new("Browser recovery").size(18.).strong());
                         ui.label("Local recovery copies stay on this browser. Open one as a separate document.");
@@ -1081,64 +1070,86 @@ impl Cloud {
         let t = Tokens::for_kind(ThemeKind::StudioLight);
         let id = field(p, "id").to_string();
         let title = field(p, "title");
-        egui::Frame::new().fill(t.card).corner_radius(t.radius_lg).inner_margin(12).show(ui, |ui| {
+        egui::Frame::new().fill(t.card).stroke(egui::Stroke::new(1., t.card_border)).corner_radius(t.radius_lg).inner_margin(12).show(ui, |ui| {
             let width = ui.available_width();
-            if let Some(texture) = self.textures.get(&id).cloned() {
+            let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 168.), egui::Sense::click());
+            ui.painter().rect_filled(rect, t.radius_sm, t.accent_soft);
+            if let Some(texture) = self.textures.get(&id) {
                 let size = texture.size_vec2();
-                let scale = (width / size.x).min(130. / size.y);
-                ui.vertical_centered(|ui| {
-                    if ui.add(egui::Image::new(&texture).fit_to_exact_size(size * scale).sense(egui::Sense::click())).clicked() {
-                        self.open(ctx, id.clone(), None);
-                    }
-                });
+                let scale = ((width - 24.) / size.x).min(144. / size.y);
+                ui.painter().image(
+                    texture.id(),
+                    egui::Rect::from_center_size(rect.center(), size * scale),
+                    egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1., 1.)),
+                    egui::Color32::WHITE,
+                );
             } else {
-                let (r, res) = ui.allocate_exact_size(Vec2::new(width, 130.), egui::Sense::click());
-                ui.painter().rect_filled(r, 6., t.accent_soft);
                 ui.painter().text(
-                    r.center(),
+                    rect.center(),
                     egui::Align2::CENTER_CENTER,
                     format!("{} × {}", p.get("width").and_then(Value::as_i64).unwrap_or(0), p.get("height").and_then(Value::as_i64).unwrap_or(0)),
-                    egui::FontId::proportional(16.),
+                    egui::FontId::proportional(14.),
                     t.text_dim,
                 );
-                if res.clicked() {
-                    self.open(ctx, id.clone(), None);
-                }
+            }
+            response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Open {title}")));
+            if response.hovered() || response.has_focus() {
+                ui.painter().rect_stroke(rect, t.radius_sm, egui::Stroke::new(2., t.accent), egui::StrokeKind::Inside);
+            }
+            if response.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                self.open(ctx, id.clone(), None);
             }
             ui.add_space(8.);
             ui.horizontal(|ui| {
-                if ui.button(RichText::new(title).strong()).clicked() {
+                let title_width = (ui.available_width() - 52.).max(40.);
+                if ui
+                    .add_sized(
+                        [title_width, 40.],
+                        egui::Label::new(RichText::new(title).size(14.).strong()).halign(egui::Align::Min).truncate().sense(egui::Sense::click()),
+                    )
+                    .on_hover_text(title)
+                    .clicked()
+                {
                     self.open(ctx, id.clone(), None);
                 }
-                ui.menu_button("…", |ui| {
-                    if ui.button("Open").clicked() {
-                        self.open(ctx, id.clone(), None);
-                        ui.close();
-                    }
-                    if ui.button("Duplicate").clicked() {
-                        self.mutate(ctx, "POST", format!("/api/projects/{id}/duplicate"), json!({}));
-                        ui.close();
-                    }
-                    if field(p, "role") == "owner" {
-                        if ui.button("Rename / folder").clicked() {
-                            self.details_id = id.clone();
-                            self.rename = title.into();
-                            self.folder = field(p, "folder").into();
-                            self.show_details = true;
+                let menu = ui.button("…");
+                egui::Popup::menu(&menu)
+                    .style(|style: &mut egui::Style| {
+                        style.visuals = egui::Visuals::light();
+                        egui::containers::menu::menu_style(style);
+                        style.spacing.interact_size.y = 32.;
+                        style.spacing.button_padding = Vec2::new(12., 8.);
+                        style.text_styles.insert(egui::TextStyle::Button, egui::FontId::proportional(14.));
+                    })
+                    .show(|ui| {
+                        if ui.button("Open").clicked() {
+                            self.open(ctx, id.clone(), None);
                             ui.close();
                         }
-                        let starred = p.get("starred").and_then(Value::as_bool) == Some(true);
-                        if ui.button(if starred { "Remove star" } else { "Star project" }).clicked() {
-                            self.mutate(ctx, "PATCH", format!("/api/projects/{id}"), json!({"starred":!starred}));
+                        if ui.button("Duplicate").clicked() {
+                            self.mutate(ctx, "POST", format!("/api/projects/{id}/duplicate"), json!({}));
                             ui.close();
                         }
-                        let trash = p.get("trashed").and_then(Value::as_bool) == Some(true);
-                        if ui.button(if trash { "Restore project" } else { "Move to Trash" }).clicked() {
-                            self.mutate(ctx, "PATCH", format!("/api/projects/{id}"), json!({"trashed":!trash}));
-                            ui.close();
+                        if field(p, "role") == "owner" {
+                            if ui.button("Rename / folder").clicked() {
+                                self.details_id = id.clone();
+                                self.rename = title.into();
+                                self.folder = field(p, "folder").into();
+                                self.show_details = true;
+                                ui.close();
+                            }
+                            let starred = p.get("starred").and_then(Value::as_bool) == Some(true);
+                            if ui.button(if starred { "Remove star" } else { "Star project" }).clicked() {
+                                self.mutate(ctx, "PATCH", format!("/api/projects/{id}"), json!({"starred":!starred}));
+                                ui.close();
+                            }
+                            let trash = p.get("trashed").and_then(Value::as_bool) == Some(true);
+                            if ui.button(if trash { "Restore project" } else { "Move to Trash" }).clicked() {
+                                self.mutate(ctx, "PATCH", format!("/api/projects/{id}"), json!({"trashed":!trash}));
+                                ui.close();
+                            }
                         }
-                    }
-                });
+                    });
             });
             ui.label(
                 RichText::new(format!(
@@ -1150,14 +1161,26 @@ impl Cloud {
                 .color(t.text_dim),
             );
             if !field(p, "folder").is_empty() {
-                ui.label(RichText::new(field(p, "folder")).small().color(t.accent));
+                ui.add(egui::Label::new(RichText::new(field(p, "folder")).size(12.).color(t.accent)).truncate()).on_hover_text(field(p, "folder"));
             }
         });
     }
     fn dialogs(&mut self, app: &mut PhotocraftApp, ctx: &egui::Context) {
+        if ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
+            self.show_logout = false;
+            self.show_share = false;
+            self.show_history = false;
+            self.show_comments = false;
+            self.show_details = false;
+        }
         if self.show_logout {
             let mut open = true;
-            egui::Window::new("Sign out of this workspace?").open(&mut open).show(ctx, |ui| {
+            workspace_window("Sign out of this workspace?", ctx, 440.).default_height(220.).open(&mut open).show(ctx, |ui| {
+                ui.style_mut().text_styles.insert(egui::TextStyle::Body, egui::FontId::proportional(14.));
+                ui.style_mut().text_styles.insert(egui::TextStyle::Button, egui::FontId::proportional(14.));
+                ui.spacing_mut().item_spacing = Vec2::new(10., 12.);
+                ui.spacing_mut().interact_size.y = 36.;
+                ui.spacing_mut().button_padding = Vec2::new(12., 8.);
                 ui.label("Unsaved tabs and browser recovery copies will be cleared. Download any work you want to keep first.");
                 if ui.button("Download current document").clicked()
                     && let Some(d) = app.session.active()
@@ -1189,68 +1212,96 @@ impl Cloud {
         let pid = binding.id;
         if self.show_share {
             let mut open = true;
-            egui::Window::new("Share & permissions").open(&mut open).default_width(440.).show(ctx, |ui| {
-                ui.label("Invite collaborators by email");
-                ui.label("Send a sign-in email and choose what they can do.");
-                ui.add_space(10.);
-                ui.horizontal(|ui| {
-                    ui.add(egui::TextEdit::singleline(&mut self.member_email).hint_text("name@example.com"));
-                    egui::ComboBox::from_id_salt("member_role").selected_text(&self.member_role).show_ui(ui, |ui| {
-                        ui.selectable_value(&mut self.member_role, "view".into(), "Can view");
-                        ui.selectable_value(&mut self.member_role, "edit".into(), "Can edit");
+            workspace_window("Share & permissions", ctx, 440.)
+                .min_height(if self.share_url.is_empty() { 0. } else { 560_f32.min((ctx.content_rect().height() - 100.).max(200.)) })
+                .open(&mut open)
+                .show(ctx, |ui| {
+                    ui.style_mut().text_styles.insert(egui::TextStyle::Body, egui::FontId::proportional(14.));
+                    ui.style_mut().text_styles.insert(egui::TextStyle::Button, egui::FontId::proportional(14.));
+                    ui.spacing_mut().item_spacing = Vec2::new(10., 12.);
+                    ui.spacing_mut().interact_size.y = 36.;
+                    ui.spacing_mut().button_padding = Vec2::new(12., 8.);
+                    ui.label("Invite collaborators by email");
+                    ui.label("Send a sign-in email and choose what they can do.");
+                    ui.add_space(10.);
+                    ui.horizontal_wrapped(|ui| {
+                        let width = (ui.available_width() - 130.).max(140.);
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.member_email)
+                                .hint_text("name@example.com")
+                                .desired_width(width)
+                                .margin(egui::Margin::symmetric(10, 9)),
+                        );
+                        egui::ComboBox::from_id_salt("member_role").selected_text(if self.member_role == "edit" { "Can edit" } else { "Can view" }).show_ui(
+                            ui,
+                            |ui| {
+                                ui.selectable_value(&mut self.member_role, "view".into(), "Can view");
+                                ui.selectable_value(&mut self.member_role, "edit".into(), "Can edit");
+                            },
+                        );
                     });
-                });
-                if ui.add_enabled(!self.busy && !self.member_email.trim().is_empty(), home::primary("Send invitation")).clicked() {
-                    self.busy = true;
-                    let path = format!("/api/projects/{pid}/members");
-                    let v = json!({"email":self.member_email,"role":self.member_role});
-                    task(&self.queue, self.epoch, ctx, async move {
-                        api("POST", &path.replace("/members", "/invite"), Some(v)).await?;
-                        Ok(Message::Data("invited", api("GET", &path, None).await?))
-                    });
-                }
-                for m in self.members.clone() {
-                    ui.horizontal(|ui| {
-                        ui.label(format!("{} · {}", field(&m, "email"), field(&m, "role")));
-                        if ui.small_button("Remove").clicked() {
-                            let path = format!("/api/projects/{pid}/members");
-                            task(&self.queue, self.epoch, ctx, async move {
-                                api("PUT", &path, Some(json!({"email":field(&m,"email"),"role":"remove"}))).await?;
-                                Ok(Message::Data("members", api("GET", &path, None).await?))
-                            });
-                        }
-                    });
-                }
-                ui.add_space(14.);
-                ui.separator();
-                ui.add_space(10.);
-                ui.label("View link");
-                ui.label("Anyone with the link can view and download the latest saved version.");
-                if ui.button("Create a new view link").clicked() {
-                    let path = format!("/api/projects/{pid}/share");
-                    task(&self.queue, self.epoch, ctx, async move { Ok(Message::Data("share", api("POST", &path, Some(json!({}))).await?)) });
-                }
-                if !self.share_url.is_empty() {
-                    ui.add(egui::TextEdit::singleline(&mut self.share_url).desired_width(400.));
-                    if ui.button("Copy link").clicked() {
-                        ctx.copy_text(self.share_url.clone());
-                        self.status = "View link copied".into();
+                    if ui
+                        .add_enabled(
+                            !self.busy && !self.member_email.trim().is_empty(),
+                            egui::Button::new(RichText::new("Send invitation").color(Tokens::get(ctx).primary_text)).fill(Tokens::get(ctx).primary_bg),
+                        )
+                        .clicked()
+                    {
+                        self.busy = true;
+                        let path = format!("/api/projects/{pid}/members");
+                        let v = json!({"email":self.member_email,"role":self.member_role});
+                        task(&self.queue, self.epoch, ctx, async move {
+                            api("POST", &path.replace("/members", "/invite"), Some(v)).await?;
+                            Ok(Message::Data("invited", api("GET", &path, None).await?))
+                        });
                     }
-                }
-                if ui.button("Revoke all view links").clicked() {
-                    let path = format!("/api/projects/{pid}/share");
-                    task(&self.queue, self.epoch, ctx, async move {
-                        api("DELETE", &path, None).await?;
-                        Ok(Message::Notice("View links revoked".into()))
-                    });
-                    self.share_url.clear();
-                }
-            });
+                    for m in self.members.clone() {
+                        ui.horizontal(|ui| {
+                            ui.label(format!("{} · {}", field(&m, "email"), field(&m, "role")));
+                            if ui.small_button("Remove").clicked() {
+                                let path = format!("/api/projects/{pid}/members");
+                                task(&self.queue, self.epoch, ctx, async move {
+                                    api("PUT", &path, Some(json!({"email":field(&m,"email"),"role":"remove"}))).await?;
+                                    Ok(Message::Data("members", api("GET", &path, None).await?))
+                                });
+                            }
+                        });
+                    }
+                    ui.add_space(14.);
+                    ui.separator();
+                    ui.add_space(10.);
+                    ui.label("View link");
+                    ui.label("Anyone with the link can view and download the latest saved version.");
+                    if ui.button("Create a new view link").clicked() {
+                        let path = format!("/api/projects/{pid}/share");
+                        task(&self.queue, self.epoch, ctx, async move { Ok(Message::Data("share", api("POST", &path, Some(json!({}))).await?)) });
+                    }
+                    if !self.share_url.is_empty() {
+                        ui.add(egui::TextEdit::singleline(&mut self.share_url).desired_width(ui.available_width()));
+                        if ui.button("Copy link").clicked() {
+                            ctx.copy_text(self.share_url.clone());
+                            self.status = "View link copied".into();
+                        }
+                    }
+                    if ui.button("Revoke all view links").clicked() {
+                        let path = format!("/api/projects/{pid}/share");
+                        task(&self.queue, self.epoch, ctx, async move {
+                            api("DELETE", &path, None).await?;
+                            Ok(Message::Notice("View links revoked".into()))
+                        });
+                        self.share_url.clear();
+                    }
+                });
             self.show_share = open;
         }
         if self.show_history {
             let mut open = true;
-            egui::Window::new("Version history").open(&mut open).default_width(460.).show(ctx, |ui| {
+            workspace_window("Version history", ctx, 460.).open(&mut open).show(ctx, |ui| {
+                ui.style_mut().text_styles.insert(egui::TextStyle::Body, egui::FontId::proportional(14.));
+                ui.style_mut().text_styles.insert(egui::TextStyle::Button, egui::FontId::proportional(14.));
+                ui.spacing_mut().item_spacing = Vec2::new(10., 12.);
+                ui.spacing_mut().interact_size.y = 36.;
+                ui.spacing_mut().button_padding = Vec2::new(12., 8.);
                 ui.label("Open any saved version as another tab. Your current edits stay open.");
                 egui::ScrollArea::vertical().max_height(450.).show(ui, |ui| {
                     for v in self.history.clone() {
@@ -1269,11 +1320,18 @@ impl Cloud {
         }
         if self.show_comments {
             let mut open = true;
-            egui::Window::new("Comments").open(&mut open).default_width(430.).show(ctx, |ui| {
+            workspace_window("Comments", ctx, 430.).open(&mut open).show(ctx, |ui| {
+                ui.style_mut().text_styles.insert(egui::TextStyle::Body, egui::FontId::proportional(14.));
+                ui.style_mut().text_styles.insert(egui::TextStyle::Button, egui::FontId::proportional(14.));
+                ui.spacing_mut().item_spacing = Vec2::new(10., 12.);
+                ui.spacing_mut().interact_size.y = 36.;
+                ui.spacing_mut().button_padding = Vec2::new(12., 8.);
                 if !self.people.is_empty() {
                     ui.label(format!("Here now: {}", self.people.join(", ")));
                 }
-                ui.add(egui::TextEdit::multiline(&mut self.comment).hint_text("Leave feedback for your team…").desired_width(400.).desired_rows(3));
+                ui.add(
+                    egui::TextEdit::multiline(&mut self.comment).hint_text("Leave feedback for your team…").desired_width(ui.available_width()).desired_rows(3),
+                );
                 if ui.add_enabled(!self.comment.trim().is_empty(), egui::Button::new("Post comment")).clicked() {
                     let path = format!("/api/projects/{pid}/comments");
                     let body = self.comment.clone();
@@ -1313,18 +1371,50 @@ impl Cloud {
     }
     fn details_dialog(&mut self, ctx: &egui::Context) {
         let mut open = true;
-        egui::Window::new("Project details").open(&mut open).show(ctx, |ui| {
+        workspace_window("Project details", ctx, 400.).default_height(280.).open(&mut open).show(ctx, |ui| {
+            ui.style_mut().text_styles.insert(egui::TextStyle::Body, egui::FontId::proportional(14.));
+            ui.style_mut().text_styles.insert(egui::TextStyle::Button, egui::FontId::proportional(14.));
+            ui.spacing_mut().item_spacing = Vec2::new(10., 12.);
+            ui.spacing_mut().interact_size.y = 36.;
+            ui.spacing_mut().button_padding = Vec2::new(12., 8.);
             ui.label("Name");
-            ui.text_edit_singleline(&mut self.rename);
+            ui.add(egui::TextEdit::singleline(&mut self.rename).desired_width(ui.available_width()).margin(egui::Margin::symmetric(10, 9)));
             ui.label("Folder");
-            ui.text_edit_singleline(&mut self.folder);
-            if ui.button("Save details").clicked() {
-                self.mutate(ctx, "PATCH", format!("/api/projects/{}", self.details_id), json!({"title":self.rename,"folder":self.folder}));
+            ui.add(egui::TextEdit::singleline(&mut self.folder).desired_width(ui.available_width()).margin(egui::Margin::symmetric(10, 9)));
+            if ui
+                .add_enabled(
+                    !self.rename.trim().is_empty(),
+                    egui::Button::new(RichText::new("Save details").color(Tokens::get(ctx).primary_text)).fill(Tokens::get(ctx).primary_bg),
+                )
+                .clicked()
+            {
+                self.mutate(ctx, "PATCH", format!("/api/projects/{}", self.details_id), json!({"title":self.rename.trim(),"folder":self.folder.trim()}));
                 self.show_details = false;
             }
         });
         self.show_details &= open;
     }
+}
+
+fn workspace_window<'a>(title: &'a str, ctx: &egui::Context, width: f32) -> egui::Window<'a> {
+    let t = Tokens::get(ctx);
+    let width = width.min((ctx.content_rect().width() - 64.).max(240.));
+    egui::Window::new(title)
+        .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+        .collapsible(false)
+        .resizable(false)
+        .default_width(width)
+        .default_height(480.)
+        .max_width(width)
+        .max_height((ctx.content_rect().height() - 100.).max(200.))
+        .vscroll(true)
+        .frame(
+            egui::Frame::window(&ctx.style_of(ctx.theme()))
+                .fill(t.card)
+                .stroke(egui::Stroke::new(1., t.card_border))
+                .inner_margin(20)
+                .corner_radius(t.radius_lg),
+        )
 }
 
 fn new_document(app: &mut PhotocraftApp, w: u32, h: u32, name: &str) {
