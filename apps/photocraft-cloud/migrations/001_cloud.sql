@@ -73,14 +73,3 @@ ALTER TABLE photocraft.shares ENABLE ROW LEVEL SECURITY;
 ALTER TABLE photocraft.comments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE photocraft.presence ENABLE ROW LEVEL SECURITY;
 REVOKE ALL ON ALL TABLES IN SCHEMA photocraft FROM PUBLIC;
-
-CREATE TABLE IF NOT EXISTS photocraft.invitation_deliveries (
- id uuid PRIMARY KEY, project_id uuid NOT NULL REFERENCES photocraft.projects(id) ON DELETE CASCADE,
- sender_id uuid NOT NULL REFERENCES photocraft.accounts(id), email text NOT NULL,
- status text NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','sent','failed')),
- created_at timestamptz NOT NULL DEFAULT now()
-);
-CREATE INDEX IF NOT EXISTS invitation_sender ON photocraft.invitation_deliveries(sender_id,created_at);
-CREATE INDEX IF NOT EXISTS invitation_recipient ON photocraft.invitation_deliveries(email,created_at);
-ALTER TABLE photocraft.invitation_deliveries ENABLE ROW LEVEL SECURITY;
-REVOKE ALL ON photocraft.invitation_deliveries FROM PUBLIC;
