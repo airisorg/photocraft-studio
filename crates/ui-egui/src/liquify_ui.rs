@@ -418,9 +418,7 @@ pub fn control(app: &mut PhotocraftApp, ui: &Value) -> Result<Value, String> {
         return Ok(json!({"cancelled": true}));
     }
     let d = app.distort.liquify.as_mut().ok_or(tl!("Liquify is not open"))?;
-    if let Some(t) = ui.get("tool") {
-        d.opts.tool = serde_json::from_value(t.clone()).map_err(|e| format!("bad tool: {e}"))?;
-    }
+    d.opts.apply(ui)?;
     let num = |k: &str| ui.get(k).and_then(Value::as_f64).map(|v| v as f32);
     let flag = |k: &str| ui.get(k).and_then(Value::as_bool);
     if flag("undo") == Some(true) {
