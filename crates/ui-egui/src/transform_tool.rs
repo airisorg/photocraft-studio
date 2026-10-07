@@ -20,6 +20,32 @@ use crate::PhotocraftApp;
 use crate::canvas::{ToolEvent, ViewXform};
 use crate::state::TransformSession;
 
+/// Which Split button is armed. The guide follows the pointer and the split is added on release.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SplitTool {
+    Cross,
+    Vertical,
+    Horizontal,
+}
+
+impl SplitTool {
+    fn command(self) -> &'static str {
+        match self {
+            SplitTool::Cross => "edit.transform.splitWarpCrosswise",
+            SplitTool::Vertical => "edit.transform.splitWarpVertically",
+            SplitTool::Horizontal => "edit.transform.splitWarpHorizontally",
+        }
+    }
+
+    fn icon(self) -> &'static str {
+        match self {
+            SplitTool::Cross => "cross",
+            SplitTool::Vertical => "vertical",
+            SplitTool::Horizontal => "horizontal",
+        }
+    }
+}
+
 /// Preview state that isn't serialisable: the document without the transformed pixels, and
 /// full-resolution textures of those pixels (transform_tex.rs).
 pub struct TransformPreview {
@@ -30,6 +56,13 @@ pub struct TransformPreview {
     gesture: Option<Gesture>,
     /// Warp-mode drag: (control point, pointer start, mesh points at the start).
     warp_drag: Option<(usize, [f64; 2], Vec<[f64; 2]>)>,
+    /// Armed split tool. None while the buttons are off and control points drag as usual.
+    split_tool: Option<SplitTool>,
+    /// Document point the split guide is following (a drag, or the hover while placing).
+    split_pointer: Option<[f64; 2]>,
+    split_placing: bool,
+    /// Option-click places a split without a button armed.
+    split_quick: bool,
     steps: Steps,
 }
 
@@ -138,6 +171,10 @@ pub fn begin(app: &mut PhotocraftApp, ctx: &egui::Context) -> Result<(), String>
         opacity: layer.opacity * layer.fill_opacity,
         gesture: None,
         warp_drag: None,
+        split_tool: None,
+        split_pointer: None,
+        split_placing: false,
+        split_quick: false,
         steps: Steps::default(),
     });
     app.ui.transform = Some(TransformSession {
@@ -225,8 +262,19 @@ fn begin_lone(
     let max_side = ctx.input(|i| i.max_texture_side).max(app.gpu.as_ref().map_or(1, |g| g.max_texture_side()));
     let (image, uv) = crate::transform_tex::read_surface(&lifted, None, b, max_side);
     let texture = crate::transform_tex::PreviewTextures::new(ctx, format!("transform-{session}"), image, uv);
-    app.transform_preview =
-        Some(TransformPreview { session, doc: Arc::new(pd), texture, opacity: 0.6, gesture: None, warp_drag: None, steps: Steps::default() });
+    app.transform_preview = Some(TransformPreview {
+        session,
+        doc: Arc::new(pd),
+        texture,
+        opacity: 0.6,
+        gesture: None,
+        warp_drag: None,
+        split_tool: None,
+        split_pointer: None,
+        split_placing: false,
+        split_quick: false,
+        steps: Steps::default(),
+    });
     app.ui.transform = Some(TransformSession {
         session,
         layer,
@@ -271,8 +319,19 @@ pub fn begin_selection(app: &mut PhotocraftApp, ctx: &egui::Context) -> Result<(
     let texture = crate::transform_tex::PreviewTextures::new(ctx, format!("transform-{session}"), egui::ColorImage::new([tw, th], px), uv);
     let mut pd = (*doc).clone();
     pd.selection = None;
-    app.transform_preview =
-        Some(TransformPreview { session, doc: Arc::new(pd), texture, opacity: 1.0, gesture: None, warp_drag: None, steps: Steps::default() });
+    app.transform_preview = Some(TransformPreview {
+        session,
+        doc: Arc::new(pd),
+        texture,
+        opacity: 1.0,
+        gesture: None,
+        warp_drag: None,
+        split_tool: None,
+        split_pointer: None,
+        split_placing: false,
+        split_quick: false,
+        steps: Steps::default(),
+    });
     app.ui.transform = Some(TransformSession {
         session,
         layer: layer.0,
@@ -1117,16 +1176,6 @@ fn quad_scale(t: &TransformSession) -> f32 {
     if s.is_finite() { s as f32 } else { 1.0 }
 }
 
-/// How much the box enlarges its pixels: the longest edge relative to the original (picks the
-/// preview's texture level and filter).
-fn quad_scale(t: &TransformSession) -> f32 {
-    let (w0, h0) = ((t.rect[2] - t.rect[0]).max(1e-9), (t.rect[3] - t.rect[1]).max(1e-9));
-    let len = |a: [f64; 2], b: [f64; 2]| (b[0] - a[0]).hypot(b[1] - a[1]);
-    let q = &t.quad;
-    let s = (len(q[0], q[1]) / w0).max(len(q[3], q[2]) / w0).max(len(q[0], q[3]) / h0).max(len(q[1], q[2]) / h0);
-    if s.is_finite() { s as f32 } else { 1.0 }
-}
-
 /// Scale (%), angle (°) and translation implied by the current quad (affine readout).
 fn readout(t: &TransformSession) -> (f64, f64, f64, f64) {
     let (w0, h0) = (t.rect[2] - t.rect[0], t.rect[3] - t.rect[1]);
@@ -1219,21 +1268,6 @@ fn transform_fields(app: &mut PhotocraftApp, ui: &mut egui::Ui, t: &TransformSes
     {
         s.interpolation = interp;
     }
-    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        ui.add_space(8.0);
-        if crate::icons::button(ui, "check", 24.0, false, &crate::i18n::fmt(tl!("Commit transform ({key})"), &[("key", &crate::shortcuts::pretty("Enter"))]))
-            .clicked()
-        {
-            commit(app);
-        }
-        if crate::icons::button(ui, "ban", 24.0, false, tl!("Cancel transform (Esc)")).clicked() {
-            cancel(app);
-        }
-        crate::widgets::vline(ui, 22.0);
-        if crate::icons::button(ui, "grid-3x3", 24.0, false, tl!("Switch between free transform and warp modes")).clicked() {
-            enter_warp(app);
-        }
-    });
 }
 
 /// Options bar fields in Warp mode: style, bend, the split icons and the grid menu.
@@ -1279,11 +1313,11 @@ fn warp_fields(app: &mut PhotocraftApp, ui: &mut egui::Ui, w: &Warp) {
     } else {
         crate::widgets::vline(ui, 22.0);
         lbl(ui, tl!("Split:"));
-        for (id, label) in [
-            ("edit.transform.splitWarpCrosswise", "Crosswise"),
-            ("edit.transform.splitWarpVertically", "Vertical"),
-            ("edit.transform.splitWarpHorizontally", "Horizontal"),
-            ("edit.transform.removeWarpSplit", tl!("Remove")),
+        let armed = app.transform_preview.as_ref().and_then(|p| p.split_tool);
+        for (tool, tip) in [
+            (SplitTool::Cross, tl!("Split Warp Crosswise")),
+            (SplitTool::Vertical, tl!("Split Warp Vertically")),
+            (SplitTool::Horizontal, tl!("Split Warp Horizontally")),
         ] {
             let on = armed == Some(tool);
             if split_icon(ui, tool.icon(), tip, on).clicked()
@@ -1295,20 +1329,27 @@ fn warp_fields(app: &mut PhotocraftApp, ui: &mut egui::Ui, w: &Warp) {
                 pv.split_quick = false;
             }
         }
-    }
-    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        ui.add_space(8.0);
-        if crate::icons::button(ui, "check", 24.0, false, &crate::i18n::fmt(tl!("Commit warp ({key})"), &[("key", &crate::shortcuts::pretty("Enter"))]))
-            .clicked()
-        {
-            commit(app);
-        }
-        if crate::icons::button(ui, "ban", 24.0, false, tl!("Cancel warp (Esc)")).clicked() {
-            cancel(app);
-        }
         crate::widgets::vline(ui, 22.0);
-        if crate::icons::button(ui, "grid-3x3", 24.0, true, tl!("Switch between free transform and warp modes")).clicked() {
-            leave_warp(app);
+        lbl(ui, tl!("Grid:"));
+        let mesh = w.mesh.clone().unwrap_or_else(|| BezierMesh::identity(w.bounds, 1, 1));
+        let mut grid = warp_grid_id(&mesh).to_string();
+        let opts = [
+            ("custom".to_string(), tl!("Custom")),
+            ("default".to_string(), tl!("Default")),
+            ("3".to_string(), tl!("3 x 3")),
+            ("4".to_string(), tl!("4 x 4")),
+            ("5".to_string(), tl!("5 x 5")),
+        ];
+        if crate::widgets::dropdown(ui, "warp-grid", &mut grid, &opts, 92.0)
+            && let Some(n) = match grid.as_str() {
+                "default" => Some(1),
+                "3" => Some(3),
+                "4" => Some(4),
+                "5" => Some(5),
+                _ => None,
+            }
+        {
+            let _ = edit_session_warp(app, "edit.transform.warpGrid", &json!({ "size": n }));
         }
     }
 }
@@ -1494,6 +1535,114 @@ mod tests {
         assert_eq!(hit(&s, [8.0, -1.0], 12.0), Hit::Edge(0));
         assert_eq!(hit(&s, [8.0, 8.0], 12.0), Hit::Pivot);
         assert_eq!(hit(&s, [40.0, 40.0], 12.0), Hit::Outside);
+    }
+
+    #[test]
+    fn interior_patch_points_are_hidden_and_grid_anchors_stay() {
+        assert!(on_section_edge(0, 0) && on_section_edge(1, 0) && on_section_edge(0, 2));
+        assert!(!on_section_edge(1, 1) && !on_section_edge(2, 2));
+        let b = [0.0, 0.0, 30.0, 30.0];
+        let w = Warp::custom(BezierMesh::identity(b, 1, 1), b);
+        assert!(warp_hit(&w, [10.0, 10.0], 4.0).is_none(), "the point inside the patch is not shown");
+        assert_eq!(warp_hit(&w, [0.0, 0.0], 4.0), Some(0));
+        let grid = Warp::custom(BezierMesh::identity(b, 3, 3), b);
+        assert_eq!(warp_hit(&grid, [10.0, 10.0], 4.0), Some(33), "a grid-corner anchor stays draggable");
+        assert!(warp_hit(&grid, [30.0 / 9.0, 30.0 / 9.0], 2.0).is_none());
+    }
+
+    #[test]
+    fn grid_menu_reads_default_and_even_presets() {
+        let b = [0.0, 0.0, 100.0, 80.0];
+        let plain = BezierMesh::identity(b, 1, 1);
+        assert_eq!(warp_grid_id(&plain), "default");
+        assert_eq!(warp_grid_id(&BezierMesh::identity(b, 3, 3)), "3");
+        assert_eq!(warp_grid_id(&BezierMesh::identity(b, 4, 4)), "4");
+        assert_eq!(warp_grid_id(&BezierMesh::identity(b, 5, 5)), "5");
+        assert_eq!(warp_grid_id(&BezierMesh::identity(b, 2, 2)), "custom");
+        let mut split = plain.clone();
+        assert!(split.split_u(0.5));
+        assert_eq!(warp_grid_id(&split), "custom");
+        assert!(single_patch(&plain));
+        assert!(!single_patch(&BezierMesh::identity(b, 3, 3)));
+    }
+
+    #[test]
+    fn split_tool_places_the_line_where_the_pointer_releases() {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        app.session.execute("file.new", json!({"width": 64, "height": 64})).unwrap();
+        app.sync_views();
+        app.session.execute("layer.new.layer", json!({})).unwrap();
+        app.session
+            .edit("paint", |doc, a| {
+                doc.layer_mut(a.unwrap()).unwrap().surface_mut().unwrap().fill_rect(photocraft_geom::Rect::new(8, 8, 32, 32), &[1.0, 0.0, 0.0, 1.0]);
+                Ok(())
+            })
+            .unwrap();
+        begin_warp(&mut app, &egui::Context::default()).unwrap();
+        app.transform_preview.as_mut().unwrap().split_tool = Some(SplitTool::Vertical);
+        let knots = |app: &PhotocraftApp| app.ui.transform.as_ref().unwrap().warp.as_ref().unwrap().mesh.as_ref().unwrap().us.clone();
+        assert_eq!(knots(&app).len(), 2);
+        let mods = egui::Modifiers::NONE;
+        warp_pointer(&mut app, ToolEvent::Down { x: 20.0, y: 20.0, pressure: 1.0 }, 2.0, mods);
+        warp_pointer(&mut app, ToolEvent::Move { x: 14.0, y: 20.0, pressure: 1.0 }, 2.0, mods);
+        assert_eq!(knots(&app).len(), 2, "the line is only a guide until release");
+        warp_pointer(&mut app, ToolEvent::Up { x: 14.0, y: 20.0 }, 2.0, mods);
+        let us = knots(&app);
+        let has = |ks: &[f64], u: f64| ks.iter().any(|k| (k - u).abs() < 0.02);
+        // The default grid's thirds stay; the release cuts the section that contains it.
+        assert!(has(&us, 0.25) && has(&us, 1.0 / 3.0) && has(&us, 2.0 / 3.0), "{us:?}");
+        let vs = app.ui.transform.as_ref().unwrap().warp.as_ref().unwrap().mesh.as_ref().unwrap().vs.clone();
+        assert!(has(&vs, 1.0 / 3.0) && has(&vs, 2.0 / 3.0), "horizontal sections stay: {vs:?}");
+        assert!(app.transform_preview.as_ref().unwrap().split_tool.is_some(), "the tool stays armed");
+        // Option-click in the open places both lines, without a button armed.
+        app.transform_preview.as_mut().unwrap().split_tool = None;
+        let alt = egui::Modifiers::ALT;
+        warp_pointer(&mut app, ToolEvent::Down { x: 20.0, y: 20.0, pressure: 1.0 }, 2.0, alt);
+        warp_pointer(&mut app, ToolEvent::Up { x: 20.0, y: 20.0 }, 2.0, alt);
+        let m = app.ui.transform.as_ref().unwrap().warp.as_ref().unwrap().mesh.as_ref().unwrap();
+        assert!(m.us.len() == us.len() + 1 && has(&m.vs, 0.5), "crosswise cuts the open section: us {:?} vs {:?}", m.us, m.vs);
+    }
+
+    #[test]
+    fn split_of_a_grid_cuts_one_section_and_keeps_the_rest() {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        app.session.execute("file.new", json!({"width": 64, "height": 64})).unwrap();
+        app.sync_views();
+        app.session.execute("layer.new.layer", json!({})).unwrap();
+        app.session
+            .edit("paint", |doc, a| {
+                doc.layer_mut(a.unwrap()).unwrap().surface_mut().unwrap().fill_rect(photocraft_geom::Rect::new(8, 8, 32, 32), &[1.0, 0.0, 0.0, 1.0]);
+                Ok(())
+            })
+            .unwrap();
+        begin_warp(&mut app, &egui::Context::default()).unwrap();
+        let rect = app.ui.transform.as_ref().unwrap().rect;
+        let before = BezierMesh::identity(rect, 3, 3);
+        app.ui.transform.as_mut().unwrap().warp = Some(Warp::custom(before.clone(), rect));
+        // Middle of the centre column (s = 0.5), inside the top row of cells.
+        let x = rect[0] + 0.5 * (rect[2] - rect[0]);
+        let y = rect[1] + (1.0 / 6.0) * (rect[3] - rect[1]);
+        app.transform_preview.as_mut().unwrap().split_tool = Some(SplitTool::Vertical);
+        let mods = egui::Modifiers::NONE;
+        warp_pointer(&mut app, ToolEvent::Down { x, y, pressure: 1.0 }, 2.0, mods);
+        warp_pointer(&mut app, ToolEvent::Up { x, y }, 2.0, mods);
+        let m = app.ui.transform.as_ref().unwrap().warp.as_ref().unwrap().mesh.as_ref().unwrap();
+        assert_eq!(m.vs.len(), before.vs.len(), "horizontal sections are not rebuilt: {:?}", m.vs);
+        for (a, b) in m.vs.iter().zip(&before.vs) {
+            assert!((a - b).abs() < 1e-6, "{:?} vs {:?}", m.vs, before.vs);
+        }
+        assert_eq!(m.us.len(), before.us.len() + 1, "one cut: {:?}", m.us);
+        for u in [0.0, 1.0 / 3.0, 0.5, 2.0 / 3.0, 1.0] {
+            assert!(m.us.iter().any(|k| (k - u).abs() < 1e-3), "missing {u} in {:?}", m.us);
+        }
+        let (nx0, nx1) = (before.nx(), m.nx());
+        for j in 0..before.ny() {
+            for i in 0..3 {
+                let a = before.points[j * nx0 + i];
+                let b = m.points[j * nx1 + i];
+                assert!((a[0] - b[0]).abs() < 1e-6 && (a[1] - b[1]).abs() < 1e-6, "left section moved");
+            }
+        }
     }
 
     #[test]
@@ -1789,11 +1938,11 @@ mod tests {
         let t = app.ui.transform.as_mut().unwrap();
         let preset = Warp::preset(WarpStyle::Arc, 50.0, t.rect);
         t.warp = Some(preset.clone());
-        warp_pointer(&mut app, ToolEvent::Down { x: 20.0, y: 20.0, pressure: 1.0 }, 2.0);
-        warp_pointer(&mut app, ToolEvent::Up { x: 20.0, y: 20.0 }, 2.0);
+        warp_pointer(&mut app, ToolEvent::Down { x: 20.0, y: 20.0, pressure: 1.0 }, 2.0, egui::Modifiers::NONE);
+        warp_pointer(&mut app, ToolEvent::Up { x: 20.0, y: 20.0 }, 2.0, egui::Modifiers::NONE);
         assert_eq!(app.ui.transform.as_ref().unwrap().warp.as_ref(), Some(&preset), "a miss changes nothing");
         let corner = preset.to_mesh(1, 1).points[15];
-        warp_pointer(&mut app, ToolEvent::Down { x: corner[0], y: corner[1], pressure: 1.0 }, 2.0);
+        warp_pointer(&mut app, ToolEvent::Down { x: corner[0], y: corner[1], pressure: 1.0 }, 2.0, egui::Modifiers::NONE);
         assert_eq!(app.ui.transform.as_ref().unwrap().warp.as_ref().unwrap().style, WarpStyle::Custom);
     }
 
