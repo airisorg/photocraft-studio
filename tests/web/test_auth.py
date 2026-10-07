@@ -1,5 +1,6 @@
 """HTTP auth adapter tests with a loopback GoTrue simulator; this is not Google proof."""
 import hashlib
+from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
@@ -24,6 +25,7 @@ class Provider(BaseHTTPRequestHandler):
     mode = 'success'
     ident = str(uuid.uuid4())
     calls = []
+    mail = []
     used = set()
 
     def log_message(self, *args):
@@ -39,6 +41,7 @@ class Provider(BaseHTTPRequestHandler):
         Provider.calls.append(self.path)
         body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
         if self.path.startswith('/auth/v1/otp'):
+            Provider.mail.append((self.path, self.headers.get('apikey'), body))
             self.response(503 if Provider.mode=='mail_failed' else 200, {})
             return
         token = body.get('token_hash')
@@ -101,6 +104,33 @@ class AuthContract(unittest.TestCase):
     def setUp(self):
         Provider.mode = 'success'
         Provider.calls = []
+        Provider.mail = []
+
+    @contextmanager
+    def cold_worker(self):
+        with socket.socket() as reserve:
+            reserve.bind(('127.0.0.1', 0))
+            port = reserve.getsockname()[1]
+        binary = Path(os.environ.get('PHOTOCRAFT_CLOUD_BIN', 'target/debug/photocraft-cloud')).resolve()
+        process = subprocess.Popen([str(binary)], env={**os.environ, 'DATABASE_URL':DATABASE,
+            'CLOUD_LOCAL_DEV':'1','PORT':str(port),'APP_ORIGIN':ORIGIN,'SUPABASE_ANON_KEY':'public-test-key',
+            'SUPABASE_URL':f'http://127.0.0.1:{self.provider.server_port}'},
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            deadline = time.monotonic()+5
+            while True:
+                try:
+                    # Only probe TCP: invitation POST must be this worker's first request.
+                    with socket.create_connection(('127.0.0.1', port), timeout=.2):
+                        break
+                except OSError:
+                    self.assertIsNone(process.poll(), 'Cold invitation worker exited')
+                    self.assertLess(time.monotonic(), deadline, 'Cold invitation worker did not listen')
+                    time.sleep(.02)
+            yield f'http://127.0.0.1:{port}'
+        finally:
+            process.terminate()
+            process.wait(timeout=5)
 
     def callback(self, state=None, cookie=None, token=None, kind='email'):
         nonce = secrets.token_hex(32)
@@ -198,6 +228,29 @@ class AuthContract(unittest.TestCase):
             repeat=self.http.post(self.base+f'/api/projects/{pid}/invite',json={'email':email,'role':'edit'},headers=h)
             self.assertEqual(repeat.status_code,429)
         self.assertEqual(sum(path.startswith('/auth/v1/otp') for path in Provider.calls),2)
+
+    def test_invitation_first_request_on_cold_workers(self):
+        pid,h=self.invite_fixture()
+        for failed in [False, True]:
+            with self.subTest(provider_failed=failed):
+                email=str(uuid.uuid4())+'@example.invalid'
+                Provider.mode='mail_failed' if failed else 'success'
+                with self.cold_worker() as base:
+                    response=self.http.post(base+f'/api/projects/{pid}/invite',
+                        json={'email':email,'role':'edit'},headers=h,timeout=20)
+                self.assertEqual(response.status_code,502 if failed else 200,response.text)
+                if failed:
+                    self.assertIn('Access was granted',response.json()['error'])
+                self.assertEqual(self.db.execute('SELECT role FROM photocraft.members WHERE project_id=%s AND email=%s',
+                    (pid,email)).fetchone(),('edit',))
+                self.assertEqual(self.db.execute('SELECT status FROM photocraft.invitation_deliveries WHERE project_id=%s AND email=%s',
+                    (pid,email)).fetchone(),('failed' if failed else 'sent',))
+                self.assertEqual(len(Provider.mail),2 if failed else 1)
+                path,key,body=Provider.mail[-1]
+                self.assertEqual(urlparse(path).path,'/auth/v1/otp')
+                self.assertEqual(parse_qs(urlparse(path).query),{'redirect_to':[ORIGIN+'/auth/confirm']})
+                self.assertEqual(key,'public-test-key')
+                self.assertEqual(body,{'email':email,'create_user':True})
 
     def test_invitation_validates_owner_email_and_role_before_mail(self):
         pid,h=self.invite_fixture()

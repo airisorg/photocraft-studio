@@ -392,6 +392,43 @@ class CloudContract(unittest.TestCase):
         for who in [self.editor,self.outsider]:
             self.req(who,'POST',f'/api/projects/{pid}/invite',status=404,json={'email':'synthetic@example.invalid','role':'edit'})
 
+    def test_35_interrupted_first_save_retries_reopens_and_trashes(self):
+        pid = self.project()
+        uid = self.begin(pid)
+        failed = self.req(self.owner, 'POST', f'/api/uploads/{uid}/commit', status=400, json={})
+        self.assertIn('incomplete', failed.json()['error'])
+        pending = self.req(self.owner, 'GET', f'/api/projects/{pid}').json()
+        self.assertEqual((pending['revision'], pending['width'], pending['height']), (0, 0, 0))
+        self.assertIsNone(pending['content'])
+        self.assertEqual(self.req(self.owner, 'GET', f'/api/projects/{pid}/versions').json(), [])
+        self.req(self.owner, 'DELETE', f'/api/uploads/{uid}')
+
+        self.assertEqual(self.upload(pid).json()['revision'], 1)
+        item = next(p for p in self.req(self.owner, 'GET', '/api/projects').json() if p['id'] == pid)
+        self.assertEqual((item['revision'], item['width'], item['height'], item['trashed']), (1, 64, 48, False))
+        reopened = self.req(self.owner, 'GET', f'/api/projects/{pid}').json()
+        self.assertEqual(reopened['content']['sha256'], hashlib.sha256(self.fixture).hexdigest())
+        self.assertEqual(self.req(self.owner, 'GET', f'/api/projects/{pid}/content?part=0').content, self.fixture)
+
+        self.req(self.owner, 'PATCH', f'/api/projects/{pid}', json={'trashed': True})
+        item = next(p for p in self.req(self.owner, 'GET', '/api/projects').json() if p['id'] == pid)
+        self.assertTrue(item['trashed'])
+        self.assertEqual(item['revision'], 1)
+        self.req(self.owner, 'PATCH', f'/api/projects/{pid}', json={'trashed': False})
+        self.assertEqual(self.req(self.owner, 'GET', f'/api/projects/{pid}/content?part=0').content, self.fixture)
+
+    def test_36_owner_can_trash_an_unsaved_project_reservation(self):
+        pid = self.project()
+        self.member(pid, 1, 'edit')
+        self.req(self.editor, 'PATCH', f'/api/projects/{pid}', status=404, json={'trashed': True})
+        self.req(self.outsider, 'PATCH', f'/api/projects/{pid}', status=404, json={'trashed': True})
+        self.req(self.owner, 'PATCH', f'/api/projects/{pid}', json={'trashed': True})
+        item = next(p for p in self.req(self.owner, 'GET', '/api/projects').json() if p['id'] == pid)
+        self.assertEqual((item['revision'], item['width'], item['height'], item['trashed']), (0, 0, 0, True))
+        self.req(self.owner, 'PATCH', f'/api/projects/{pid}', json={'trashed': False})
+        item = next(p for p in self.req(self.owner, 'GET', '/api/projects').json() if p['id'] == pid)
+        self.assertFalse(item['trashed'])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

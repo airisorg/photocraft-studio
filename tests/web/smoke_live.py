@@ -14,7 +14,7 @@ from urllib.parse import urlparse
 
 from PIL import Image
 from playwright.sync_api import sync_playwright
-from visual_assertions import assert_header_geometry
+from visual_assertions import assert_header_geometry, assert_workspace_geometry
 
 url = sys.argv[1]
 if urlparse(url).scheme != 'https':
@@ -54,6 +54,10 @@ with sync_playwright() as p:
             break
         page.wait_for_timeout(100)
     page.screenshot(path=str(out/'hosted-workspace.png'))
+    with Image.open(out/'hosted-workspace.png') as workspace:
+        workspace_geometry=assert_workspace_geometry(unittest.TestCase(),workspace)
+        actions=workspace_geometry['actions']
+        workspace.crop((actions[0][0]-16,actions[0][1]-16,actions[1][2]+16,actions[1][3]+16)).save(out/'hosted-workspace-actions.png')
     assert configuration and configuration[-1]['body'].get('cloud') and configuration[-1]['body'].get('signIn'),configuration
     page.mouse.click(1400,32)
     page.wait_for_timeout(150)
@@ -62,6 +66,8 @@ with sync_playwright() as p:
     page.set_viewport_size({'width':390,'height':844})
     page.wait_for_timeout(250)
     page.screenshot(path=str(out/'hosted-mobile.png'))
+    with Image.open(out/'hosted-mobile.png') as workspace:
+        mobile_workspace_geometry=assert_workspace_geometry(unittest.TestCase(),workspace)
     page.set_viewport_size({'width':1440,'height':960})
     page.wait_for_timeout(250)
     def command(method,params=None):
@@ -100,7 +106,8 @@ with sync_playwright() as p:
     resources=page.evaluate('performance.getEntriesByType("resource").filter(e=>e.name.endsWith(".wasm")).map(e=>({url:e.name,durationMs:e.duration,encodedBytes:e.encodedBodySize,decodedBytes:e.decodedBodySize}))')
     (out/'hosted-evidence.json').write_text(json.dumps({'url':url,'browser':browser.version,'renderer':before['perf']['timings']['gpuInfo'],
         'beforeLayers':len(before['document']['layers']),'exportSize':[960,640],'reimportSize':[after['document']['width'],after['document']['height']],
-        'pageErrors':errors,'wasmSha256':wasm_sha256,'wasmResources':resources,'configuration':configuration,'headerRects':header_rects},indent=2))
+        'pageErrors':errors,'wasmSha256':wasm_sha256,'wasmResources':resources,'configuration':configuration,'headerRects':header_rects,
+        'workspaceGeometry':workspace_geometry,'mobileWorkspaceGeometry':mobile_workspace_geometry},indent=2))
     print('Hosted guest edit, PNG export and re-import passed.')
     context.close()
     browser.close()

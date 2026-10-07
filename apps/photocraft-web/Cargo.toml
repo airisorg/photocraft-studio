@@ -44,4 +44,4 @@ gloo-timers = { version = "0.3", features = ["futures"] }
 rexie = "0.6"
 sha2 = "0.10"
 hex = "0.4"
-web-sys = { version = "0.3", features = ["Window", "Document", "Element", "HtmlElement", "HtmlCanvasElement", "HtmlAnchorElement", "Blob", "BlobPropertyBag", "Url", "Location", "CssStyleDeclaration", "Storage", "Event", "EventTarget", "MouseEvent", "PointerEvent", "Navigator", "BeforeUnloadEvent", "History"] }
+web-sys = { version = "0.3", features = ["Window", "Document", "Element", "HtmlElement", "HtmlCanvasElement", "HtmlAnchorElement", "Blob", "BlobPropertyBag", "Url", "Location", "CssStyleDeclaration", "Storage", "Event", "EventTarget", "MouseEvent", "PointerEvent", "Navigator", "BeforeUnloadEvent", "History", "MediaQueryList"] }
