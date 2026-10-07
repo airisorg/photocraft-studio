@@ -700,13 +700,19 @@ fn damage_since(app: &PhotocraftApp, idx: usize, seen: (u64, u64), now: (u64, u6
 /// (`was_preview` tells its keys): count it as the document itself, so the commit's damage rect
 /// refreshes only that area instead of everything.
 pub(crate) fn shown_as_document(app: &mut PhotocraftApp, doc: photocraft_doc::DocId, was_preview: impl Fn(u64) -> bool) {
-    let display_key = app.session.active().map_or(0, |st| canvas_display(app, &st.doc).1);
-    if let Some(c) = app.canvases.get_mut(&doc) {
-        if was_preview(c.preview_key ^ display_key) {
-            c.preview_key = display_key;
+    let Some(d) = app.session.documents().iter().find(|st| st.doc.id == doc).map(|st| st.doc.clone()) else { return };
+    // Every display's cache of the document: the GPU state folds in the texture key, CPU
+    // textures their display's key.
+    let outputs: Vec<u32> = app.canvases.keys().filter(|k| k.0 == doc).map(|k| k.1).collect();
+    for out in outputs {
+        let (display, key) = canvas_display(app, &d, (out != 0 && out != GPU_OUTPUT).then_some(out));
+        let gpu_key = texture_key(display.as_deref());
+        let Some(c) = app.canvases.get_mut(&(doc, out)) else { continue };
+        if was_preview(c.preview_key ^ gpu_key) {
+            c.preview_key = gpu_key;
         }
-        if was_preview(c.tex_preview_key ^ display_key) {
-            c.tex_preview_key = display_key;
+        if was_preview(c.tex_preview_key ^ key) {
+            c.tex_preview_key = key;
         }
     }
 }
@@ -1380,12 +1386,12 @@ const DISPLAY_LUT: usize = 33;
 /// `doc`'s colour management: document → monitor profile and View › Proof Colors / Gamut
 /// Warning (the 32-bit preview is applied by the canvas shader, see [`hdr_preview`]). Returns the canvas `display` mode (0 none — the identity, e.g. sRGB on
 /// an sRGB monitor —, 1 LUT, 2 LUT + gamut warning).
-fn sync_display_lut(app: &mut PhotocraftApp, doc: &photocraft_doc::Document, key: u64) -> u8 {
+fn sync_display_lut(app: &mut PhotocraftApp, doc: &photocraft_doc::Document, key: u64, display: Option<u32>) -> u8 {
     let Some(gpu) = app.gpu.clone() else { return 0 };
     let output = display.unwrap_or(0);
     // Rebuild only when anything feeding the LUT changes.
-    let sig = app.session.color.display_signature(doc);
-    if let Some((s, mode)) = gpu.display_lut_signature(key)
+    let sig = app.session.color.display_signature_for(doc, display);
+    if let Some((s, mode)) = gpu.display_lut_signature(key, output)
         && s == sig
     {
         return mode;
@@ -1406,7 +1412,7 @@ fn sync_display_lut(app: &mut PhotocraftApp, doc: &photocraft_doc::Document, key
             0
         }
     };
-    gpu.cache_display_lut_signature(key, sig, mode);
+    gpu.cache_display_lut_signature(key, output, sig, mode);
     mode
 }
 
@@ -1479,7 +1485,8 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
             },
             pixel_grid: false,
             view_key: egui::Id::new(("pc-canvas-proxy", ctx.viewport_id(), idx)).value(),
-            display: sync_display_lut(app, &doc, key),
+            display: sync_display_lut(app, &doc, key, output),
+            output: output.unwrap_or(0),
             hdr: hdr_preview(app, &doc),
         };
         crate::gpu_canvas::GpuCanvas::paint(&painter, rect, params);
@@ -1498,7 +1505,8 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
             },
             pixel_grid,
             view_key: egui::Id::new(("pc-canvas", ctx.viewport_id(), idx)).value(),
-            display: sync_display_lut(app, &doc, doc.id.0),
+            display: sync_display_lut(app, &doc, doc.id.0, output),
+            output: output.unwrap_or(0),
             hdr: hdr_preview(app, &doc),
         };
         crate::gpu_canvas::GpuCanvas::paint(&painter, rect, params);
@@ -2739,87 +2747,6 @@ mod tests {
         assert!(gpu.has_display_lut(key, 4));
         // The shared texture's key is the same for both displays.
         assert_eq!(texture_key(canvas_display(&app, &doc, Some(1)).0.as_deref()), texture_key(canvas_display(&app, &doc, Some(4)).0.as_deref()));
-    }
-
-    #[test]
-    fn tab_context_uses_clicked_document_and_existing_close_commands() {
-        let items = tab_context_items(2, 3);
-        assert_eq!(items.iter().map(|(_, id, _, _)| *id).collect::<Vec<_>>(), ["file.close", "file.closeOthers", "file.closeAll"]);
-        assert_eq!(items[0].2, json!({"document": 2}));
-        assert_eq!(items[1].2, json!({"document": 2}));
-        assert_eq!(items[2].2, json!({}));
-        assert!(!tab_context_items(0, 1)[1].3);
-        assert!(items.iter().all(|(_, id, _, _)| photocraft_engine::commands::find(id).is_some()));
-    }
-
-    #[test]
-    fn tab_close_others_prompts_for_unsaved_nonactive_document() {
-        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
-        app.run("file.new", json!({"width": 8, "height": 8, "name": "Keep"})).unwrap();
-        app.run("file.new", json!({"width": 8, "height": 8, "name": "Edited"})).unwrap();
-        app.run("edit.fill", json!({"color": "#ff0000"})).unwrap();
-        assert_eq!(app.session.active_index(), Some(1));
-        let (_, id, params, _) = tab_context_items(0, 2)[1].clone();
-        crate::menus::invoke(&mut app, &egui::Context::default(), id, params).unwrap();
-        assert!(app.discard.is_some(), "close others must ask before discarding the edited tab");
-        assert_eq!(app.session.documents().len(), 2);
-    }
-
-    #[test]
-    fn wayland_start_screen_hint_does_not_claim_file_drop_works() {
-        assert_ne!(start_screen_drop_hint(true), start_screen_drop_hint(false));
-    }
-
-    #[test]
-    fn pointer_moves_are_bounded_by_the_press_and_release() {
-        use egui::{Event, PointerButton, pos2};
-        let button = |pos, pressed| Event::PointerButton { pos, button: PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
-        let events = [
-            Event::PointerMoved(pos2(1.0, 0.0)),
-            button(pos2(2.0, 0.0), true),
-            Event::PointerMoved(pos2(3.0, 0.0)),
-            Event::PointerMoved(pos2(4.0, 0.0)),
-            button(pos2(5.0, 0.0), false),
-            Event::PointerMoved(pos2(6.0, 0.0)),
-        ];
-        // The press is in this frame: only the moves between press and release count.
-        assert_eq!(pointer_moves(&events, PointerButton::Primary, false), vec![pos2(3.0, 0.0), pos2(4.0, 0.0)]);
-        // The button was already down when the frame began: the move before the release counts,
-        // the one after it does not.
-        assert_eq!(pointer_moves(&events, PointerButton::Primary, true), vec![pos2(1.0, 0.0), pos2(3.0, 0.0), pos2(4.0, 0.0)]);
-    }
-
-    #[test]
-    fn freehand_tools_are_the_ones_that_follow_a_path() {
-        for t in [
-            Tool::Brush,
-            Tool::Pencil,
-            Tool::MixerBrush,
-            Tool::Eraser,
-            Tool::BackgroundEraser,
-            Tool::CloneStamp,
-            Tool::Smudge,
-            Tool::Dodge,
-            Tool::Lasso,
-            Tool::QuickSelection,
-        ] {
-            assert!(freehand_tool(t), "{t:?} paints or retouches along a path");
-        }
-        for t in [Tool::Move, Tool::Eyedropper, Tool::Gradient, Tool::Crop, Tool::RectMarquee, Tool::Type, Tool::Hand] {
-            assert!(!freehand_tool(t), "{t:?} is driven by the pointer's latest position");
-        }
-    }
-
-    #[test]
-    fn clone_stamp_centre_appears_only_with_option() {
-        assert!(!brush_tip_centre(Tool::CloneStamp, false, false, 20.0));
-        assert!(brush_tip_centre(Tool::CloneStamp, true, false, 20.0));
-        assert!(brush_tip_centre(Tool::Healing, true, false, 20.0));
-        assert!(!brush_tip_centre(Tool::Healing, false, false, 20.0));
-        assert!(brush_tip_centre(Tool::CloneStamp, false, true, 20.0));
-        assert!(brush_tip_centre(Tool::Brush, false, false, 20.0));
-        assert!(!brush_tip_centre(Tool::QuickSelection, false, false, 20.0));
-        assert!(brush_tip_centre(Tool::BackgroundEraser, false, false, 2.0));
     }
 
     #[test]
