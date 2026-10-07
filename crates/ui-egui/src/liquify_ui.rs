@@ -977,6 +977,52 @@ mod tests {
     }
 
     #[test]
+    fn liquify_redo_restores_undone_stroke_and_a_new_stroke_clears_redo() {
+        let ctx = egui::Context::default();
+        let mut app = app_with_layer();
+        open(&mut app, &ctx).unwrap();
+        control(&mut app, &json!({"tool": "forwardWarp", "size": 40})).unwrap();
+        let draw = |app: &mut PhotocraftApp, x: f64| {
+            for ev in
+                [ToolEvent::Down { x, y: 40.0, pressure: 1.0 }, ToolEvent::Move { x: x + 14.0, y: 40.0, pressure: 1.0 }, ToolEvent::Up { x: x + 14.0, y: 40.0 }]
+            {
+                pointer(app, ev, egui::Modifiers::NONE);
+            }
+        };
+
+        draw(&mut app, 30.0);
+        draw(&mut app, 70.0);
+        control(&mut app, &json!({"undo": true})).unwrap();
+        let d = app.distort.liquify.as_ref().unwrap();
+        assert_eq!((d.strokes.len(), d.redo.len()), (1, 1));
+
+        control(&mut app, &json!({"redo": true})).unwrap();
+        let d = app.distort.liquify.as_ref().unwrap();
+        assert_eq!((d.strokes.len(), d.redo.len()), (2, 0));
+        assert_eq!(LiquifyField::from_strokes(d.canvas, d.cell, &d.strokes), d.field);
+
+        control(&mut app, &json!({"undo": true})).unwrap();
+        draw(&mut app, 50.0);
+        let d = app.distort.liquify.as_ref().unwrap();
+        assert_eq!((d.strokes.len(), d.redo.len()), (2, 0));
+        control(&mut app, &json!({"redo": true})).unwrap();
+        assert_eq!(app.distort.liquify.as_ref().unwrap().strokes.len(), 2, "redo after a new stroke is a no-op");
+    }
+
+    #[test]
+    fn liquify_redo_stack_is_bounded() {
+        let ctx = egui::Context::default();
+        let mut app = app_with_layer();
+        open(&mut app, &ctx).unwrap();
+        let d = app.distort.liquify.as_mut().unwrap();
+        d.strokes = (0..=REDO_STACK_LIMIT).map(|_| LiquifyStroke::new(LiquifyTool::ForwardWarp, 1.0)).collect();
+        for _ in 0..=REDO_STACK_LIMIT {
+            d.undo();
+        }
+        assert_eq!(d.redo.len(), REDO_STACK_LIMIT);
+    }
+
+    #[test]
     fn shortcut_handler_undoes_liquify_even_when_egui_owns_keyboard_focus() {
         let ctx = egui::Context::default();
         let mut app = app_with_layer();
@@ -999,6 +1045,20 @@ mod tests {
         });
         out.textures_delta.clear();
         assert_eq!(app.distort.liquify.as_ref().unwrap().strokes.len(), 0);
+        let raw = egui::RawInput {
+            events: vec![egui::Event::Key {
+                key: egui::Key::Z,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+            }],
+            ..Default::default()
+        };
+        let _ = ctx.run_ui(raw, |ui| {
+            crate::shortcuts::handle(&mut app, ui.ctx());
+        });
+        assert_eq!(app.distort.liquify.as_ref().unwrap().strokes.len(), 1, "Cmd+Shift+Z redoes the last stroke");
     }
 
     #[test]
