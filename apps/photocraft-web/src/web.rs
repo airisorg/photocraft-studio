@@ -184,6 +184,12 @@ impl eframe::App for WebShell {
                 }
             });
         }
+        // Native File > Open and browser drops share this inbox. Admit their documents
+        // through the cloud adapter so a persisted native ID cannot reuse a closed binding.
+        let arrived = std::mem::take(&mut *self.inbox.lock().unwrap_or_else(|e| e.into_inner()));
+        for (name, bytes) in arrived {
+            self.cloud.open_local(&mut self.app, &name, &bytes);
+        }
         self.app.logic(ctx, frame);
         self.cloud.update(&mut self.app, ctx);
     }

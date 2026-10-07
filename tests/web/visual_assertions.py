@@ -62,7 +62,7 @@ def assert_dialog_inside(case, before, after):
     return bounds
 
 
-def _workspace_surfaces(image, top=70, bottom=440, *, background=None, left=0, right=None):
+def _workspace_surfaces(image, top=70, bottom=440, *, background=None, left=0, right=None, minimum_size=(61, 29)):
     image = image.convert('RGB')
     pixels = image.load()
     background = background or pixels[image.width // 2, 70]
@@ -83,9 +83,28 @@ def _workspace_surfaces(image, top=70, bottom=440, *, background=None, left=0, r
                 if neighbor in remaining:
                     remaining.remove(neighbor)
                     queue.append(neighbor)
-        if x1-x0 >= 60 and y1-y0 >= 28:
+        if x1-x0+1 >= minimum_size[0] and y1-y0+1 >= minimum_size[1]:
             surfaces.append((x0, y0, x1+1, y1+1))
     return surfaces
+
+
+def recovery_warning_action(image):
+    """Find the actual native recovery action beside the amber warning text."""
+    image = image.convert('RGB')
+    pixels = image.load()
+    amber = [(x, y) for y in range(image.height-140, image.height-28)
+             for x in range(8, image.width-8)
+             if pixels[x, y][0] > pixels[x, y][2]+40 and pixels[x, y][1] > pixels[x, y][2]+30]
+    if not amber:
+        raise AssertionError('The browser recovery warning is not visible')
+    top = min(y for _, y in amber)-14
+    background = image.getpixel((2, min(y for _, y in amber)))
+    controls = [r for r in _workspace_surfaces(image, top, image.height-28, background=background,
+                                              minimum_size=(60, 14))
+                if 60 <= r[2]-r[0] <= 180 and 14 <= r[3]-r[1] <= 44]
+    if len(controls) != 1:
+        raise AssertionError(f'Expected one complete recovery action beside the warning: {controls}')
+    return controls[0]
 
 
 def workspace_project_card(image):
@@ -114,6 +133,19 @@ def workspace_recovery_controls(image):
     return sorted((r for r in _workspace_surfaces(image, search[3]+120, image.height-28)
                    if r[0] >= search[0] and 60 <= r[2]-r[0] <= 180 and 38 <= r[3]-r[1] <= 42),
                   key=lambda r: (r[1], r[0]))
+
+
+def native_overlay_actions(before, after):
+    """Locate native popup/modal buttons inside the region that actually appeared."""
+    before, after = before.convert('RGB'), after.convert('RGB')
+    bounds = ImageChops.difference(before, after).crop((0, 64, after.width, after.height-28)).convert('L').point(
+        lambda value: 255 if value > 12 else 0).getbbox()
+    if bounds is None:
+        raise AssertionError('The native overlay did not appear')
+    left, top, right, bottom = bounds[0], bounds[1]+64, bounds[2], bounds[3]+64
+    background = Counter(after.crop((left, top, right, bottom)).getdata()).most_common(1)[0][0]
+    return sorted((r for r in _workspace_surfaces(after, top, bottom, background=background, left=left, right=right)
+                   if 32 <= r[3]-r[1] <= 44), key=lambda r: (r[1], r[0]))
 
 
 def sharing_invitation_controls(image):
@@ -189,10 +221,11 @@ def workspace_quick_actions(image):
 
 
 def workspace_template_previews(image, has_quick_actions=True):
+    search = workspace_controls(image)['search']
     top = (max(r[3] for r in workspace_quick_actions(image)) if has_quick_actions
-           else workspace_controls(image)['search'][3])+1
+           else search[3])+1
     previews = [r for r in _workspace_surfaces(image, top, image.height-28)
-                if r[2]-r[0] >= 80 and r[3]-r[1] >= 64]
+                if r[0] >= search[0]-1 and r[2]-r[0] >= 80 and r[3]-r[1] >= 64]
     return sorted(previews, key=lambda r: (r[1], r[0]))
 
 

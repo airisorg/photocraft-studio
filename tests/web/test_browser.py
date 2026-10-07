@@ -22,7 +22,8 @@ import psycopg
 from visual_assertions import (assert_header_geometry, assert_dialog_inside, assert_workspace_geometry,
                                workspace_controls, workspace_quick_actions, workspace_focus_changed,
                                workspace_template_previews, workspace_project_card, workspace_recovery_controls,
-                               sharing_invitation_controls, assert_invitation_feedback_geometry)
+                               sharing_invitation_controls, assert_invitation_feedback_geometry, native_overlay_actions,
+                               recovery_warning_action)
 
 BASE = os.environ.get('PHOTOCRAFT_TEST_ORIGIN', 'http://127.0.0.1:8876')
 DATABASE = os.environ.get('PHOTOCRAFT_TEST_DATABASE_URL', 'postgresql://photocraft_test@127.0.0.1:55438/postgres')
@@ -73,7 +74,14 @@ class BrowserAcceptance(unittest.TestCase):
         page = ctx.new_page()
         page.on('pageerror', lambda error: self.errors.append(str(error)))
         page.on('dialog', lambda dialog: dialog.accept())
-        self.load(page, query)
+        try:
+            self.load(page, query)
+        except BaseException:
+            # unittest does not call tearDown when setUp fails. Do not leave a
+            # live WASM app polling while subsequent tests try to diagnose it.
+            ctx.close()
+            self.contexts.remove(ctx)
+            raise
         return ctx, page
 
     def load(self, page, query=''):
@@ -326,6 +334,52 @@ class BrowserAcceptance(unittest.TestCase):
             self.stroke(page)
             self.assertTrue(self.inspect(page)['document']['canUndo'])
             page.screenshot(path=str(ARTIFACTS/'webkit-editor.png'))
+
+            def recovery():
+                return page.evaluate('''async () => await new Promise((resolve,reject) => {
+                    const request=indexedDB.open('photocraft-studio-recovery');
+                    request.onerror=()=>reject(request.error);request.onsuccess=()=>{
+                        const db=request.result;const rows=[];
+                        const cursor=db.transaction('drafts').objectStore('drafts').openCursor();
+                        cursor.onerror=()=>{db.close();reject(cursor.error)};
+                        cursor.onsuccess=()=>{const row=cursor.result;
+                            if(row){rows.push({key:row.key,data:Array.from(row.value.data)});row.continue()}
+                            else{db.close();resolve(rows)}};
+                    };
+                })''')
+
+            def wait_recovery(width, height):
+                deadline = time.monotonic()+8
+                while time.monotonic() < deadline:
+                    rows = recovery()
+                    if len(rows) == 1:
+                        with zipfile.ZipFile(io.BytesIO(bytes(rows[0]['data']))) as archive:
+                            document = json.loads(archive.read('manifest.json'))['document']
+                        if document['size'] == {'width': width, 'height': height}:
+                            self.assertTrue(rows[0]['key'].startswith('guest:'))
+                            return rows[0]['key']
+                    page.wait_for_timeout(100)
+                self.fail('WebKit recovery did not retain exactly the most recently visited native document')
+
+            first_key = wait_recovery(320, 240)
+            self.new(486, 326, page=page)
+            second_key = wait_recovery(486, 326)
+            self.assertNotEqual(second_key, first_key)
+            self.load(page, '?webgl')
+            self.assertEqual(wait_recovery(486, 326), second_key)
+            page.mouse.click(100, 249)
+            page.wait_for_timeout(250)
+            controls = workspace_recovery_controls(Image.open(io.BytesIO(page.screenshot(scale='css'))))
+            self.assertEqual(len(controls), 1)
+            rect = controls[0]
+            page.mouse.click((rect[0]+rect[2])/2, (rect[1]+rect[3])/2)
+            deadline = time.monotonic()+8
+            while self.inspect(page)['document'] is None and time.monotonic() < deadline:
+                page.wait_for_timeout(100)
+            restored = self.inspect(page)['document']
+            self.assertIsNotNone(restored)
+            self.assertEqual((restored['width'], restored['height']), (486, 326))
+            page.screenshot(path=str(ARTIFACTS/'webkit-one-recovery-restored.png'))
             self.contexts.remove(context)
             context.close()
         finally:
@@ -1417,6 +1471,1121 @@ class BrowserAcceptance(unittest.TestCase):
         held[1].fulfill(status=502, json={'error': 'Synthetic retry stopped; no email was sent'})
         self.page.wait_for_timeout(200)
         self.assertEqual(self.inspect()['document']['width'], 320)
+
+
+    def test_39_startup_serializes_connection_and_retries_transient_failures(self):
+        token = self.signed_in()
+        user = self.context.request.get(BASE+'/api/me').json()
+        observations = []
+
+        for scenario in ['delayed', 'config-503', 'me-503', 'guest-401']:
+            # A failed subtest can leave deliberately held fetches alive. Close
+            # that page before installing the next scenario's route callbacks.
+            if len(self.contexts) > 1:
+                self.contexts[-1].close()
+            with self.subTest(scenario=scenario):
+                ctx = self.browser.new_context(viewport={'width': 1440, 'height': 960})
+                self.contexts.append(ctx)
+                ctx.add_cookies([{'name': 'pc_session', 'value': token, 'url': BASE,
+                                 'httpOnly': True, 'sameSite': 'Lax'}])
+                page = ctx.new_page()
+                page.on('pageerror', lambda error: self.errors.append(str(error)))
+                counts = {'config': 0, 'me': 0, 'projects': 0}
+                finished = {'config': 0, 'me': 0, 'projects': 0}
+                held = {'config': [], 'me': []}
+                ready = {'cloud': True, 'signIn': True}
+
+                def config(route):
+                    counts['config'] += 1
+                    if scenario == 'delayed' or (scenario == 'config-503' and counts['config'] == 1):
+                        held['config'].append(route)
+                    else:
+                        route.fulfill(json=ready)
+
+                def me(route):
+                    counts['me'] += 1
+                    if scenario == 'delayed' or (scenario == 'me-503' and counts['me'] == 1):
+                        held['me'].append(route)
+                    elif scenario == 'guest-401':
+                        route.fulfill(status=401, json={'error': 'Sign in required'})
+                    else:
+                        route.fulfill(json=user)
+
+                def projects(route):
+                    counts['projects'] += 1
+                    route.continue_()
+
+                def checkpoint(stage):
+                    page.screenshot(path=str(ARTIFACTS/f'startup-{scenario}-{stage}.png'))
+                    observations.append({'scenario': scenario, 'stage': stage, 'counts': dict(counts), 'finished': dict(finished)})
+                    (ARTIFACTS/'startup-request-counts.json').write_text(json.dumps(observations, indent=2))
+
+                def wait_for_count(kind, count):
+                    deadline = time.monotonic()+8
+                    while counts[kind] < count and time.monotonic() < deadline:
+                        page.wait_for_timeout(50)
+                    self.assertGreaterEqual(counts[kind], count, f'{scenario}: no {kind} request {count}')
+
+                def warning_pixels():
+                    image = Image.open(io.BytesIO(page.screenshot(scale='css'))).convert('RGB')
+                    return sum(r > b+40 and g > b+30 for r, g, b in
+                               image.crop((0, image.height-28, 1100, image.height)).getdata())
+
+                ctx.route(BASE+'/api/config', config)
+                ctx.route(BASE+'/api/me', me)
+                ctx.route(BASE+'/api/projects', projects)
+                def request_finished(request):
+                    for kind in finished:
+                        if request.url == BASE+'/api/'+kind:
+                            finished[kind] += 1
+                page.on('requestfinished', request_finished)
+                # networkidle would deadlock while the real browser requests are held.
+                page.goto(BASE+'/', wait_until='domcontentloaded', timeout=90000)
+                page.wait_for_function('typeof window.photocraftCommand === "function"', timeout=60000)
+                wait_for_count('config', 1)
+                if scenario == 'delayed':
+                    page.wait_for_timeout(2200)
+                    checkpoint('config-held')
+                    self.assertEqual(counts, {'config': 1, 'me': 0, 'projects': 0},
+                                     'Slow startup config allowed overlapping connection attempts')
+                    held['config'][0].fulfill(json=ready)
+                    wait_for_count('me', 1)
+                    page.wait_for_timeout(2200)
+                    checkpoint('me-held')
+                    self.assertEqual(counts, {'config': 1, 'me': 1, 'projects': 0},
+                                     'Connection guard ended before the session request completed')
+                    held['me'][0].fulfill(json=user)
+                elif scenario in {'config-503', 'me-503'}:
+                    kind = 'config' if scenario == 'config-503' else 'me'
+                    wait_for_count(kind, 1)
+                    held[kind][0].fulfill(status=503, json={'error': 'Synthetic cloud startup unavailable'})
+                    page.wait_for_timeout(250)
+                    checkpoint('temporary-failure')
+                    self.assertEqual(counts['projects'], 0, 'An unknown session must not load signed-in projects')
+                    self.assertEqual(counts['me'], 0 if kind == 'config' else 1)
+                    self.assertGreater(warning_pixels(), 40, 'Temporary connection failure was presented as a ready guest workspace')
+                    wait_for_count('config', 2)
+                else:
+                    wait_for_count('me', 1)
+
+                if scenario != 'guest-401':
+                    wait_for_count('projects', 1)
+                page.wait_for_timeout(2200)
+                checkpoint('settled')
+                expected = {'delayed': (1, 1, 1), 'config-503': (2, 1, 1),
+                            'me-503': (2, 2, 1), 'guest-401': (1, 1, 0)}[scenario]
+                self.assertEqual(counts, dict(zip(['config', 'me', 'projects'], expected)),
+                                 'Startup did not settle after one successful connection')
+                self.assertEqual(finished, counts, 'A completed connection left response bodies unread and browser requests unfinished')
+                self.assertLess(warning_pixels(), 10, 'Successful retry left its connection error visible')
+
+
+    def test_40_lost_commit_confirmation_reconciles_exact_saved_version(self):
+        token = self.signed_in()
+        observations = []
+
+        def picture(name, page=None):
+            data = (page or self.page).screenshot(scale='css')
+            (ARTIFACTS/name).write_bytes(data)
+            return Image.open(io.BytesIO(data)).convert('RGB')
+
+        def save(actions, name='Save', page=None):
+            page = page or self.page
+            controls = assert_header_geometry(self, Image.open(io.BytesIO(page.screenshot())), actions)
+            rect = controls[actions.index(name)]
+            page.mouse.click((rect[0]+rect[2])/2, (rect[1]+rect[3])/2)
+
+        def metadata(pid):
+            response = self.context.request.get(BASE+'/api/projects/'+pid)
+            self.assertTrue(response.ok)
+            return response.json()
+
+        def wait_revision(pid, expected):
+            deadline = time.monotonic()+15
+            while time.monotonic() < deadline:
+                value = metadata(pid)
+                if value['revision'] >= expected:
+                    return value
+                self.page.wait_for_timeout(100)
+            self.fail(f'{pid}: retry never reached revision {expected}')
+
+        for index, scenario in enumerate(['unchanged', 'edited', 'collaborator']):
+            with self.subTest(scenario=scenario):
+                if index:
+                    self.context.unroute('**/api/projects/*/uploads')
+                    self.context.unroute('**/api/uploads/*/commit')
+                    self.page.remove_listener('response', observe)
+                    self.load(self.page)
+                self.new(410+index, 290)
+                self.stroke()  # Keep saved_local=0 from masking the failure through presence sync.
+                self.execute('shape.create', {'kind': 'rect', 'rect': [45, 45, 90, 60],
+                                              'fill': '#ffaa00', 'name': 'Original card'})
+                attempts, commits = [], []
+                state = {'lose_next': True}
+                responses = []
+
+                def trace():
+                    (ARTIFACTS/f'lost-ack-{scenario}-requests.json').write_text(json.dumps(
+                        {'attempts': attempts, 'durable_commits': commits, 'responses': responses}, indent=2))
+
+                def observe(response):
+                    if '/api/' in response.url:
+                        responses.append({'method': response.request.method, 'path': urlparse(response.url).path,
+                                          'status': response.status})
+                        trace()
+
+                self.page.on('response', observe)
+
+                def upload(route):
+                    attempts.append({'url': route.request.url, **route.request.post_data_json})
+                    route.continue_()
+
+                def commit(route):
+                    if state['lose_next']:
+                        state['lose_next'] = False
+                        response = route.fetch()  # The real local server durably commits first.
+                        self.assertTrue(response.ok, response.text())
+                        commits.append(response.json())
+                        route.fulfill(status=503, json={'error': 'Synthetic lost commit confirmation'})
+                    else:
+                        route.continue_()
+
+                self.context.route('**/api/projects/*/uploads', upload)
+                self.context.route('**/api/uploads/*/commit', commit)
+                count_before = len(self.projects())
+                with self.page.expect_response(lambda r: r.url.endswith('/commit') and r.status == 503):
+                    save(['More', 'Save'])
+                self.page.wait_for_timeout(250)
+                self.assertEqual(len(commits), 1)
+                self.assertEqual(commits[0]['revision'], 1)
+                pid = attempts[0]['url'].split('/')[-2]
+                first = metadata(pid)
+                self.assertEqual(first['revision'], 1, 'The fixture must lose the ACK after a real durable commit')
+                self.assertEqual(first['content']['sha256'], attempts[0]['sha256'])
+                picture(f'lost-ack-{scenario}-server-saved-browser-uncertain.png')
+
+                if scenario == 'edited':
+                    self.execute('shape.create', {'kind': 'rect', 'rect': [170, 80, 70, 90],
+                                                  'fill': '#3344cc', 'name': 'Later local edit'})
+                elif scenario == 'collaborator':
+                    other_context, second = self.context_page('?project='+pid, token=token)
+                    layers = self.inspect(second)['document']['layers']
+                    self.execute('layer.renameLayer', {'layer': layers[0]['id'], 'name': 'Remote background'}, page=second)
+                    save(['More', 'Comments', 'Save', 'Share'], page=second)
+                    wait_revision(pid, 2)
+                    self.execute('layer.renameLayer', {'layer': layers[1]['id'], 'name': 'Later local card'})
+                    other_context.close()
+
+                before = self.inspect()['document']
+                pixels = Image.open(self.download('file.export.quickExportAsPng')).convert('RGBA').tobytes()
+                retry_start = len(responses)
+                save(['More', 'Comments', 'Retry save', 'Share'], name='Retry save')
+                # A normal save refreshes the project list; a server-merged save
+                # instead downloads the merged native file into the editor.
+                completion_path = '/api/projects/'+pid+'/content' if scenario == 'collaborator' else '/api/projects'
+                deadline = time.monotonic()+10
+                while time.monotonic() < deadline:
+                    retry_responses = responses[retry_start:]
+                    if any(r['status'] == 409 for r in retry_responses) or any(
+                            r['method'] == 'GET' and r['path'] == completion_path and r['status'] == 200
+                            for r in retry_responses):
+                        break
+                    self.page.wait_for_timeout(50)
+                trace()
+                picture(f'lost-ack-{scenario}-retry-result.png')
+                self.assertFalse(any(r['status'] == 409 for r in responses[retry_start:]),
+                                 f'A durable commit whose ACK was lost became a false conflict: {responses[retry_start:]}')
+                self.assertTrue(any(r['method'] == 'GET' and r['path'] == completion_path and r['status'] == 200
+                                    for r in responses[retry_start:]), 'Retry never completed its successful refresh or merged-file download')
+                expected_revision = {'unchanged': 1, 'edited': 2, 'collaborator': 3}[scenario]
+                current = wait_revision(pid, expected_revision)
+                self.page.wait_for_timeout(650)
+                assert_header_geometry(self, picture(f'lost-ack-{scenario}-retry-completed.png'),
+                                       ['More', 'Comments', 'Save', 'Share'])
+                self.assertEqual(len(self.projects()), count_before+1, 'Retry created a duplicate project')
+                self.assertEqual(current['revision'], expected_revision)
+                self.assertEqual(len(attempts), 1 if scenario == 'unchanged' else 2)
+                if scenario != 'unchanged':
+                    self.assertEqual(attempts[-1]['base_revision'], 1, 'Retry guessed a base instead of proving its own committed bytes')
+                if scenario != 'collaborator':
+                    self.assertEqual(current['content']['sha256'], attempts[-1]['sha256'])
+                expected_names = ([l['name'] for l in before['layers']] if scenario != 'collaborator'
+                                  else ['Remote background', 'Later local card'])
+                self.assertEqual([l['name'] for l in self.inspect()['document']['layers']], expected_names)
+                data = b''.join(self.context.request.get(BASE+f'/api/projects/{pid}/content?revision={expected_revision}&part={part}').body()
+                                for part in range((current['content']['bytes']+524287)//524288))
+                self.assertEqual(hashlib.sha256(data).hexdigest(), current['content']['sha256'])
+                with zipfile.ZipFile(io.BytesIO(data)) as archive:
+                    # The layer panel reports top-to-bottom while the manifest
+                    # stores the native stacking order. Pixel equality below
+                    # verifies composition without conflating those two orders.
+                    self.assertCountEqual([l['name'] for l in json.loads(archive.read('manifest.json'))['document']['layers']], expected_names)
+                self.context.unroute('**/api/projects/*/uploads', upload)
+                self.context.unroute('**/api/uploads/*/commit', commit)
+                self.load(self.page, '?project='+pid)
+                self.assertEqual(Image.open(self.download('file.export.quickExportAsPng')).convert('RGBA').tobytes(), pixels,
+                                 'Save retry or reopen changed the document pixels')
+                observations.append({'scenario': scenario, 'revision': current['revision'],
+                                     'attempt_bases': [a['base_revision'] for a in attempts],
+                                     'cloud_sha256': current['content']['sha256'], 'pixel_sha256': hashlib.sha256(pixels).hexdigest()})
+                (ARTIFACTS/'lost-ack-reconciliation.json').write_text(json.dumps(observations, indent=2))
+
+    def test_41_recovered_and_template_copies_drop_closed_document_bindings(self):
+        self.signed_in()
+
+        def picture(name):
+            data = self.page.screenshot(scale='css')
+            (ARTIFACTS/name).write_bytes(data)
+            return Image.open(io.BytesIO(data)).convert('RGB')
+
+        def open_template():
+            self.return_to_workspace()
+            self.page.mouse.click(100, 199)
+            self.page.wait_for_timeout(250)
+            rect = workspace_template_previews(picture('copy-template-gallery.png'), has_quick_actions=False)[0]
+            self.page.mouse.click((rect[0]+rect[2])/2, (rect[1]+rect[3])/2)
+            self.page.wait_for_timeout(650)
+            self.assertIsNotNone(self.inspect()['document'])
+
+        def wait_saved(pid):
+            deadline = time.monotonic()+15
+            while time.monotonic() < deadline:
+                response = self.context.request.get(BASE+'/api/projects/'+pid)
+                if response.ok and response.json()['revision'] >= 1:
+                    return response.json()
+                self.page.wait_for_timeout(100)
+            self.fail('The new project did not receive its first complete save')
+
+        for index, source in enumerate(['recovery', 'template']):
+            with self.subTest(source=source):
+                if index:
+                    self.load(self.page)
+                    open_template()
+                else:
+                    self.new(433, 299)
+                    self.stroke()
+                with self.page.expect_response(lambda r: r.url == BASE+'/api/projects' and r.request.method == 'POST') as created:
+                    self.page.mouse.click(1320, 32)
+                pid = created.value.json()['id']
+                original = wait_saved(pid)
+                self.page.wait_for_timeout(200)
+                if source == 'recovery':
+                    self.execute('edit.fill', {'color': '#cc5577'})
+                    self.page.wait_for_timeout(2300)  # Persist browser recovery before the cloud autosave deadline.
+                expected = self.inspect()['document']
+                pixels = Image.open(self.download('file.export.quickExportAsPng')).convert('RGBA').tobytes()
+                # Use the existing native close command while keeping Cloud and
+                # its old binding alive in this same WASM session.
+                self.execute('file.close')
+                self.assertIsNone(self.inspect()['document'])
+                if source == 'recovery':
+                    self.return_to_workspace()
+                    self.page.mouse.click(100, 249)
+                    self.page.wait_for_timeout(200)
+                    picture('same-session-recovery-available.png')
+                    self.click_browser_recovery()
+                    self.page.wait_for_timeout(500)
+                else:
+                    open_template()
+                restored = self.inspect()['document']
+                self.assertEqual((restored['width'], restored['height']), (expected['width'], expected['height']))
+                self.assertEqual([l['name'] for l in restored['layers']], [l['name'] for l in expected['layers']])
+                self.assertEqual(Image.open(self.download('file.export.quickExportAsPng')).convert('RGBA').tobytes(), pixels)
+                controls = assert_header_geometry(self, picture(f'same-session-{source}-unbound-copy.png'), ['More', 'Save'])
+                count = len(self.projects())
+                rect = controls[1]
+                with self.page.expect_response(lambda r: r.url == BASE+'/api/projects' and r.request.method == 'POST') as created:
+                    self.page.mouse.click((rect[0]+rect[2])/2, (rect[1]+rect[3])/2)
+                copy_id = created.value.json()['id']
+                self.assertNotEqual(copy_id, pid)
+                wait_saved(copy_id)
+                self.assertEqual(len(self.projects()), count+1)
+                old = self.context.request.get(BASE+'/api/projects/'+pid).json()
+                self.assertEqual((old['revision'], old['content']['sha256']), (original['revision'], original['content']['sha256']),
+                                 'Saving a recovered/template copy overwrote the closed original project')
+                picture(f'same-session-{source}-saved-new-project.png')
+
+
+    def test_42_project_open_ignores_duplicate_and_superseded_responses(self):
+        self.signed_in()
+        projects = []
+        for width, title in [(421, 'Async project A'), (422, 'Async project B')]:
+            self.new(width, 280)
+            with self.page.expect_response(lambda r: r.url == BASE+'/api/projects' and r.request.method == 'POST') as created:
+                self.page.mouse.click(1320, 32)
+            pid = created.value.json()['id']
+            deadline = time.monotonic()+15
+            while next(p for p in self.projects() if p['id'] == pid)['revision'] == 0 and time.monotonic() < deadline:
+                self.page.wait_for_timeout(100)
+            self.assertTrue(self.context.request.patch(BASE+'/api/projects/'+pid, headers={'Origin': BASE}, data={'title': title}).ok)
+            projects.append(pid)
+
+        def picture(name):
+            data = self.page.screenshot(scale='css')
+            (ARTIFACTS/name).write_bytes(data)
+            return Image.open(io.BytesIO(data)).convert('RGB')
+
+        def choose(title):
+            controls = workspace_controls(Image.open(io.BytesIO(self.page.screenshot())))
+            search = controls['search']
+            self.page.mouse.click(search[0]+40, (search[1]+search[3])/2)
+            self.page.keyboard.press('ControlOrMeta+A')
+            self.page.keyboard.type(title)
+            self.page.wait_for_timeout(150)
+            rect = workspace_project_card(Image.open(io.BytesIO(self.page.screenshot())))['preview']
+            self.page.mouse.click((rect[0]+rect[2])/2, (rect[1]+rect[3])/2)
+            self.page.wait_for_timeout(150)
+            return rect
+
+        for outcome in ['success', 'error']:
+            with self.subTest(late_response=outcome):
+                self.context.unroute(BASE+'/api/projects/'+projects[0])
+                self.load(self.page)
+                held = []
+                self.context.route(BASE+'/api/projects/'+projects[0], lambda route: held.append(route))
+                rect = choose('Async project A')
+                self.assertEqual(len(held), 1)
+                self.page.mouse.click((rect[0]+rect[2])/2, (rect[1]+rect[3])/2)
+                self.page.wait_for_timeout(200)
+                picture(f'project-open-{outcome}-duplicate-pending.png')
+                self.assertEqual(len(held), 1, 'The same pending card started duplicate downloads')
+                choose('Async project B')
+                self.page.wait_for_timeout(650)
+                self.assertEqual(self.inspect()['document']['width'], 422)
+                before = picture(f'project-open-{outcome}-b-current.png')
+                if outcome == 'success':
+                    held[0].fulfill(response=held[0].fetch())
+                else:
+                    held[0].fulfill(status=503, json={'error': 'Synthetic superseded project failure'})
+                self.page.wait_for_timeout(650)
+                after = picture(f'project-open-{outcome}-a-ignored.png')
+                self.assertEqual(self.inspect()['document']['width'], 422, 'An older open replaced the more recent project choice')
+                footer = (0, before.height-27, 1100, before.height)
+                self.assertEqual(before.crop(footer).tobytes(), after.crop(footer).tobytes(),
+                                 'A superseded open changed the current project status')
+
+    def test_43_stale_project_lists_cannot_undo_visible_trash_or_restore(self):
+        self.signed_in()
+        self.new(455, 288)
+        self.page.mouse.click(1320, 32)
+        pid = self.wait_revision(1)['id']
+        self.return_to_workspace()
+        self.page.mouse.click(100, 249)
+        self.page.wait_for_timeout(200)
+        held, stale = [], []
+        phase = {'hold': False}
+
+        def listing(route):
+            if phase['hold']:
+                phase['hold'] = False
+                stale.append(route.fetch().json())
+                held.append(route)
+            else:
+                route.continue_()
+
+        self.context.route(BASE+'/api/projects', listing)
+
+        def picture(name):
+            data = self.page.screenshot(scale='css')
+            (ARTIFACTS/name).write_bytes(data)
+            return Image.open(io.BytesIO(data)).convert('RGB')
+
+        def menu_action(offset):
+            card = workspace_project_card(Image.open(io.BytesIO(self.page.screenshot())))
+            self.page.mouse.click(card['card'][2]-32, card['preview'][3]+28)
+            self.page.wait_for_timeout(100)
+            with self.page.expect_response(lambda r: r.url == BASE+'/api/projects/'+pid and r.request.method == 'PATCH') as changed:
+                self.page.mouse.click(card['card'][2]+5, card['preview'][3]+offset)
+            self.assertTrue(changed.value.ok)
+            self.page.wait_for_timeout(150)
+
+        for index, trashed in enumerate([True, False]):
+            with self.subTest(trashed=trashed):
+                if not trashed:
+                    self.load(self.page)  # Give this subcase its authoritative current trash state.
+                    self.page.mouse.click(100, 399)
+                    self.page.wait_for_timeout(150)
+                phase['hold'] = True
+                menu_action(185)  # Star/unstar starts a real list refresh with the old trash state.
+                self.assertEqual(len(held), index+1)
+                self.assertEqual(next(p for p in stale[-1] if p['id'] == pid)['trashed'], not trashed)
+                with self.page.expect_response(lambda r: r.url == BASE+'/api/projects' and r.request.method == 'GET'):
+                    menu_action(223)  # Trash/restore produces a newer list response.
+                self.page.mouse.move(0, 0)
+                self.page.wait_for_timeout(200)
+                before = picture(f'project-list-trashed-{trashed}-current.png')
+                with self.assertRaises(AssertionError):
+                    workspace_project_card(before)
+                held[-1].fulfill(json=stale[-1])
+                self.page.wait_for_timeout(250)
+                after = picture(f'project-list-trashed-{trashed}-stale-ignored.png')
+                with self.assertRaises(AssertionError, msg='An old list response restored a card removed by a newer mutation'):
+                    workspace_project_card(after)
+                self.assertEqual(next(p for p in self.projects() if p['id'] == pid)['trashed'], trashed)
+
+
+    def test_44_browser_recovery_keeps_one_last_visited_copy_per_scope(self):
+        observations = []
+
+        def drafts():
+            return self.page.evaluate('''async () => await new Promise((resolve,reject) => {
+              const request=indexedDB.open('photocraft-studio-recovery');
+              request.onsuccess=()=>{const db=request.result;const rows=[];
+                const cursor=db.transaction('drafts').objectStore('drafts').openCursor();
+                cursor.onsuccess=()=>{const row=cursor.result;if(row){rows.push({key:row.key,
+                  name:row.value.name,savedAt:row.value.savedAt,data:Array.from(row.value.data)});row.continue()}
+                  else{resolve(rows);db.close()}};cursor.onerror=()=>reject(cursor.error)};
+              request.onerror=()=>reject(request.error);
+            })''')
+
+        def width(row):
+            with zipfile.ZipFile(io.BytesIO(bytes(row['data']))) as archive:
+                return json.loads(archive.read('manifest.json'))['document']['size']['width']
+
+        def last_visited(expected, scope='guest'):
+            self.page.wait_for_timeout(2300)
+            rows = [r for r in drafts() if r['key'].startswith(scope+':') or r['key'].startswith('guest:')]
+            self.assertEqual(len(rows), 1, 'Browser recovery accumulated more than the last visited document')
+            self.assertEqual(width(rows[0]), expected, 'Recovery points to a different document than the last visit')
+            observations.append({'expected_width': expected, 'scope': scope, 'key': rows[0]['key'],
+                                 'stored_width': width(rows[0]), 'physical_entry_count': len(drafts())})
+            (ARTIFACTS/'one-recovery-observations.json').write_text(json.dumps(observations, indent=2))
+            return rows[0]
+
+        self.new(461, 301)  # Clean native documents must also become the last visited recovery.
+        first = last_visited(461)
+        self.new(462, 302)
+        second = last_visited(462)
+        self.execute('document.activate', {'document': 0})
+        last_visited(461)
+
+        # A newer visit from a peer can finish while this tab's edit is still
+        # debouncing. Flush time must not make the older activity look newer.
+        self.stroke()
+        self.page.wait_for_timeout(200)
+        self.page.evaluate('''async (peer) => await new Promise((resolve,reject) => {
+          const request=indexedDB.open('photocraft-studio-recovery');request.onerror=()=>reject(request.error);
+          request.onsuccess=()=>{const db=request.result;const tx=db.transaction('drafts','readwrite');
+            const store=tx.objectStore('drafts');const keys=store.getAllKeys();keys.onsuccess=()=>{
+              for(const key of keys.result)if(key.startsWith('guest:'))store.delete(key);
+              store.put({name:'Newer peer visit',savedAt:Date.now(),data:new Uint8Array(peer.data)},'guest:newer-peer');
+            };tx.oncomplete=()=>{db.close();resolve()};tx.onerror=()=>reject(tx.error);
+          };
+        })''', second)
+        peer = last_visited(462)
+        self.assertEqual(peer['key'], 'guest:newer-peer', 'An older debounced edit evicted the newer peer visit')
+        self.assertEqual(self.inspect()['document']['width'], 461)
+        self.execute('document.activate', {'document': 1})
+        self.page.wait_for_timeout(150)
+        self.execute('document.activate', {'document': 0})
+        last_visited(461)
+        self.execute('document.activate', {'document': 1})
+        self.page.wait_for_timeout(100)
+        self.execute('document.activate', {'document': 0})
+        last_visited(461)
+
+        # One recovery slot cannot safely cover multiple unsaved native tabs
+        # across an authentication redirect. Exercise the actual Google control.
+        self.execute('document.activate', {'document': 1})
+        self.stroke()
+        self.execute('document.activate', {'document': 0})
+        self.context.route('**/api/config', lambda route: route.fulfill(json={'cloud': True, 'signIn': True}))
+        redirects = []
+        self.context.route('**/auth/login', lambda route: (redirects.append(route.request.url),
+                           route.fulfill(content_type='text/html', body='<h1>Unexpected sign-in redirect</h1>')))
+        self.page.wait_for_timeout(2200)
+        self.page.mouse.click(1400, 32)
+        self.page.wait_for_timeout(150)
+        self.page.mouse.click(1270, 170)
+        self.page.wait_for_timeout(300)
+        self.assertEqual(redirects, [], 'Signing in discarded unsaved tabs that one recovery entry cannot preserve')
+        self.assertEqual(self.inspect()['document']['width'], 461)
+        self.page.screenshot(path=str(ARTIFACTS/'one-recovery-sign-in-unsaved-tabs-preserved.png'))
+        self.page.keyboard.press('Escape')
+        self.load(self.page)
+        row = last_visited(461)
+        self.assertEqual(row['key'], first['key'], 'Reload should preserve the document-specific recovery identity')
+
+        foreign = str(uuid.uuid4())+':private-other-account'
+
+        def seed_legacy(scope, newest):
+            self.page.evaluate('''async ({scope,older,newest,foreign}) => await new Promise((resolve,reject) => {
+              const request=indexedDB.open('photocraft-studio-recovery');request.onerror=()=>reject(request.error);
+              request.onsuccess=()=>{const db=request.result;const tx=db.transaction('drafts','readwrite');
+                const store=tx.objectStore('drafts');const keys=store.getAllKeys();keys.onsuccess=()=>{
+                  for(const key of keys.result)if(key.startsWith(scope+':')||key.startsWith('guest:'))store.delete(key);
+                  const stamp=Date.now();
+                  store.put({name:'Older legacy copy',savedAt:stamp-2000,data:new Uint8Array(older.data)},scope+':legacy-older');
+                  store.put({name:'Newest legacy copy',savedAt:stamp-1000,data:new Uint8Array(newest.data)},scope+':legacy-newer');
+                  if(scope==='guest')store.put({name:'Private other account',savedAt:stamp,data:new Uint8Array(older.data)},foreign);
+                };tx.oncomplete=()=>{db.close();resolve()};tx.onerror=()=>reject(tx.error);
+              };
+            })''', {'scope': scope, 'older': first if newest is second else second,
+                     'newest': newest, 'foreign': foreign})
+
+        seed_legacy('guest', second)
+        self.load(self.page)
+        guest = last_visited(462)
+        self.assertEqual(guest['key'], 'guest:legacy-newer')
+        private_before = next(r for r in drafts() if r['key'] == foreign)
+        self.page.mouse.click(100, 249)
+        self.page.wait_for_timeout(200)
+        image = Image.open(io.BytesIO(self.page.screenshot()))
+        self.assertEqual(len(workspace_recovery_controls(image)), 1, 'Legacy migration left multiple visible Recover actions')
+        self.page.screenshot(path=str(ARTIFACTS/'one-recovery-legacy-guest-compacted.png'))
+
+        self.signed_in()
+        scope = self.accounts[-1]
+        seed_legacy(scope, first)
+        self.load(self.page)
+        current = last_visited(461, scope)
+        self.assertEqual(current['key'], scope+':legacy-newer')
+        rows = drafts()
+        self.assertEqual(len(rows), 2, 'Only the current recovery and isolated other-account entry should remain')
+        self.assertEqual(next(r for r in rows if r['key'] == foreign), private_before,
+                         'Compacting current-account recovery modified another account’s private snapshot')
+        self.page.mouse.click(100, 249)
+        self.page.wait_for_timeout(200)
+        image = Image.open(io.BytesIO(self.page.screenshot()))
+        self.assertEqual(len(workspace_recovery_controls(image)), 1, 'Another account recovery became visible')
+        self.click_browser_recovery()
+        self.page.wait_for_timeout(400)
+        self.assertEqual(self.inspect()['document']['width'], 461)
+        self.page.screenshot(path=str(ARTIFACTS/'one-recovery-current-account-restored.png'))
+
+        # Logout revokes pending account writes, but a fresh guest session in
+        # this same WASM instance must receive a new recovery permit.
+        self.page.mouse.move(0, 0)
+        before = Image.open(io.BytesIO(self.page.screenshot()))
+        self.page.mouse.click(1400, 32)
+        self.page.mouse.move(0, 0)
+        self.page.wait_for_timeout(200)
+        menu = Image.open(io.BytesIO(self.page.screenshot()))
+        actions = native_overlay_actions(before, menu)
+        self.assertEqual(len(actions), 1, 'The account menu should expose its Sign out action')
+        rect = actions[0]
+        self.page.mouse.click((rect[0]+rect[2])/2, (rect[1]+rect[3])/2)
+        self.page.mouse.move(0, 0)
+        self.page.wait_for_timeout(200)
+        confirmation = Image.open(io.BytesIO(self.page.screenshot()))
+        confirmation.save(ARTIFACTS/'one-recovery-logout-confirmation.png')
+        actions = native_overlay_actions(before, confirmation)
+        self.assertEqual(len(actions), 2, 'Logout must show Download and Sign out controls')
+        rect = actions[-1]
+        with self.page.expect_response(lambda r: r.url == BASE+'/api/logout' and r.request.method == 'POST') as logged_out:
+            self.page.mouse.click((rect[0]+rect[2])/2, (rect[1]+rect[3])/2)
+        self.assertTrue(logged_out.value.ok)
+        self.page.wait_for_timeout(300)
+        self.assertIsNone(self.inspect()['document'])
+        self.assertEqual(drafts(), [], 'Sign out and clear must remove prior-account browser recovery')
+        self.new(464, 304)
+        last_visited(464)
+        self.load(self.page)
+        last_visited(464)
+        self.assertFalse(any(r['key'].startswith(scope+':') for r in drafts()), 'An old account writer repopulated its cleared recovery')
+        self.page.screenshot(path=str(ARTIFACTS/'one-recovery-new-guest-after-logout.png'))
+
+
+    def test_45_initial_url_opens_once_when_connection_becomes_eligible(self):
+        token = self.signed_in()
+        self.new(481, 321)
+        self.stroke()
+        self.page.mouse.click(1320, 32)
+        pid = self.wait_revision(1)['id']
+        response = self.context.request.post(BASE+'/api/projects/'+pid+'/share', headers={'Origin': BASE})
+        self.assertTrue(response.ok)
+        share = response.json()['url'].split('share=')[1]
+        observations = []
+
+        for scenario in ['share-refresh', 'share-retry', 'project-retry', 'share-setup', 'project-setup']:
+            if len(self.contexts) > 1:
+                self.contexts[-1].close()
+            with self.subTest(scenario=scenario):
+                ctx = self.browser.new_context(viewport={'width': 1440, 'height': 960})
+                self.contexts.append(ctx)
+                project_link = scenario.startswith('project')
+                if project_link:
+                    ctx.add_cookies([{'name': 'pc_session', 'value': token, 'url': BASE, 'httpOnly': True, 'sameSite': 'Lax'}])
+                page = ctx.new_page()
+                page.on('pageerror', lambda error: self.errors.append(str(error)))
+                phase = {'ready': not scenario.endswith('setup')}
+                counts = {'config': 0, 'me': 0, 'open': 0}
+                path = '/api/projects/'+pid if project_link else '/api/share/'+share
+
+                def config(route):
+                    counts['config'] += 1
+                    route.fulfill(json={'cloud': phase['ready'], 'signIn': False})
+
+                def me(route):
+                    counts['me'] += 1
+                    if scenario.endswith('retry') and counts['me'] == 1:
+                        route.fulfill(status=503, json={'error': 'Synthetic initial session delay'})
+                    elif not phase['ready'] or not project_link:
+                        route.fulfill(status=401, json={'error': 'Sign in required'})
+                    else:
+                        route.continue_()
+
+                def opened(route):
+                    counts['open'] += 1
+                    route.continue_()
+
+                ctx.route(BASE+'/api/config', config)
+                ctx.route(BASE+'/api/me', me)
+                ctx.route(BASE+path, opened)
+                query = '?project='+pid if project_link else '?share='+share
+                page.goto(BASE+'/'+query, wait_until='domcontentloaded', timeout=90000)
+                page.wait_for_function('typeof window.photocraftCommand === "function"', timeout=60000)
+                page.wait_for_timeout(350)
+                if scenario.endswith(('setup', 'retry')):
+                    observations.append({'scenario': scenario, 'stage': 'not-ready', 'counts': dict(counts)})
+                    (ARTIFACTS/'initial-url-request-counts.json').write_text(json.dumps(observations, indent=2))
+                    page.screenshot(path=str(ARTIFACTS/f'initial-url-{scenario}-not-ready.png'))
+                    self.assertEqual(counts['open'], 0, 'An ineligible initial URL was dispatched before connection readiness')
+                    phase['ready'] = True
+                deadline = time.monotonic()+8
+                while time.monotonic() < deadline:
+                    if self.inspect(page)['document'] is not None:
+                        break
+                    page.wait_for_timeout(100)
+                document = self.inspect(page)['document']
+                self.assertIsNotNone(document, 'The deferred initial URL never opened after the connection recovered')
+                self.assertEqual((document['width'], document['height']), (481, 321))
+                page.wait_for_timeout(3800)
+                observations.append({'scenario': scenario, 'stage': 'settled', 'counts': dict(counts)})
+                (ARTIFACTS/'initial-url-request-counts.json').write_text(json.dumps(observations, indent=2))
+                page.screenshot(path=str(ARTIFACTS/f'initial-url-{scenario}-settled.png'))
+                self.assertEqual(counts['open'], 1, 'Connection refresh replayed the URL and reopened the same document')
+                if not project_link:
+                    self.assertGreaterEqual(counts['config'], 3, 'The fixture did not exercise repeating guest connection refresh')
+                self.assertEqual(self.inspect(page)['document']['width'], 481)
+                ctx.close()
+
+
+    def test_46_browser_quota_warning_does_not_pause_cloud_autosave(self):
+        self.signed_in()
+        observations = []
+        cloud_failure = {'enabled': False, 'attempts': 0}
+
+        def picture(name):
+            data = self.page.screenshot(scale='css')
+            (ARTIFACTS/name).write_bytes(data)
+            return Image.open(io.BytesIO(data)).convert('RGB')
+
+        def save(actions, name='Save'):
+            controls = assert_header_geometry(self, picture('recovery-quota-save-control.png'), actions)
+            rect = controls[actions.index(name)]
+            self.page.mouse.click((rect[0]+rect[2])/2, (rect[1]+rect[3])/2)
+            self.page.mouse.move(0, 0)
+
+        def signature(document):
+            return sorted((str(layer['id']), layer['name']) for layer in document['layers'])
+
+        def metadata():
+            response = self.context.request.get(BASE+'/api/projects/'+pid)
+            self.assertTrue(response.ok, response.text())
+            return response.json()
+
+        def cloud_document(meta):
+            chunks = []
+            for part in range((meta['content']['bytes']+524287)//524288):
+                response = self.context.request.get(BASE+f"/api/projects/{pid}/content?revision={meta['revision']}&part={part}")
+                self.assertTrue(response.ok, response.text() if not response.ok else '')
+                chunks.append(response.body())
+            data = b''.join(chunks)
+            self.assertEqual(hashlib.sha256(data).hexdigest(), meta['content']['sha256'])
+            with zipfile.ZipFile(io.BytesIO(data)) as archive:
+                return json.loads(archive.read('manifest.json'))['document']
+
+        def recovery_rows():
+            return self.page.evaluate('''async () => await new Promise((resolve,reject) => {
+              const request=indexedDB.open('photocraft-studio-recovery');request.onerror=()=>reject(request.error);
+              request.onsuccess=()=>{const db=request.result;const rows=[];
+                const cursor=db.transaction('drafts').objectStore('drafts').openCursor();
+                cursor.onsuccess=()=>{const row=cursor.result;if(row){rows.push({key:row.key,data:Array.from(row.value.data)});row.continue()}
+                  else{db.close();resolve(rows)}};cursor.onerror=()=>{db.close();reject(cursor.error)};
+              };
+            })''')
+
+        def recovery_matches(expected):
+            rows = [r for r in recovery_rows() if r['key'].startswith(self.accounts[-1]+':')]
+            if len(rows) != 1:
+                return False
+            with zipfile.ZipFile(io.BytesIO(bytes(rows[0]['data']))) as archive:
+                document = json.loads(archive.read('manifest.json'))['document']
+            return signature(document) == expected
+
+        def wait_recovery(expected):
+            deadline = time.monotonic()+10
+            while time.monotonic() < deadline:
+                if recovery_matches(expected):
+                    return
+                self.page.wait_for_timeout(100)
+            self.fail('The single browser snapshot did not catch up with the native document')
+
+        def warning_ink(image, footer=False):
+            pixels = image.load()
+            top, bottom = ((image.height-27, image.height) if footer else (image.height-125, image.height-28))
+            return sum(pixels[x, y][0] > pixels[x, y][2]+40 and pixels[x, y][1] > pixels[x, y][2]+30
+                       for y in range(top, bottom) for x in range(min(image.width, 1000)))
+
+        def wait_cloud_revision(expected, label):
+            deadline = time.monotonic()+12
+            while time.monotonic() < deadline:
+                value = metadata()
+                if value['revision'] >= expected:
+                    break
+                self.page.wait_for_timeout(100)
+            value = metadata()
+            picture(f'recovery-quota-{label}.png')
+            observations.append({'phase': label, 'revision': value['revision'],
+                                 'native_layers': signature(self.inspect()['document']),
+                                 'quota_attempts': self.page.evaluate('window.__recoveryQuota.attempts'),
+                                 'cloud_sha256': value.get('content', {}).get('sha256')})
+            (ARTIFACTS/'recovery-quota-observations.json').write_text(json.dumps(observations, indent=2))
+            self.assertGreaterEqual(value['revision'], expected,
+                                    'An IndexedDB recovery failure paused healthy cloud autosave')
+            return value
+
+        def upload(route):
+            if route.request.method == 'PUT' and cloud_failure['enabled']:
+                cloud_failure['attempts'] += 1
+                route.fulfill(status=503, json={'error': 'Synthetic cloud failure during local recovery warning'})
+            else:
+                route.continue_()
+
+        self.new(477, 311)
+        self.execute('shape.create', {'kind': 'ellipse', 'rect': [60, 40, 100, 90],
+                                      'fill': '#9278ff', 'name': 'Initial persisted shape'})
+        save(['More', 'Save'])
+        pid = self.wait_revision(1)['id']
+        baseline = signature(self.inspect()['document'])
+        wait_recovery(baseline)
+        self.assertEqual(signature(cloud_document(metadata())), baseline)
+        clear = picture('recovery-quota-before.png')
+        self.assertLess(warning_ink(clear), 20, 'The fixture already has a local recovery warning')
+
+        self.page.evaluate('''() => {
+          const original=IDBObjectStore.prototype.put;
+          window.__recoveryQuota={enabled:true,attempts:0,restore:()=>{IDBObjectStore.prototype.put=original}};
+          IDBObjectStore.prototype.put=function(...args){
+            if(this.name==='drafts'&&window.__recoveryQuota.enabled){
+              window.__recoveryQuota.attempts++;
+              throw new DOMException('Synthetic browser storage quota exhausted','QuotaExceededError');
+            }
+            return original.apply(this,args);
+          };
+        }''')
+        self.context.route('**/api/uploads/*/*', upload)
+        try:
+            # Exercise real native content, then let autosave run with no Save click.
+            self.execute('layer.duplicate')
+            self.execute('layer.renameLayer', {'name': 'Cloud survives local quota'})
+            first_edit = signature(self.inspect()['document'])
+            self.assertNotEqual(first_edit, baseline)
+            self.page.wait_for_function('window.__recoveryQuota.attempts > 0', timeout=7000)
+            saved = wait_cloud_revision(2, 'cloud-autosave-completed')
+            self.assertEqual(saved['revision'], 2)
+            self.assertEqual(signature(self.inspect()['document']), first_edit)
+            self.assertEqual(signature(cloud_document(saved)), first_edit)
+            self.assertFalse(recovery_matches(first_edit), 'The quota injection did not prevent local persistence')
+            self.page.wait_for_timeout(350)
+            warning = picture('recovery-quota-warning-with-saved-cloud.png')
+            assert_header_geometry(self, warning, ['More', 'Comments', 'Save', 'Share'])
+            self.assertGreater(warning_ink(warning), 30, 'Local recovery warning vanished after successful cloud autosave')
+            recovery_action = recovery_warning_action(warning)
+            self.assertGreaterEqual(recovery_action[3]-recovery_action[1], 27,
+                                    'Retry recovery must render at least28px tall, allowing1px antialiasing')
+            self.assertLess(warning_ink(warning, footer=True), 20, 'The healthy cloud save was presented as a cloud error')
+            self.page.wait_for_timeout(2200)
+            self.assertGreater(warning_ink(picture('recovery-quota-warning-still-visible.png')), 30)
+            self.assertEqual(metadata()['revision'], 2, 'Recovery retries produced redundant cloud versions')
+
+            # Inspect the actual narrow-screen warning rather than a mocked DOM.
+            self.page.set_viewport_size({'width': 390, 'height': 844})
+            self.page.wait_for_timeout(300)
+            phone = picture('recovery-quota-warning-phone.png')
+            self.assertGreater(warning_ink(phone), 20, 'Recovery warning is not visible on a phone viewport')
+            recovery_action = recovery_warning_action(phone)
+            self.assertGreaterEqual(recovery_action[3]-recovery_action[1], 27)
+            self.assertGreaterEqual(recovery_action[0], 8)
+            self.assertLessEqual(recovery_action[2], phone.width-8)
+            self.assertLessEqual(recovery_action[3], phone.height-28,
+                                 'Wrapped recovery action overlaps the cloud-status footer')
+            self.assertEqual(signature(self.inspect()['document']), first_edit)
+            self.page.set_viewport_size({'width': 1440, 'height': 960})
+            self.page.wait_for_timeout(300)
+
+            # Local recovery becoming healthy must not dismiss a real cloud error.
+            cloud_failure['enabled'] = True
+            with self.page.expect_response(lambda r: '/api/uploads/' in r.url
+                                           and r.request.method == 'PUT' and r.status == 503, timeout=12000):
+                self.execute('layer.duplicate')
+                self.execute('layer.renameLayer', {'name': 'Cloud retry preserves this layer'})
+            second_edit = signature(self.inspect()['document'])
+            self.page.wait_for_timeout(350)
+            both = picture('recovery-quota-cloud-and-local-failure.png')
+            assert_header_geometry(self, both, ['More', 'Comments', 'Retry save', 'Share'])
+            self.assertGreater(warning_ink(both), 30)
+            self.assertGreater(warning_ink(both, footer=True), 30)
+            footer = (0, both.height-27, 1000, both.height)
+            self.page.evaluate('window.__recoveryQuota.enabled = false')
+            wait_recovery(second_edit)
+            self.page.wait_for_timeout(250)
+            restored = picture('recovery-quota-local-restored-cloud-error-retained.png')
+            self.assertLess(warning_ink(restored), 20, 'Local warning persisted after its snapshot succeeded')
+            self.assertEqual(both.crop(footer).tobytes(), restored.crop(footer).tobytes(),
+                             'Local recovery success replaced the cloud error')
+            assert_header_geometry(self, restored, ['More', 'Comments', 'Retry save', 'Share'])
+            self.assertEqual(signature(self.inspect()['document']), second_edit)
+            self.assertEqual(metadata()['revision'], 2)
+
+            cloud_failure['enabled'] = False
+            save(['More', 'Comments', 'Retry save', 'Share'], name='Retry save')
+            final = wait_cloud_revision(3, 'both-stores-restored')
+            self.assertEqual(final['revision'], 3)
+            self.assertEqual(signature(cloud_document(final)), second_edit)
+            self.assertEqual(signature(self.inspect()['document']), second_edit)
+            wait_recovery(second_edit)
+            self.assertEqual(len(self.projects()), 1, 'Recovery or cloud retry created another project')
+            self.assertGreaterEqual(cloud_failure['attempts'], 1)
+        finally:
+            self.page.evaluate('window.__recoveryQuota.restore()')
+            self.context.unroute('**/api/uploads/*/*', upload)
+
+
+    def test_47_imported_files_ignore_closed_cloud_bindings_and_late_results(self):
+        token = self.signed_in()
+        observations = []
+
+        def picture(label):
+            data = self.page.screenshot(scale='css')
+            (ARTIFACTS/f'local-file-{label}.png').write_bytes(data)
+            return Image.open(io.BytesIO(data)).convert('RGB')
+
+        def save(actions, page=None):
+            page = page or self.page
+            controls = assert_header_geometry(self, Image.open(io.BytesIO(page.screenshot(scale='css'))), actions)
+            rect = controls[actions.index('Save')]
+            page.mouse.click((rect[0]+rect[2])/2, (rect[1]+rect[3])/2)
+            page.mouse.move(0, 0)
+
+        def metadata(pid):
+            response = self.context.request.get(BASE+'/api/projects/'+pid)
+            self.assertTrue(response.ok, response.text())
+            return response.json()
+
+        def wait_saved(pid, revision):
+            deadline = time.monotonic()+15
+            while time.monotonic() < deadline:
+                value = metadata(pid)
+                if value['revision'] >= revision:
+                    return value
+                self.page.wait_for_timeout(100)
+            self.fail(f'Project {pid} did not finish authorized save {revision}')
+
+        for index, scenario in enumerate(['picker', 'drop', 'created', 'saved', 'save-error', 'synced', 'sync-error']):
+            with self.subTest(scenario=scenario):
+                if index:
+                    self.load(self.page)
+                self.new(489+index, 317)
+                self.stroke()
+                self.execute('shape.create', {'kind': 'ellipse', 'rect': [60, 40, 100, 90],
+                                              'fill': '#9278ff', 'name': 'Original cloud shape'})
+                original_document = self.inspect()['document']
+                pixels = Image.open(self.download('file.export.quickExportAsPng')).convert('RGBA').tobytes()
+                with self.page.expect_download() as downloaded:
+                    self.command('ui.menu.invoke', {'id': 'file.saveAs', 'params': {'path': 'closed-cloud-document.pcraft'}})
+                path = ARTIFACTS/f'closed-cloud-{scenario}.pcraft'
+                downloaded.value.save_as(path)
+                self.assertTrue(zipfile.is_zipfile(path), 'The local-copy fixture must preserve native document identity')
+                native_bytes = path.read_bytes()
+                held = []
+                held_kind = ('created' if scenario == 'created' else
+                             'commit' if scenario in ['saved', 'save-error'] else
+                             'content' if scenario in ['synced', 'sync-error'] else None)
+
+                def hold(route):
+                    request = route.request
+                    match = ((held_kind == 'created' and request.url == BASE+'/api/projects' and request.method == 'POST')
+                             or (held_kind == 'commit' and request.url.endswith('/commit') and request.method == 'POST')
+                             or (held_kind == 'content' and '/content?' in request.url and request.method == 'GET'))
+                    if match and not held:
+                        response = route.fetch()
+                        self.assertTrue(response.ok, response.text() if not response.ok else '')
+                        held.append((route, response))
+                    else:
+                        route.continue_()
+
+                pattern = '**/api/**'
+                if held_kind in ['created', 'commit']:
+                    self.context.route(pattern, hold)
+                if held_kind == 'created':
+                    save(['More', 'Save'])
+                    deadline = time.monotonic()+10
+                    while not held and time.monotonic() < deadline:
+                        self.page.wait_for_timeout(100)
+                    self.assertEqual(len(held), 1, 'The real project creation was not held')
+                    pid = held[0][1].json()['id']
+                else:
+                    with self.page.expect_response(lambda r: r.url == BASE+'/api/projects' and r.request.method == 'POST') as created:
+                        save(['More', 'Save'])
+                    pid = created.value.json()['id']
+                    wait_saved(pid, 1)
+                    self.page.wait_for_timeout(250)
+
+                other_context = None
+                if held_kind == 'content':
+                    self.context.route(pattern, hold)
+                    other_context, other = self.context_page('?project='+pid, token=token)
+                    self.execute('shape.create', {'kind': 'rect', 'rect': [220, 70, 80, 100],
+                                                  'fill': '#ffbb22', 'name': 'Later cloud content'}, page=other)
+                    save(['More', 'Comments', 'Save', 'Share'], page=other)
+                    wait_saved(pid, 2)
+                if held_kind and held_kind != 'created':
+                    deadline = time.monotonic()+12
+                    while not held and time.monotonic() < deadline:
+                        self.page.wait_for_timeout(100)
+                    self.assertEqual(len(held), 1, 'The authorized old save or sync did not reach its held response')
+
+                self.execute('file.close')
+                self.assertIsNone(self.inspect()['document'])
+                self.page.wait_for_timeout(150)
+                if scenario in ['drop', 'saved', 'sync-error']:
+                    transfer = self.page.evaluate_handle('''([data,name]) => {
+                        const transfer = new DataTransfer();
+                        transfer.items.add(new File([new Uint8Array(data)], name, {type:'application/octet-stream'}));
+                        return transfer;
+                    }''', [list(native_bytes), path.name])
+                    self.page.locator('canvas').dispatch_event('drop', {'dataTransfer': transfer})
+                    transfer.dispose()
+                else:
+                    self.open_file(path)
+                deadline = time.monotonic()+8
+                while self.inspect()['document'] is None and time.monotonic() < deadline:
+                    self.page.wait_for_timeout(100)
+                imported = self.inspect()['document']
+                self.assertIsNotNone(imported, 'The real local-file import never completed')
+                self.assertEqual(imported['width'], original_document['width'])
+                self.assertEqual(Image.open(self.download('file.export.quickExportAsPng')).convert('RGBA').tobytes(), pixels)
+                if held_kind == 'content':
+                    # Match the closed document's local revision using real,
+                    # reversible edits. A DocId+revision check alone must not
+                    # admit the old sync into this new local-file lifetime.
+                    layer = original_document['layers'][0]
+                    self.execute('layer.renameLayer', {'layer': layer['id'], 'name': 'Temporary import title'})
+                    self.execute('layer.renameLayer', {'layer': layer['id'], 'name': layer['name']})
+                    self.assertEqual(self.inspect()['document']['revision'], original_document['revision'])
+                if held:
+                    if scenario in ['save-error', 'sync-error']:
+                        held[0][0].fulfill(status=503, json={'error': 'Synthetic response from a closed document'})
+                    else:
+                        held[0][0].fulfill(response=held[0][1])
+                    self.page.wait_for_timeout(700)
+                if held_kind:
+                    self.context.unroute(pattern, hold)
+                if other_context:
+                    other_context.close()
+                original = wait_saved(pid, 2 if held_kind == 'content' else 1)
+                picture(scenario+'-after-late-response')
+                self.assertEqual(Image.open(self.download('file.export.quickExportAsPng')).convert('RGBA').tobytes(), pixels,
+                                 'A late cloud response replaced the imported local pixels')
+                self.execute('shape.create', {'kind': 'rect', 'rect': [280, 180, 100, 70],
+                                              'fill': '#11aa77', 'name': 'Independent local copy'})
+                local = self.inspect()['document']
+                self.page.wait_for_timeout(4400)  # Exercise the real cloud autosave deadline.
+                after = metadata(pid)
+                image = picture(scenario+'-before-explicit-save')
+                observations.append({'scenario': scenario, 'original_id': pid,
+                                     'before_revision': original['revision'], 'after_revision': after['revision'],
+                                     'before_sha256': original['content']['sha256'], 'after_sha256': after['content']['sha256'],
+                                     'native_layers': [layer['name'] for layer in self.inspect()['document']['layers']]})
+                (ARTIFACTS/'local-file-binding-observations.json').write_text(json.dumps(observations, indent=2))
+                self.assertEqual((after['revision'], after['content']['sha256']),
+                                 (original['revision'], original['content']['sha256']),
+                                 'A local file or late completion saved its edits into the closed cloud project')
+                self.assertEqual([layer['name'] for layer in self.inspect()['document']['layers']],
+                                 [layer['name'] for layer in local['layers']], 'Late sync replaced the imported local document')
+                assert_header_geometry(self, image, ['More', 'Save'])
+                if scenario in ['save-error', 'sync-error']:
+                    warning = sum(r > b+40 and g > b+30 for r, g, b in image.crop((0, image.height-27, 1000, image.height)).getdata())
+                    self.assertLess(warning, 20, 'A closed document response painted an error on the new local copy')
+                with self.page.expect_response(lambda r: r.url == BASE+'/api/projects' and r.request.method == 'POST') as created:
+                    save(['More', 'Save'])
+                copy_id = created.value.json()['id']
+                self.assertNotEqual(copy_id, pid)
+                copied = wait_saved(copy_id, 1)
+                self.assertEqual(copied['width'], original_document['width'])
+                final_original = metadata(pid)
+                self.assertEqual((final_original['revision'], final_original['content']['sha256']),
+                                 (original['revision'], original['content']['sha256']))
+                picture(scenario+'-saved-new-project')
+
+        # Closing invalidates a document's operation; merely switching tabs must
+        # preserve it and keep a second save disabled until it completes.
+        self.load(self.page)
+        self.new(515, 329)
+        self.stroke()
+        first_pixels = Image.open(self.download('file.export.quickExportAsPng')).convert('RGBA').tobytes()
+        pending = []
+
+        def hold_first_save(route):
+            if route.request.method == 'POST' and route.request.url.endswith('/commit') and not pending:
+                response = route.fetch()
+                self.assertTrue(response.ok, response.text())
+                pending.append((route, response))
+            else:
+                route.continue_()
+
+        self.context.route('**/api/uploads/*/commit', hold_first_save)
+        with self.page.expect_response(lambda r: r.url == BASE+'/api/projects' and r.request.method == 'POST') as created:
+            save(['More', 'Save'])
+        first_id = created.value.json()['id']
+        first_saved = wait_saved(first_id, 1)
+        self.assertEqual(len(pending), 1)
+        self.return_to_workspace()
+        self.page.mouse.click(100, 199)
+        self.page.wait_for_timeout(250)
+        rect = workspace_template_previews(picture('inactive-save-template-gallery'), has_quick_actions=False)[0]
+        self.page.mouse.click((rect[0]+rect[2])/2, (rect[1]+rect[3])/2)
+        self.page.wait_for_timeout(650)
+        second_document = self.inspect()['document']
+        self.assertNotEqual(second_document['width'], 515)
+        count = len(self.projects())
+        second_creations = []
+        self.page.on('request', lambda request: second_creations.append(request.url)
+                     if request.url == BASE+'/api/projects' and request.method == 'POST' else None)
+        save(['More', 'Save'])
+        self.page.wait_for_timeout(500)
+        picture('inactive-save-second-document-disabled')
+        self.assertEqual(second_creations, [], 'A second save started while the first live document still owns a save operation')
+        self.assertEqual(len(self.projects()), count)
+        pending[0][0].fulfill(response=pending[0][1])
+        self.page.wait_for_timeout(500)
+        self.context.unroute('**/api/uploads/*/commit', hold_first_save)
+        with self.page.expect_response(lambda r: r.url == BASE+'/api/projects' and r.request.method == 'POST') as created:
+            save(['More', 'Save'])
+        second_id = created.value.json()['id']
+        self.assertNotEqual(second_id, first_id)
+        wait_saved(second_id, 1)
+        self.page.wait_for_timeout(300)
+        self.assertEqual(self.inspect()['document']['width'], second_document['width'])
+        self.execute('document.activate', {'document': 0})
+        self.page.wait_for_timeout(200)
+        self.assertEqual(self.inspect()['document']['width'], 515)
+        self.assertEqual(Image.open(self.download('file.export.quickExportAsPng')).convert('RGBA').tobytes(), first_pixels)
+        assert_header_geometry(self, picture('inactive-save-completion-retains-binding'), ['More', 'Comments', 'Save', 'Share'])
+        first_after = metadata(first_id)
+        self.assertEqual((first_after['revision'], first_after['content']['sha256']),
+                         (first_saved['revision'], first_saved['content']['sha256']))
+        count = len(self.projects())
+        self.execute('layer.renameLayer', {'name': 'Still bound after inactive completion'})
+        save(['More', 'Comments', 'Save', 'Share'])
+        wait_saved(first_id, 2)
+        self.assertEqual(len(self.projects()), count, 'An inactive valid save lost its original project binding')
+        self.assertEqual(metadata(second_id)['revision'], 1)
+        observations.append({'scenario': 'inactive-still-open', 'first_id': first_id,
+                             'second_id': second_id, 'first_final_revision': metadata(first_id)['revision']})
+        (ARTIFACTS/'local-file-binding-observations.json').write_text(json.dumps(observations, indent=2))
 
 
 if __name__ == '__main__':
