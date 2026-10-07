@@ -20,6 +20,10 @@ use wasm_bindgen::JsValue;
 const CHUNK: usize = 524_288;
 type Queue = Rc<RefCell<Vec<(u64, Message)>>>;
 enum Message {
+    CloudResult(u64, Box<Message>),
+    Quiet,
+    SessionExpired(u64),
+    SessionChecked(u64, Result<(Option<Value>, Option<SessionAccess>), String>),
     Connection(Result<(Value, Option<Value>), String>),
     List(u64, Result<Value, String>, Option<(u64, String)>),
     ProjectChanged(Result<(), String>, u64, String),
@@ -34,13 +38,17 @@ enum Message {
     CommitAttempt(DocumentRequest, UncertainCommit),
     CommitReconciled(DocumentRequest, String, u64, i64),
     DocumentError(DocumentRequest, String),
-    SignedOut,
+    SignedOut(Result<(), String>),
     SignInReady(u64, Option<(DocId, u64)>, Result<(), String>),
     Preview(String, Vec<u8>),
     Error(String),
     Drafts(u64, String, Result<Vec<(String, Value)>, String>),
     Recovered(String, Vec<u8>),
     Template(String, Vec<u8>),
+}
+struct SessionAccess {
+    projects: Value,
+    roles: HashMap<String, String>,
 }
 #[derive(Clone)]
 struct ProjectRequest {
@@ -68,6 +76,7 @@ struct UncertainCommit {
 struct DocumentRequest {
     document: DocId,
     generation: u64,
+    auth_generation: u64,
 }
 struct RecoveryWrite {
     generation: u64,
@@ -87,9 +96,18 @@ struct Binding {
     saved_local: u64,
     role: String,
 }
+impl Binding {
+    fn can_edit(&self) -> bool {
+        matches!(self.role.as_str(), "owner" | "edit")
+    }
+}
 pub struct Cloud {
     queue: Queue,
     epoch: u64,
+    auth_generation: Rc<Cell<u64>>,
+    auth_allowed: Rc<Cell<bool>>,
+    session_warning: Option<String>,
+    session_check_pending: bool,
     pub home: bool,
     configured: bool,
     booted: bool,
@@ -104,6 +122,7 @@ pub struct Cloud {
     uncertain_commits: HashMap<DocId, Vec<UncertainCommit>>,
     next_document_request: u64,
     pending_document: Option<DocumentRequest>,
+    deferred_save: Option<Message>,
     next_open_request: u64,
     pending_open: Option<(u64, String, Option<i64>)>,
     textures: HashMap<String, TextureHandle>,
@@ -153,6 +172,7 @@ pub struct Cloud {
     details_id: String,
     newer: bool,
     show_logout: bool,
+    logout_pending: bool,
     draft_allowed: Rc<Cell<bool>>,
     compact_panels: bool,
 }
@@ -177,14 +197,84 @@ fn request(method: &str, path: &str) -> RequestBuilder {
         _ => Request::get(path),
     }
 }
-async fn api(method: &str, path: &str, body: Option<Value>) -> Result<Value, String> {
-    let req = request(method, path);
+fn account_request(method: &str, path: &str, account: Option<&str>) -> RequestBuilder {
+    let request = request(method, path);
+    // The server checks this against the cookie on every private request, including bytes.
+    // Another browser tab changing the shared cookie cannot upload this account's work.
+    if let Some(account) = account { request.header("X-Photocraft-Account", account) } else { request }
+}
+// Keep authentication status typed until the scoped HTTP client has handled it.
+// Error copy is presentation only, never an authentication signal.
+#[derive(Debug)]
+enum HttpFailure {
+    Unauthorized,
+    Http(u16, String),
+    Other(String),
+}
+impl std::fmt::Display for HttpFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unauthorized => formatter.write_str("Sign in again to resume cloud saving and sharing."),
+            Self::Http(_, message) | Self::Other(message) => formatter.write_str(message),
+        }
+    }
+}
+impl From<String> for HttpFailure {
+    fn from(message: String) -> Self {
+        Self::Other(message)
+    }
+}
+#[derive(Clone)]
+struct CloudHttp {
+    queue: Queue,
+    epoch: u64,
+    ctx: egui::Context,
+    generation: u64,
+    current: Rc<Cell<u64>>,
+    allowed: Rc<Cell<bool>>,
+    account: Option<String>,
+}
+impl CloudHttp {
+    fn ready(&self) -> Result<(), String> {
+        if self.generation != self.current.get() || (self.account.is_some() && !self.allowed.get()) {
+            return Err("Cloud request paused until your account is verified.".into());
+        }
+        Ok(())
+    }
+    fn finish<T>(&self, result: Result<T, HttpFailure>) -> Result<T, String> {
+        if matches!(&result, Err(HttpFailure::Unauthorized)) && self.account.is_some() && self.generation == self.current.get() && self.allowed.replace(false) {
+            self.queue.borrow_mut().push((self.epoch, Message::SessionExpired(self.generation)));
+            self.ctx.request_repaint();
+        }
+        result.map_err(|error| error.to_string())
+    }
+    async fn api(&self, method: &str, path: &str, body: Option<Value>) -> Result<Value, String> {
+        self.ready()?;
+        self.finish(api(method, path, body, self.account.as_deref()).await)
+    }
+    async fn binary(&self, method: &str, path: &str, body: Option<&[u8]>) -> Result<Vec<u8>, String> {
+        self.ready()?;
+        self.finish(binary(method, path, body, self.account.as_deref()).await)
+    }
+}
+fn cloud_task<F: std::future::Future<Output = Result<Message, String>> + 'static>(http: CloudHttp, run: impl FnOnce(CloudHttp) -> F + 'static) {
+    let generation = http.generation;
+    task(&http.queue.clone(), http.epoch, &http.ctx.clone(), async move {
+        Ok(Message::CloudResult(generation, Box::new(run(http).await.unwrap_or_else(Message::Error))))
+    });
+}
+async fn api(method: &str, path: &str, body: Option<Value>, account: Option<&str>) -> Result<Value, HttpFailure> {
+    let req = account_request(method, path, account);
     let res = if let Some(v) = body { req.json(&v).map_err(js_error)?.send().await } else { req.send().await }
         .map_err(|_| "Network unavailable. Your document stays open; retry when connected.".to_string())?;
     let status = res.status();
+    if status == 401 {
+        let _ = res.binary().await;
+        return Err(HttpFailure::Unauthorized);
+    }
     let json = res.json::<Value>().await.map_err(|_| "The server returned an invalid response".to_string())?;
     if !(200..300).contains(&status) {
-        return Err(json.get("error").and_then(Value::as_str).unwrap_or("Cloud request failed").to_string());
+        return Err(HttpFailure::Http(status, json.get("error").and_then(Value::as_str).unwrap_or("Cloud request failed").to_string()));
     }
     Ok(json)
 }
@@ -203,19 +293,23 @@ async fn current_user() -> Result<Option<Value>, String> {
     }
     Ok(Some(value))
 }
-async fn binary(method: &str, path: &str, body: Option<&[u8]>) -> Result<Vec<u8>, String> {
-    let req = request(method, path);
+async fn binary(method: &str, path: &str, body: Option<&[u8]>, account: Option<&str>) -> Result<Vec<u8>, HttpFailure> {
+    let req = account_request(method, path, account);
     let res = if let Some(b) = body {
         req.header("Content-Type", "application/octet-stream").body(js_sys::Uint8Array::from(b)).map_err(js_error)?.send().await
     } else {
         req.send().await
     }
     .map_err(|_| "Network unavailable; retry when connected".to_string())?;
+    if res.status() == 401 {
+        let _ = res.binary().await;
+        return Err(HttpFailure::Unauthorized);
+    }
     if !res.ok() {
         let v = res.json::<Value>().await.unwrap_or(Value::Null);
-        return Err(field(&v, "error").to_string());
+        return Err(HttpFailure::Http(res.status(), field(&v, "error").to_string()));
     }
-    res.binary().await.map_err(js_error)
+    res.binary().await.map_err(|error| HttpFailure::Other(js_error(error)))
 }
 fn task(q: &Queue, epoch: u64, ctx: &egui::Context, f: impl std::future::Future<Output = Result<Message, String>> + 'static) {
     let q = q.clone();
@@ -226,20 +320,18 @@ fn task(q: &Queue, epoch: u64, ctx: &egui::Context, f: impl std::future::Future<
         ctx.request_repaint();
     });
 }
-fn document_task(
-    q: &Queue,
-    epoch: u64,
-    ctx: &egui::Context,
+fn document_task<F: std::future::Future<Output = Result<Message, String>> + 'static>(
+    http: CloudHttp,
     request: DocumentRequest,
-    f: impl std::future::Future<Output = Result<Message, String>> + 'static,
+    run: impl FnOnce(CloudHttp) -> F + 'static,
 ) {
-    task(q, epoch, ctx, async move { Ok(f.await.unwrap_or_else(|error| Message::DocumentError(request, error))) });
+    cloud_task(http, move |http| async move { Ok(run(http).await.unwrap_or_else(|error| Message::DocumentError(request, error))) });
 }
-async fn download_project(path: String, revision: Option<i64>) -> Result<(Value, Vec<u8>), String> {
-    let mut meta = api("GET", &path, None).await?;
+async fn download_project(http: &CloudHttp, path: String, revision: Option<i64>) -> Result<(Value, Vec<u8>), String> {
+    let mut meta = http.api("GET", &path, None).await?;
     let rev = revision.unwrap_or_else(|| meta.get("revision").and_then(Value::as_i64).unwrap_or(0));
     if let Some(r) = revision {
-        let all = api("GET", &format!("{path}/versions"), None).await?;
+        let all = http.api("GET", &format!("{path}/versions"), None).await?;
         let version =
             all.as_array().and_then(|rows| rows.iter().find(|v| v.get("revision").and_then(Value::as_i64) == Some(r))).ok_or("Version is unavailable")?;
         meta["content"] = version.clone();
@@ -251,7 +343,7 @@ async fn download_project(path: String, revision: Option<i64>) -> Result<(Value,
     }
     let mut bytes = Vec::with_capacity(size);
     for part in 0..size.div_ceil(CHUNK) {
-        let b = binary("GET", &format!("{path}/content?revision={rev}&part={part}"), None).await?;
+        let b = http.binary("GET", &format!("{path}/content?revision={rev}&part={part}"), None).await?;
         if b.len() > CHUNK {
             return Err("Invalid download chunk".into());
         }
@@ -267,6 +359,10 @@ impl Cloud {
         let mut s = Self {
             queue: Rc::default(),
             epoch: 0,
+            auth_generation: Rc::new(Cell::new(0)),
+            auth_allowed: Rc::new(Cell::new(true)),
+            session_warning: None,
+            session_check_pending: false,
             home: true,
             configured: false,
             booted: false,
@@ -281,6 +377,7 @@ impl Cloud {
             uncertain_commits: HashMap::new(),
             next_document_request: 0,
             pending_document: None,
+            deferred_save: None,
             next_open_request: 0,
             pending_open: None,
             textures: HashMap::new(),
@@ -330,37 +427,121 @@ impl Cloud {
             details_id: String::new(),
             newer: false,
             show_logout: false,
+            logout_pending: false,
             draft_allowed: Rc::new(Cell::new(true)),
             compact_panels: false,
         };
         s.refresh_config(ctx);
         for starter in &home::STARTERS {
             let slug = starter.slug;
-            task(
-                &s.queue,
-                0,
-                ctx,
-                async move { Ok(Message::Preview(format!("starter/{slug}"), binary("GET", &format!("/templates/{slug}.png"), None).await?)) },
-            );
+            task(&s.queue, 0, ctx, async move {
+                Ok(Message::Preview(format!("starter/{slug}"), binary("GET", &format!("/templates/{slug}.png"), None, None).await.map_err(js_error)?))
+            });
         }
         s
+    }
+    fn http(&self, ctx: &egui::Context) -> CloudHttp {
+        CloudHttp {
+            queue: self.queue.clone(),
+            epoch: self.epoch,
+            ctx: ctx.clone(),
+            generation: self.auth_generation.get(),
+            current: self.auth_generation.clone(),
+            allowed: self.auth_allowed.clone(),
+            account: self.user.as_ref().map(|user| field(user, "id").to_string()),
+        }
+    }
+    fn session_paused(&self) -> bool {
+        self.user.is_some() && !self.auth_allowed.get()
+    }
+    fn pause_session(&mut self) {
+        self.auth_allowed.set(false);
+        self.session_warning = Some("Your session expired. Sign in again to resume cloud saving and sharing.".into());
+        // Keep account scope, native documents and commit evidence. Only remote UI work stops.
+        self.cancel_open();
+        self.project_requests.clear();
+        self.project_pending.clear();
+        self.member_writes.clear();
+        if let Some(project) = self.invitation_pending.take() {
+            self.invitation_result =
+                Some((project, "Sign-in expired before the invitation could be confirmed. Check member access before sending again.".into(), true));
+        }
+        self.show_share = false;
+        self.show_history = false;
+        self.show_comments = false;
+        self.show_details = false;
+        self.people.clear();
+        if !self.error {
+            self.status = "Cloud saving paused. Your documents remain open.".into();
+        }
+    }
+    fn check_session(&mut self, ctx: &egui::Context) {
+        if self.session_check_pending || self.logout_pending || self.user.is_none() {
+            return;
+        }
+        self.session_check_pending = true;
+        let generation = self.auth_generation.get();
+        let expected = self.scope();
+        let bound_projects = self.bindings.values().map(|binding| binding.id.clone()).collect::<HashSet<_>>();
+        // This one explicit identity check bypasses the paused cloud-request gate.
+        // A different account is never permitted to fetch or replace this workspace's data.
+        task(&self.queue, self.epoch, ctx, async move {
+            let result = async {
+                let user = current_user().await?;
+                let access = if user.as_ref().is_some_and(|user| !expected.is_empty() && field(user, "id") == expected) {
+                    let projects = api("GET", "/api/projects", None, Some(&expected)).await.map_err(js_error)?;
+                    let rows = projects.as_array().ok_or("The server returned an invalid project list")?;
+                    let mut roles =
+                        rows.iter().map(|project| (field(project, "id").to_string(), field(project, "role").to_string())).collect::<HashMap<_, _>>();
+                    // The workspace list is capped. Absence there is not evidence of revocation.
+                    for project in bound_projects {
+                        if let std::collections::hash_map::Entry::Vacant(entry) = roles.entry(project) {
+                            let role = match api("GET", &format!("/api/projects/{}", entry.key()), None, Some(&expected)).await {
+                                Ok(metadata) => field(&metadata, "role").to_string(),
+                                Err(HttpFailure::Http(403 | 404, _)) => "unavailable".into(),
+                                Err(error) => return Err(error.to_string()),
+                            };
+                            entry.insert(role);
+                        }
+                    }
+                    Some(SessionAccess { projects, roles })
+                } else {
+                    None
+                };
+                Ok((user, access))
+            }
+            .await;
+            Ok(Message::SessionChecked(generation, result))
+        });
+    }
+    fn sign_in_again(&self, ctx: &egui::Context) {
+        // The normal browser link mechanism preserves user activation and this editor tab.
+        // Do not infer popup blocking from window.open's nullable return with noopener.
+        ctx.open_url(egui::OpenUrl::new_tab("/auth/login"));
     }
     fn list(&mut self, ctx: &egui::Context) {
         self.refresh_projects(ctx, None);
     }
     fn refresh_projects(&mut self, ctx: &egui::Context, mutation: Option<(u64, String)>) {
+        if self.session_paused() {
+            return;
+        }
         self.list_generation = self.list_generation.wrapping_add(1);
         let generation = self.list_generation;
-        task(&self.queue, self.epoch, ctx, async move { Ok(Message::List(generation, api("GET", "/api/projects", None).await, mutation)) });
+        cloud_task(self.http(ctx), move |http| async move { Ok(Message::List(generation, http.api("GET", "/api/projects", None).await, mutation)) });
     }
     fn refresh_config(&mut self, ctx: &egui::Context) {
+        if self.user.is_some() {
+            self.check_session(ctx);
+            return;
+        }
         if self.connection_pending {
             return;
         }
         self.connection_pending = true;
-        task(&self.queue, self.epoch, ctx, async move {
+        cloud_task(self.http(ctx), move |http| async move {
             let result = async {
-                let config = api("GET", "/api/config", None).await?;
+                let config = http.api("GET", "/api/config", None).await?;
                 let user = current_user().await?;
                 Ok((config, user))
             }
@@ -379,11 +560,11 @@ impl Cloud {
     }
     fn project_data(&mut self, ctx: &egui::Context, project: &str, kind: &'static str, path: String) {
         // Polling cannot supersede a slow read or an in-flight mutation's refresh.
-        if self.project_pending.contains_key(kind) {
+        if self.session_paused() || self.project_pending.contains_key(kind) {
             return;
         }
         let request = self.project_request(project, kind);
-        task(&self.queue, self.epoch, ctx, async move { Ok(Message::ProjectData(request, api("GET", &path, None).await)) });
+        cloud_task(self.http(ctx), move |http| async move { Ok(Message::ProjectData(request, http.api("GET", &path, None).await)) });
     }
     fn accepts_project_response(&self, app: &PhotocraftApp, request: &ProjectRequest) -> bool {
         self.dialog_project.as_deref() == Some(request.project.as_str())
@@ -399,7 +580,7 @@ impl Cloud {
             // A switch away and back may have loaded members before this write finished.
             let path = format!("/api/projects/{}/members", request.project);
             let refresh = self.project_request(&request.project, "members");
-            task(&self.queue, self.epoch, ctx, async move { Ok(Message::ProjectData(refresh, api("GET", &path, None).await)) });
+            cloud_task(self.http(ctx), move |http| async move { Ok(Message::ProjectData(refresh, http.api("GET", &path, None).await)) });
         }
     }
     fn sync_dialog_project(&mut self, app: &PhotocraftApp) {
@@ -427,11 +608,14 @@ impl Cloud {
         }
     }
     fn mutate(&mut self, ctx: &egui::Context, method: &str, path: String, v: Value) {
+        if self.session_paused() {
+            return;
+        }
         let method = method.to_string();
         let error_sequence = self.error_sequence;
         let previous_status = self.status.clone();
-        task(&self.queue, self.epoch, ctx, async move {
-            Ok(Message::ProjectChanged(api(&method, &path, Some(v)).await.map(|_| ()), error_sequence, previous_status))
+        cloud_task(self.http(ctx), move |http| async move {
+            Ok(Message::ProjectChanged(http.api(&method, &path, Some(v)).await.map(|_| ()), error_sequence, previous_status))
         });
     }
     fn receive_projects(&mut self, ctx: &egui::Context, v: Value) {
@@ -442,8 +626,8 @@ impl Cloud {
                 continue;
             }
             let key = id.clone();
-            task(&self.queue, self.epoch, ctx, async move {
-                let b = binary("GET", &format!("/api/projects/{id}/thumbnail"), None).await.unwrap_or_default();
+            cloud_task(self.http(ctx), move |http| async move {
+                let b = http.binary("GET", &format!("/api/projects/{id}/thumbnail"), None).await.unwrap_or_default();
                 Ok(Message::Preview(key, b))
             });
         }
@@ -452,6 +636,9 @@ impl Cloud {
         self.open_path(ctx, format!("/api/projects/{id}"), revision);
     }
     fn open_path(&mut self, ctx: &egui::Context, path: String, revision: Option<i64>) {
+        if self.session_paused() {
+            return;
+        }
         if self.pending_open.as_ref().is_some_and(|(_, pending, version)| pending == &path && *version == revision) {
             return;
         }
@@ -459,7 +646,7 @@ impl Cloud {
         let request = self.next_open_request;
         self.pending_open = Some((request, path.clone(), revision));
         self.status = "Opening your document…".into();
-        task(&self.queue, self.epoch, ctx, async move { Ok(Message::Opened(request, download_project(path, revision).await)) });
+        cloud_task(self.http(ctx), move |http| async move { Ok(Message::Opened(request, download_project(&http, path, revision).await)) });
     }
     fn cancel_open(&mut self) {
         if self.pending_open.take().is_some() && self.status == "Opening your document…" {
@@ -471,7 +658,7 @@ impl Cloud {
     }
     fn document_request(&mut self, document: DocId) -> DocumentRequest {
         self.next_document_request = self.next_document_request.wrapping_add(1);
-        let request = DocumentRequest { document, generation: self.next_document_request };
+        let request = DocumentRequest { document, generation: self.next_document_request, auth_generation: self.auth_generation.get() };
         self.pending_document = Some(request);
         request
     }
@@ -490,6 +677,7 @@ impl Cloud {
         self.uncertain_commits.retain(|id, _| open.contains(id));
         if let Some(request) = self.pending_document.filter(|request| !open.contains(&request.document)) {
             self.finish_document_request(request);
+            self.deferred_save = None;
         }
     }
     fn is_trashed(&self, id: &str) -> bool {
@@ -498,12 +686,36 @@ impl Cloud {
     pub fn update(&mut self, app: &mut PhotocraftApp, ctx: &egui::Context) {
         self.prune_closed_documents(app);
         self.sync_dialog_project(app);
-        let messages = std::mem::take(&mut *self.queue.borrow_mut());
+        let mut messages = std::mem::take(&mut *self.queue.borrow_mut());
+        if !self.session_paused()
+            && let Some(saved) = self.deferred_save.take()
+        {
+            // A confirmed commit, including a server merge, is stronger evidence than
+            // digest lookup. Apply it through the original save/safe-sync path only
+            // after the same account and current permissions have been verified.
+            messages.push((self.epoch, saved));
+        }
         for (epoch, m) in messages {
             self.sync_dialog_project(app);
             if epoch != self.epoch {
                 continue;
             }
+            let m = if let Message::CloudResult(generation, message) = m {
+                if generation != self.auth_generation.get() || self.session_paused() {
+                    // Settle only the matching operation. Its identity/commit evidence was
+                    // queued separately before this result and remains available for retry.
+                    match *message {
+                        saved @ Message::Saved(request, ..) if self.accepts_document_response(app, request) => self.deferred_save = Some(saved),
+                        Message::DocumentError(request, _) | Message::Synced(request, ..) => self.finish_document_request(request),
+                        Message::Opened(request, _) if self.pending_open.as_ref().is_some_and(|(pending, _, _)| *pending == request) => self.cancel_open(),
+                        _ => {}
+                    }
+                    continue;
+                }
+                *message
+            } else {
+                m
+            };
             let document_request = match &m {
                 Message::Created(request, _)
                 | Message::CommitAttempt(request, _)
@@ -517,6 +729,61 @@ impl Cloud {
                 continue;
             }
             match m {
+                Message::Quiet => {}
+                Message::CloudResult(..) => continue, // Only one scoped envelope is accepted.
+                Message::SessionExpired(generation) => {
+                    if generation == self.auth_generation.get() && self.user.is_some() {
+                        self.pause_session();
+                    }
+                }
+                Message::SessionChecked(generation, result) => {
+                    if generation != self.auth_generation.get() {
+                        continue;
+                    }
+                    self.session_check_pending = false;
+                    match result {
+                        Ok((Some(user), Some(access))) if field(&user, "id") == self.scope() => {
+                            let mut restricted = false;
+                            for binding in self.bindings.values_mut() {
+                                binding.role = access.roles.get(&binding.id).cloned().unwrap_or_else(|| "unavailable".into());
+                                restricted |= !binding.can_edit();
+                            }
+                            self.user = Some(user);
+                            self.auth_generation.set(generation.wrapping_add(1));
+                            self.auth_allowed.set(true);
+                            self.session_warning = None;
+                            self.last_poll = now();
+                            // Discard any list that started before the verified permission snapshot.
+                            self.list_generation = self.list_generation.wrapping_add(1);
+                            self.receive_projects(ctx, access.projects);
+                            if !self.error && !self.busy {
+                                self.status = if restricted {
+                                    "Signed in again. Some projects are read-only or unavailable; your local edits are intact. Use Save a copy."
+                                } else {
+                                    "Signed in again. Cloud saving resumed."
+                                }
+                                .into();
+                            }
+                        }
+                        Ok((Some(user), _)) => {
+                            self.auth_allowed.set(false);
+                            self.session_warning = Some(format!(
+                                "Signed in as {}. This workspace belongs to {}. Sign in with the original account to resume.",
+                                field(&user, "email"),
+                                self.user.as_ref().map(|user| field(user, "email")).unwrap_or("the original account")
+                            ));
+                        }
+                        Ok((None, _)) => {
+                            self.auth_allowed.set(false);
+                            self.session_warning = Some("Sign-in is not complete. Finish signing in in the new tab, then check again.".into());
+                        }
+                        Err(error) => {
+                            self.auth_allowed.set(false);
+                            self.session_warning =
+                                Some(format!("Could not verify your account and project access: {error}. Check sign-in again when connected."));
+                        }
+                    }
+                }
                 Message::Connection(result) => {
                     self.connection_pending = false;
                     self.last_poll = now();
@@ -682,7 +949,18 @@ impl Cloud {
                     }
                 }
                 Message::Created(request, pid) => {
-                    self.bindings.insert(request.document, Binding { id: pid, revision: 0, saved_local: 0, role: "owner".into() });
+                    // A delayed reservation still belongs to this native document, but
+                    // cannot restore owner controls past a verified permission refresh.
+                    let role = if request.auth_generation == self.auth_generation.get() {
+                        "owner".into()
+                    } else {
+                        self.projects
+                            .iter()
+                            .find(|project| field(project, "id") == pid)
+                            .map(|project| field(project, "role").to_string())
+                            .unwrap_or_else(|| "unavailable".into())
+                    };
+                    self.bindings.insert(request.document, Binding { id: pid, revision: 0, saved_local: 0, role });
                 }
                 Message::CommitAttempt(request, attempt) => {
                     let attempts = self.uncertain_commits.entry(request.document).or_default();
@@ -701,14 +979,27 @@ impl Cloud {
                         binding.saved_local = local;
                     }
                 }
-                Message::SignedOut => {
+                Message::SignedOut(result) => {
+                    self.logout_pending = false;
+                    if let Err(error) = result {
+                        self.busy = false;
+                        self.error = true;
+                        self.error_sequence = self.error_sequence.wrapping_add(1);
+                        self.status = error;
+                        continue;
+                    }
                     self.epoch += 1;
+                    self.auth_generation.set(self.auth_generation.get().wrapping_add(1));
+                    self.auth_allowed.set(true);
+                    self.session_warning = None;
+                    self.session_check_pending = false;
                     self.pending_open = None;
                     self.connection_pending = false;
                     self.connection_error_sequence = None;
                     self.bindings.clear();
                     self.uncertain_commits.clear();
                     self.pending_document = None;
+                    self.deferred_save = None;
                     self.projects.clear();
                     self.textures.retain(|key, _| key.starts_with("starter/"));
                     self.drafts.clear();
@@ -1018,8 +1309,9 @@ impl Cloud {
                 }
             }
             if changed
-                && self.binding(app).is_some_and(|b| b.role != "view" && !self.is_trashed(&b.id))
+                && self.binding(app).is_some_and(|b| b.can_edit() && !self.is_trashed(&b.id))
                 && self.user.is_some()
+                && !self.session_paused()
                 && !self.busy
                 && !self.error
                 && now() - self.last_change > 3500.
@@ -1029,17 +1321,14 @@ impl Cloud {
         }
         if now() - self.last_poll > 1500. {
             self.last_poll = now();
-            if let Some(b) = self.binding(app).filter(|_| self.user.is_some()) {
-                let q = self.queue.clone();
-                let epoch = self.epoch;
+            if let Some(b) = self.binding(app).filter(|_| self.user.is_some() && !self.session_paused()) {
                 if self.show_comments {
                     self.project_data(ctx, &b.id, "comments", format!("/api/projects/{}/comments", b.id));
                 }
-                let ctx = ctx.clone();
-                wasm_bindgen_futures::spawn_local(async move {
-                    if let Ok(v) = api("POST", &format!("/api/projects/{}/presence", b.id), Some(json!({}))).await {
-                        q.borrow_mut().push((epoch, Message::Presence(b.id.clone(), v)));
-                        ctx.request_repaint();
+                cloud_task(self.http(ctx), move |http| async move {
+                    match http.api("POST", &format!("/api/projects/{}/presence", b.id), Some(json!({}))).await {
+                        Ok(value) => Ok(Message::Presence(b.id, value)),
+                        Err(_) => Ok(Message::Quiet),
                     }
                 });
             }
@@ -1050,14 +1339,14 @@ impl Cloud {
         ctx.request_repaint_after(std::time::Duration::from_millis(500));
     }
     fn sync(&mut self, ctx: &egui::Context, id: DocId, revision: u64, pid: String) {
-        if self.pending_document.is_some() {
+        if self.session_paused() || self.pending_document.is_some() {
             return;
         }
         self.busy = true;
         self.status = "Bringing in your collaborators’ changes…".into();
         let request = self.document_request(id);
-        document_task(&self.queue, self.epoch, ctx, request, async move {
-            let (meta, bytes) = download_project(format!("/api/projects/{pid}"), None).await?;
+        document_task(self.http(ctx), request, move |http| async move {
+            let (meta, bytes) = download_project(&http, format!("/api/projects/{pid}"), None).await?;
             Ok(Message::Synced(request, revision, meta, bytes))
         });
     }
@@ -1119,6 +1408,10 @@ impl Cloud {
             .any(|d| Some(d.doc.id) != active && self.bindings.get(&d.doc.id).map(|b| b.revision == 0 || b.saved_local != d.revision).unwrap_or(d.is_dirty()))
     }
     fn begin_sign_in(&mut self, app: &PhotocraftApp, ctx: &egui::Context) {
+        if self.user.is_some() {
+            self.sign_in_again(ctx);
+            return;
+        }
         if self.has_other_unsaved_documents(app) {
             self.error = true;
             self.status = "Download your other unsaved documents before signing in. Browser recovery keeps only the last visited document.".into();
@@ -1156,7 +1449,7 @@ impl Cloud {
         });
     }
     fn save(&mut self, app: &PhotocraftApp, ctx: &egui::Context, copy: bool) {
-        if self.busy || self.pending_document.is_some() {
+        if self.session_paused() || self.busy || self.pending_document.is_some() {
             return;
         }
         let Some(d) = app.session.active() else {
@@ -1168,8 +1461,8 @@ impl Cloud {
             return;
         }
         let binding = if copy { None } else { self.binding(app) };
-        if binding.as_ref().is_some_and(|b| b.role == "view") {
-            self.status = "View access. Use Save a copy to create your own project.".into();
+        if binding.as_ref().is_some_and(|b| !b.can_edit()) {
+            self.status = "This project is read-only or unavailable. Use Save a copy to create your own project.".into();
             self.error = true;
             return;
         }
@@ -1208,11 +1501,11 @@ impl Cloud {
         let epoch = self.epoch;
         let uncertain = self.uncertain_commits.get(&docid).cloned().unwrap_or_default();
         let request = self.document_request(docid);
-        document_task(&self.queue, self.epoch, ctx, request, async move {
+        document_task(self.http(ctx), request, move |http| async move {
             let (pid, mut base) = if let Some(b) = binding {
                 (b.id, b.revision)
             } else {
-                let p = api("POST", "/api/projects", Some(json!({"title":name}))).await?;
+                let p = http.api("POST", "/api/projects", Some(json!({"title":name}))).await?;
                 let pid = field(&p, "id").to_string();
                 queue.borrow_mut().push((epoch, Message::Created(request, pid.clone())));
                 (pid, 0)
@@ -1221,7 +1514,8 @@ impl Cloud {
             // exact uploaded snapshot can advance our base; the latest revision cannot.
             let mut acknowledged = None;
             for attempt in uncertain.iter().filter(|attempt| attempt.project == pid) {
-                let versions = api("GET", &format!("/api/projects/{pid}/versions?sha256={}&after_revision={}", attempt.sha256, attempt.base), None).await?;
+                let versions =
+                    http.api("GET", &format!("/api/projects/{pid}/versions?sha256={}&after_revision={}", attempt.sha256, attempt.base), None).await?;
                 if let Some(revision) = versions.as_array().and_then(|versions| {
                     versions
                         .iter()
@@ -1243,25 +1537,25 @@ impl Cloud {
                 }
             }
             let sha256 = hex::encode(Sha256::digest(&bytes));
-            let init=api("POST",&format!("/api/projects/{pid}/uploads"),Some(json!({"base_revision":base,"bytes":bytes.len(),"parts":bytes.len().div_ceil(CHUNK),"sha256":sha256,"title":"Saved from editor","width":width,"height":height}))).await?;
+            let init=http.api("POST",&format!("/api/projects/{pid}/uploads"),Some(json!({"base_revision":base,"bytes":bytes.len(),"parts":bytes.len().div_ceil(CHUNK),"sha256":sha256,"title":"Saved from editor","width":width,"height":height}))).await?;
             let uid = field(&init, "id");
             let uploaded = async {
                 for (i, b) in bytes.chunks(CHUNK).enumerate() {
-                    binary("PUT", &format!("/api/uploads/{uid}/{i}"), Some(b)).await?;
+                    http.binary("PUT", &format!("/api/uploads/{uid}/{i}"), Some(b)).await?;
                 }
                 queue.borrow_mut().push((epoch, Message::CommitAttempt(request, UncertainCommit { project: pid.clone(), base, local, sha256 })));
-                api("POST", &format!("/api/uploads/{uid}/commit"), Some(json!({}))).await
+                http.api("POST", &format!("/api/uploads/{uid}/commit"), Some(json!({}))).await
             }
             .await;
             let done = match uploaded {
                 Ok(v) => v,
                 Err(e) => {
-                    let _ = api("DELETE", &format!("/api/uploads/{uid}"), None).await;
+                    let _ = http.api("DELETE", &format!("/api/uploads/{uid}"), None).await;
                     return Err(e);
                 }
             };
             if let Some(png) = preview.filter(|_| done.get("merged").and_then(Value::as_bool) != Some(true)) {
-                let _ = binary("PUT", &format!("/api/projects/{pid}/thumbnail"), Some(&png)).await;
+                let _ = http.binary("PUT", &format!("/api/projects/{pid}/thumbnail"), Some(&png)).await;
             }
             Ok(Message::Saved(
                 request,
@@ -1349,6 +1643,10 @@ impl Cloud {
                                 ui.label(RichText::new(field(user, "name")).size(16.).strong());
                                 ui.label(field(user, "email"));
                                 ui.separator();
+                                if self.session_paused() && ui.button("Sign in again").clicked() {
+                                    self.sign_in_again(&ctx);
+                                    ui.close();
+                                }
                                 if ui.button("Sign out").clicked() {
                                     self.show_logout = true;
                                     ui.close();
@@ -1377,7 +1675,7 @@ impl Cloud {
                     if !self.home {
                         if let Some(b) = binding.as_ref().filter(|b| b.role == "owner")
                             && ui
-                                .add_enabled_ui(b.revision > 0, |ui| {
+                                .add_enabled_ui(b.revision > 0 && !self.session_paused(), |ui| {
                                     ui.add_sized([88., 36.], egui::Button::new(RichText::new("Share").strong().color(t.primary_text)).fill(t.primary_bg))
                                 })
                                 .inner
@@ -1388,16 +1686,16 @@ impl Cloud {
                             self.share_url.clear();
                             self.project_data(&ctx, &b.id, "members", format!("/api/projects/{}/members", b.id));
                         }
-                        let can_save = !self.busy && app.session.active().is_some();
+                        let can_save = !self.session_paused() && !self.busy && app.session.active().is_some();
                         let retry_save = self.user.is_some()
-                            && binding.as_ref().is_none_or(|b| b.role != "view")
+                            && binding.as_ref().is_none_or(|b| b.can_edit())
                             && (self.error || binding.as_ref().is_some_and(|b| b.revision == 0));
                         let save = ui
                             .add_enabled_ui(can_save, |ui| {
                                 if retry_save {
                                     ui.add_sized([88., 36.], egui::Button::new(RichText::new("Retry save").strong().color(t.primary_text)).fill(t.primary_bg))
                                         .on_hover_text("Retry saving this document to the same cloud project")
-                                } else if binding.as_ref().is_some_and(|b| b.role != "view") {
+                                } else if binding.as_ref().is_some_and(|b| b.can_edit()) {
                                     header_icon(ui, "cloud", "Save now · edits also save automatically")
                                 } else {
                                     ui.add_sized(
@@ -1412,11 +1710,11 @@ impl Cloud {
                             })
                             .inner;
                         if save.clicked() {
-                            self.save(app, &ctx, binding.as_ref().is_some_and(|b| b.role == "view"));
+                            self.save(app, &ctx, binding.as_ref().is_some_and(|b| !b.can_edit()));
                         }
                         if let Some(b) = binding.as_ref()
                             && !compact
-                            && header_icon(ui, "message-square", "Comments").clicked()
+                            && ui.add_enabled_ui(!self.session_paused(), |ui| header_icon(ui, "message-square", "Comments")).inner.clicked()
                         {
                             self.show_comments = true;
                             self.project_data(&ctx, &b.id, "comments", format!("/api/projects/{}/comments", b.id));
@@ -1430,7 +1728,7 @@ impl Cloud {
                                     ui.close();
                                 }
                             }
-                            if ui.button("Save a copy").clicked() {
+                            if ui.add_enabled(!self.session_paused(), egui::Button::new("Save a copy")).clicked() {
                                 self.save(app, &ctx, true);
                                 ui.close();
                             }
@@ -1454,19 +1752,19 @@ impl Cloud {
                                 ui.close();
                             }
                             if let Some(b) = binding.as_ref() {
-                                if ui.button("Version history").clicked() {
+                                if ui.add_enabled(!self.session_paused(), egui::Button::new("Version history")).clicked() {
                                     self.show_history = true;
                                     self.project_data(&ctx, &b.id, "history", format!("/api/projects/{}/versions", b.id));
                                     ui.close();
                                 }
-                                if ui.button("Comments").clicked() {
+                                if ui.add_enabled(!self.session_paused(), egui::Button::new("Comments")).clicked() {
                                     self.show_comments = true;
                                     self.project_data(&ctx, &b.id, "comments", format!("/api/projects/{}/comments", b.id));
                                     ui.close();
                                 }
                                 if b.role == "owner"
                                     && ui
-                                        .add_enabled(b.revision > 0, egui::Button::new("Share & permissions"))
+                                        .add_enabled(b.revision > 0 && !self.session_paused(), egui::Button::new("Share & permissions"))
                                         .on_disabled_hover_text("Save a complete version before sharing")
                                         .clicked()
                                 {
@@ -1483,7 +1781,9 @@ impl Cloud {
                         ui.add_sized(
                             [100., 36.],
                             egui::Label::new(
-                                RichText::new(if saved {
+                                RichText::new(if self.session_paused() {
+                                    "Sign-in needed"
+                                } else if saved {
                                     "Saved"
                                 } else if self.busy {
                                     "Saving…"
@@ -1499,6 +1799,41 @@ impl Cloud {
                 });
             });
         });
+        if self.session_paused() {
+            egui::Panel::top("session_warning").frame(egui::Frame::NONE.fill(t.card).inner_margin(egui::Margin::symmetric(16, 10))).show(ui, |ui| {
+                ui.spacing_mut().interact_size.y = 36.;
+                ui.spacing_mut().button_padding = Vec2::new(12., 8.);
+                ui.spacing_mut().item_spacing = Vec2::new(8., 8.);
+                ui.style_mut().text_styles.insert(egui::TextStyle::Button, egui::FontId::proportional(14.));
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(self.session_warning.as_deref().unwrap_or("Your session expired. Sign in again to resume cloud saving and sharing."))
+                            .color(t.warning),
+                    )
+                    .wrap(),
+                );
+                ui.label("Keep this editor open. Your documents stay here while you sign in in a new tab.");
+                ui.horizontal_wrapped(|ui| {
+                    if ui.add(egui::Button::new(RichText::new("Sign in again").color(t.primary_text)).fill(t.primary_bg)).clicked() {
+                        self.sign_in_again(&ctx);
+                    }
+                    if ui
+                        .add_enabled(
+                            !self.session_check_pending && !self.logout_pending,
+                            egui::Button::new(if self.session_check_pending { "Checking sign-in…" } else { "Check sign-in" }),
+                        )
+                        .clicked()
+                    {
+                        self.check_session(&ctx);
+                    }
+                    if ui.button("Copy sign-in link").on_hover_text("If no tab opens, paste this link into a new browser tab.").clicked()
+                        && let Some(origin) = web_sys::window().and_then(|window| window.location().origin().ok())
+                    {
+                        ctx.copy_text(format!("{origin}/auth/login"));
+                    }
+                });
+            });
+        }
         egui::Panel::bottom("cloud_status").exact_size(27.).frame(egui::Frame::NONE.fill(t.card).inner_margin(egui::Margin::symmetric(16, 3))).show(ui, |ui| {
             // The workspace's 40px controls must not force this compact status row past
             // the viewport edge, especially on phones.
@@ -1578,7 +1913,10 @@ impl Cloud {
                     self.busy = true;
                     self.status = "Opening your editable template…".into();
                     task(&self.queue, self.epoch, ctx, async move {
-                        Ok(Message::Template(format!("{slug}.pcraft"), binary("GET", &format!("/templates/{slug}.pcraft"), None).await?))
+                        Ok(Message::Template(
+                            format!("{slug}.pcraft"),
+                            binary("GET", &format!("/templates/{slug}.pcraft"), None, None).await.map_err(js_error)?,
+                        ))
                     });
                 }
             }
@@ -1753,6 +2091,9 @@ impl Cloud {
         });
     }
     fn project_card(&mut self, app: &mut PhotocraftApp, ui: &mut egui::Ui, p: &Value, ctx: &egui::Context) {
+        if self.session_paused() {
+            ui.disable();
+        }
         let t = Tokens::for_kind(ThemeKind::StudioLight);
         let id = field(p, "id").to_string();
         let title = field(p, "title");
@@ -1920,18 +2261,31 @@ impl Cloud {
                 {
                     let _ = super::web::download(&format!("{}.pcraft", d.doc.name), &bytes);
                 }
-                if ui.add_enabled(!self.busy, egui::Button::new("Sign out and clear this browser")).clicked() {
+                if ui.add_enabled(!self.logout_pending && (!self.busy || self.session_paused()), egui::Button::new("Sign out and clear this browser")).clicked()
+                {
                     self.busy = true;
-                    self.draft_allowed.set(false);
-                    self.draft_generation.set(self.draft_generation.get().wrapping_add(1));
-                    task(&self.queue, self.epoch, ctx, async {
-                        api("POST", "/api/logout", Some(json!({}))).await?;
-                        clear_drafts().await?;
-                        Ok(Message::SignedOut)
+                    self.logout_pending = true;
+                    let http = self.http(ctx);
+                    let allowed = self.draft_allowed.clone();
+                    let generation = self.draft_generation.clone();
+                    task(&self.queue, self.epoch, ctx, async move {
+                        let result = async {
+                            // Explicit sign-out may bypass the paused request gate, but
+                            // still observes typed401 and never clears another account.
+                            http.finish(api("POST", "/api/logout", Some(json!({})), http.account.as_deref()).await)?;
+                            allowed.set(false);
+                            generation.set(generation.get().wrapping_add(1));
+                            clear_drafts().await
+                        }
+                        .await;
+                        Ok(Message::SignedOut(result))
                     });
                 }
             });
             self.show_logout &= open;
+        }
+        if self.session_paused() {
+            return;
         }
         let Some(binding) = self.binding(app) else {
             self.show_share = false;
@@ -1945,7 +2299,7 @@ impl Cloud {
         if binding.revision <= 0 {
             self.show_share = false;
         }
-        let pid = binding.id;
+        let pid = binding.id.clone();
         if self.show_share {
             let mut open = true;
             let content_width = 440_f32.min((ctx.content_rect().width() - 64.).max(240.)) - 40.;
@@ -2014,10 +2368,10 @@ impl Cloud {
                         let path = format!("/api/projects/{pid}/members");
                         let email = self.member_email.trim().to_string();
                         let v = json!({"email":email,"role":self.member_role});
-                        task(&self.queue, self.epoch, ctx, async move {
-                            let outcome = api("POST", &path.replace("/members", "/invite"), Some(v)).await.map(|_| ());
+                        cloud_task(self.http(ctx), move |http| async move {
+                            let outcome = http.api("POST", &path.replace("/members", "/invite"), Some(v)).await.map(|_| ());
                             // Access may already be granted when the mail service reports failure.
-                            let members = api("GET", &path, None).await;
+                            let members = http.api("GET", &path, None).await;
                             Ok(Message::Invited { request, email, outcome, members })
                         });
                     }
@@ -2067,10 +2421,10 @@ impl Cloud {
                             let email = email.to_string();
                             let request = self.project_request(&pid, "members");
                             self.member_writes.insert(pid.clone(), request.generation);
-                            task(&self.queue, self.epoch, ctx, async move {
+                            cloud_task(self.http(ctx), move |http| async move {
                                 let result = async {
-                                    api("PUT", &path, Some(json!({"email":email,"role":role}))).await?;
-                                    api("GET", &path, None).await
+                                    http.api("PUT", &path, Some(json!({"email":email,"role":role}))).await?;
+                                    http.api("GET", &path, None).await
                                 }
                                 .await;
                                 Ok(Message::ProjectData(request, result))
@@ -2086,7 +2440,10 @@ impl Cloud {
                         self.share_url.clear();
                         let path = format!("/api/projects/{pid}/share");
                         let request = self.project_request(&pid, "share");
-                        task(&self.queue, self.epoch, ctx, async move { Ok(Message::ProjectData(request, api("POST", &path, Some(json!({}))).await)) });
+                        cloud_task(
+                            self.http(ctx),
+                            move |http| async move { Ok(Message::ProjectData(request, http.api("POST", &path, Some(json!({}))).await)) },
+                        );
                     }
                     self.project_feedback_ui(ui, "share");
                     if !self.share_url.is_empty() {
@@ -2099,7 +2456,7 @@ impl Cloud {
                     if ui.add_enabled(!self.project_pending.contains_key("share"), egui::Button::new("Revoke all view links")).clicked() {
                         let path = format!("/api/projects/{pid}/share");
                         let request = self.project_request(&pid, "share_revoked");
-                        task(&self.queue, self.epoch, ctx, async move { Ok(Message::ProjectData(request, api("DELETE", &path, None).await)) });
+                        cloud_task(self.http(ctx), move |http| async move { Ok(Message::ProjectData(request, http.api("DELETE", &path, None).await)) });
                         self.share_url.clear();
                     }
                 });
@@ -2148,10 +2505,10 @@ impl Cloud {
                     let path = format!("/api/projects/{pid}/comments");
                     let body = self.comment.clone();
                     let request = self.project_request(&pid, "comment_posted");
-                    task(&self.queue, self.epoch, ctx, async move {
+                    cloud_task(self.http(ctx), move |http| async move {
                         let result = async {
-                            api("POST", &path, Some(json!({"body":body}))).await?;
-                            let comments = api("GET", &path, None).await?;
+                            http.api("POST", &path, Some(json!({"body":body}))).await?;
+                            let comments = http.api("GET", &path, None).await?;
                             Ok(json!({"comments":comments,"submitted":body}))
                         }
                         .await;
@@ -2168,14 +2525,14 @@ impl Cloud {
                             ui.label(RichText::new(field(&c, "author")).strong());
                             ui.label(field(&c, "body"));
                             let resolved = c.get("resolved").and_then(Value::as_bool) == Some(true);
-                            if binding.role != "view" && ui.small_button(if resolved { "Reopen" } else { "Resolve" }).clicked() {
+                            if binding.can_edit() && ui.small_button(if resolved { "Reopen" } else { "Resolve" }).clicked() {
                                 let path = format!("/api/projects/{pid}/comments");
                                 let cid = field(&c, "id").to_string();
                                 let request = self.project_request(&pid, "comments");
-                                task(&self.queue, self.epoch, ctx, async move {
+                                cloud_task(self.http(ctx), move |http| async move {
                                     let result = async {
-                                        api("PUT", &format!("{path}/{cid}"), Some(json!({"resolved":!resolved}))).await?;
-                                        api("GET", &path, None).await
+                                        http.api("PUT", &format!("{path}/{cid}"), Some(json!({"resolved":!resolved}))).await?;
+                                        http.api("GET", &path, None).await
                                     }
                                     .await;
                                     Ok(Message::ProjectData(request, result))
