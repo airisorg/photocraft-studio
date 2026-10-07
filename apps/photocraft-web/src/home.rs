@@ -1,6 +1,6 @@
 //! Workspace presentation only; starter files are made by PhotoCraft's existing engine.
-use egui::{Align2, Color32, FontId, Pos2, Rect, RichText, Stroke, TextureHandle, Vec2};
-use photocraft_ui_egui::theme::{ThemeKind, Tokens};
+use egui::{Align2, Color32, FontId, Pos2, Rect, RichText, Stroke, TextureHandle, Vec2, Widget as _};
+use photocraft_ui_egui::theme::{self, ThemeKind, Tokens};
 use std::collections::HashMap;
 
 pub const INK: Color32 = Color32::from_rgb(35, 32, 45);
@@ -8,6 +8,19 @@ pub const MUTED: Color32 = Color32::from_rgb(115, 110, 124);
 pub const PURPLE: Color32 = Color32::from_rgb(113, 72, 224);
 pub const PAPER: Color32 = Color32::from_rgb(250, 249, 247);
 pub const BORDER: Color32 = Color32::from_rgb(233, 230, 235);
+const SELECTED: Color32 = Color32::from_rgb(242, 236, 253);
+const SELECTED_ACTIVE: Color32 = Color32::from_rgb(237, 229, 252);
+pub const CONTROL_HEIGHT: f32 = 40.;
+pub const RELATED_GAP: f32 = 8.;
+pub const ROW_GAP: f32 = 16.;
+pub const SECTION_GAP: f32 = 24.;
+pub const OUTER_GUTTER: i8 = 32;
+pub const NARROW_GUTTER: i8 = 16;
+
+/// Set the total gap after a vertical item, including egui's automatic item spacing.
+pub fn vertical_gap(ui: &mut egui::Ui, gap: f32) {
+    ui.add_space((gap - ui.spacing().item_spacing.y).max(0.));
+}
 
 pub struct Starter {
     pub slug: &'static str,
@@ -28,12 +41,69 @@ pub const STARTERS: [Starter; 6] = [
 #[derive(Clone, Copy)]
 pub enum Action {
     New(u32, u32),
+    Open,
+    Custom,
     Template(usize),
 }
 
-pub fn primary(label: &str) -> egui::Button<'_> {
+pub fn primary(label: &str) -> impl egui::Widget + '_ {
+    move |ui: &mut egui::Ui| action_button(ui, label, true)
+}
+
+pub fn secondary(label: &str) -> impl egui::Widget + '_ {
+    move |ui: &mut egui::Ui| action_button(ui, label, false)
+}
+
+fn reduced_motion(ctx: &egui::Context) -> bool {
+    let id = egui::Id::new("workspace-reduced-motion");
+    let frame = ctx.cumulative_frame_nr();
+    if let Some((cached_frame, reduced)) = ctx.data(|d| d.get_temp::<(u64, bool)>(id))
+        && cached_frame == frame
+    {
+        return reduced;
+    }
+    #[cfg(target_arch = "wasm32")]
+    let reduced = {
+        // The query object stays live when the OS/browser setting changes; read it once per frame.
+        thread_local! {
+            static QUERY: Option<web_sys::MediaQueryList> = web_sys::window()
+                .and_then(|w| w.match_media("(prefers-reduced-motion: reduce)").ok().flatten());
+        }
+        QUERY.with(|query| query.as_ref().is_some_and(web_sys::MediaQueryList::matches))
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    let reduced = false;
+    ctx.data_mut(|d| d.insert_temp(id, (frame, reduced)));
+    reduced
+}
+
+fn hover_amount(ctx: &egui::Context, id: egui::Id, hovered: bool) -> f32 {
+    if reduced_motion(ctx) {
+        return if hovered { 1. } else { 0. };
+    }
+    ctx.animate_bool_with_time(id.with("workspace-hover"), hovered, 0.1)
+}
+
+fn action_button(ui: &mut egui::Ui, label: &str, primary: bool) -> egui::Response {
     let t = Tokens::for_kind(ThemeKind::StudioLight);
-    egui::Button::new(RichText::new(label).size(14.).color(t.primary_text).strong()).fill(t.primary_bg).corner_radius(t.radius_sm)
+    // egui::Button reads this same response before painting; keep its semantics and layout.
+    let id = ui.next_auto_id();
+    let response = ui.ctx().read_response(id);
+    let hovered = ui.is_enabled() && response.as_ref().is_some_and(egui::Response::hovered);
+    let immediate = response.as_ref().is_some_and(|r| r.is_pointer_button_down_on() || r.has_focus());
+    let base = if primary { t.primary_bg } else { t.field };
+    let hover = if primary { base.lerp_to_gamma(t.primary_text, 0.08) } else { t.hover };
+    let amount = hover_amount(ui.ctx(), id, hovered);
+    let fill = if ui.is_enabled() && immediate {
+        if primary { base.lerp_to_gamma(t.primary_text, 0.14) } else { t.pressed }
+    } else {
+        base.lerp_to_gamma(hover, amount)
+    };
+    egui::Button::new(RichText::new(label).font(theme::medium(14.)).color(if primary { t.primary_text } else { t.text }))
+        .fill(fill)
+        .corner_radius(t.radius_sm)
+        .min_size(Vec2::new(0., CONTROL_HEIGHT))
+        .ui(ui)
 }
 
 /// Keep cards readable at phone, tablet and ultrawide widths without overflowing a row.
@@ -70,32 +140,54 @@ pub fn project_matches(project: &serde_json::Value, filter: &str, search: &str) 
 
 /// One scale for the workspace's buttons, fields and navigation; editor density stays native.
 pub fn workspace_style(ui: &mut egui::Ui) {
+    let t = Tokens::for_kind(ThemeKind::StudioLight);
     *ui.visuals_mut() = egui::Visuals::light();
     let style = ui.style_mut();
-    style.spacing.item_spacing = Vec2::new(10., 10.);
-    style.spacing.button_padding = Vec2::new(14., 10.);
-    style.spacing.interact_size.y = 40.;
+    style.spacing.item_spacing = Vec2::splat(RELATED_GAP);
+    style.spacing.button_padding = Vec2::new(16., 10.);
+    style.spacing.interact_size.y = CONTROL_HEIGHT;
     style.text_styles.insert(egui::TextStyle::Body, FontId::proportional(14.));
-    style.text_styles.insert(egui::TextStyle::Button, FontId::proportional(14.));
+    style.text_styles.insert(egui::TextStyle::Button, theme::medium(14.));
     style.visuals.override_text_color = Some(INK);
     style.visuals.selection.bg_fill = Color32::from_rgb(237, 229, 252);
     style.visuals.selection.stroke = Stroke::new(1., PURPLE);
-    for widget in [&mut style.visuals.widgets.inactive, &mut style.visuals.widgets.hovered, &mut style.visuals.widgets.active] {
-        widget.corner_radius = 9.into();
-        widget.bg_stroke = Stroke::new(1., BORDER);
+    for (widget, fill) in [
+        (&mut style.visuals.widgets.noninteractive, t.field),
+        (&mut style.visuals.widgets.inactive, t.field),
+        (&mut style.visuals.widgets.hovered, t.hover),
+        (&mut style.visuals.widgets.active, t.pressed),
+        (&mut style.visuals.widgets.open, t.hover),
+    ] {
+        widget.corner_radius = (t.radius_sm as u8).into();
+        widget.bg_stroke = Stroke::new(1., t.field_border);
+        widget.bg_fill = fill;
+        widget.weak_bg_fill = fill;
+        widget.expansion = 0.;
     }
-    style.visuals.widgets.inactive.bg_fill = Color32::WHITE;
-    style.visuals.widgets.hovered.bg_fill = Color32::from_rgb(244, 240, 251);
-    style.visuals.widgets.active.bg_fill = Color32::from_rgb(237, 229, 252);
+    style.visuals.widgets.active.bg_stroke = Stroke::new(1., t.accent_border);
 }
 
 pub fn compact_nav(ui: &mut egui::Ui, label: &str, selected: bool) -> egui::Response {
+    nav_chip(ui, label, selected, Vec2::new(0., 42.), 14.)
+}
+
+fn nav_chip(ui: &mut egui::Ui, label: &str, selected: bool, min_size: Vec2, font_size: f32) -> egui::Response {
+    let t = Tokens::for_kind(ThemeKind::StudioLight);
+    let id = ui.next_auto_id();
+    let response = ui.ctx().read_response(id);
+    let hovered = response.as_ref().is_some_and(egui::Response::hovered);
+    let focused = response.as_ref().is_some_and(egui::Response::has_focus);
+    let pressed = response.as_ref().is_some_and(egui::Response::is_pointer_button_down_on);
+    let base = if selected { SELECTED } else { Color32::TRANSPARENT };
+    let hover = if selected { SELECTED_ACTIVE } else { t.hover };
+    let active = if selected { SELECTED_ACTIVE } else { t.pressed };
+    let fill = if pressed || focused { active } else { base.lerp_to_gamma(hover, hover_amount(ui.ctx(), id, hovered)) };
     ui.add(
-        egui::Button::new(RichText::new(label).size(14.).color(if selected { PURPLE } else { MUTED }))
-            .min_size(Vec2::new(0., 42.))
-            .fill(if selected { Color32::from_rgb(237, 229, 252) } else { Color32::TRANSPARENT })
-            .stroke(Stroke::NONE)
-            .corner_radius(10),
+        egui::Button::new(RichText::new(label).font(theme::medium(font_size)).color(if selected { PURPLE } else { MUTED }))
+            .min_size(min_size)
+            .fill(fill)
+            .stroke(if focused { Stroke::new(2., PURPLE) } else { Stroke::NONE })
+            .corner_radius(t.radius),
     )
 }
 
@@ -130,13 +222,19 @@ pub fn avatar(ui: &mut egui::Ui, name: Option<&str>) -> egui::Response {
 }
 
 pub fn nav_button(ui: &mut egui::Ui, label: &str, selected: bool, index: usize) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(Vec2::new(178., 42.), egui::Sense::click());
+    let t = Tokens::for_kind(ThemeKind::StudioLight);
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 42.), egui::Sense::click());
     let color = if selected { PURPLE } else { MUTED };
-    if selected || response.hovered() {
-        ui.painter().rect_filled(rect, 10., if selected { Color32::from_rgb(242, 236, 253) } else { PAPER });
-    }
+    let base = if selected { SELECTED } else { Color32::TRANSPARENT };
+    let hover = if selected { SELECTED_ACTIVE } else { PAPER };
+    let fill = if response.is_pointer_button_down_on() || response.has_focus() {
+        if selected { SELECTED_ACTIVE } else { t.pressed }
+    } else {
+        base.lerp_to_gamma(hover, hover_amount(ui.ctx(), response.id, response.hovered()))
+    };
+    ui.painter().rect_filled(rect, t.radius, fill);
     if response.has_focus() {
-        ui.painter().rect_stroke(rect, 10., Stroke::new(2., PURPLE), egui::StrokeKind::Inside);
+        ui.painter().rect_stroke(rect, t.radius, Stroke::new(2., PURPLE), egui::StrokeKind::Inside);
     }
     let origin = rect.min + Vec2::new(16., 13.);
     let stroke = Stroke::new(1.4, color);
@@ -200,10 +298,11 @@ fn card_image(painter: &egui::Painter, texture: &TextureHandle, rect: Rect, angl
 }
 
 pub fn hero(ui: &mut egui::Ui, textures: &HashMap<String, TextureHandle>) {
+    let t = Tokens::for_kind(ThemeKind::StudioLight);
     let compact = ui.available_width() < 660.;
     let height = if compact { 206. } else { 190. };
     let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), height), egui::Sense::hover());
-    ui.painter().rect_filled(rect, 20., Color32::from_rgb(242, 236, 253));
+    ui.painter().rect_filled(rect, t.radius_lg, Color32::from_rgb(242, 236, 253));
     let text_width = if compact { rect.width() - 48. } else { rect.width() * 0.55 };
     let text_rect = Rect::from_min_size(rect.min + Vec2::new(28., 24.), Vec2::new(text_width, height - 40.));
     ui.scope_builder(egui::UiBuilder::new().max_rect(text_rect), |ui| {
@@ -230,70 +329,77 @@ pub fn hero(ui: &mut egui::Ui, textures: &HashMap<String, TextureHandle>) {
 }
 
 pub fn quick_sizes(ui: &mut egui::Ui) -> Option<Action> {
+    let t = Tokens::for_kind(ThemeKind::StudioLight);
     let mut action = None;
     let presets = [
-        ("▧", "Social post", 1080, 1080),
-        ("▯", "Story", 1080, 1920),
-        ("▱", "Slides", 1920, 1080),
-        ("▣", "Photo edit", 2400, 1600),
-        ("+", "Blank canvas", 1200, 900),
+        ("▧", "Social post", Action::New(1080, 1080)),
+        ("▯", "Story", Action::New(1080, 1920)),
+        ("▱", "Slides", Action::New(1920, 1080)),
+        ("▣", "Photo edit", Action::Open),
+        ("+", "Blank canvas", Action::Custom),
     ];
-    let columns = if ui.available_width() < 530. { 3 } else { 5 };
+    let columns = grid_columns(ui.available_width(), 140., 5);
     for row in presets.chunks(columns) {
         ui.columns(columns, |uis| {
-            for (i, (icon, label, w, h)) in row.iter().enumerate() {
+            for (i, (icon, label, preset)) in row.iter().enumerate() {
                 let Some(ui) = uis.get_mut(i) else {
                     continue;
                 };
                 let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 49.), egui::Sense::click());
-                ui.painter().rect_filled(rect, 12., Color32::WHITE);
-                ui.painter().rect_stroke(rect, 12., Stroke::new(1., if response.hovered() { PURPLE } else { BORDER }), egui::StrokeKind::Inside);
+                let fill = if response.is_pointer_button_down_on() || response.has_focus() {
+                    t.pressed
+                } else {
+                    Color32::WHITE.lerp_to_gamma(t.hover, hover_amount(ui.ctx(), response.id, response.hovered()))
+                };
+                ui.painter().rect_filled(rect, t.radius_lg, fill);
+                let outlined = response.hovered() || response.has_focus() || response.is_pointer_button_down_on();
+                ui.painter().rect_stroke(
+                    rect,
+                    t.radius_lg,
+                    Stroke::new(if response.has_focus() { 2. } else { 1. }, if outlined { PURPLE } else { BORDER }),
+                    egui::StrokeKind::Inside,
+                );
                 let center = Pos2::new(rect.left() + 17., rect.center().y);
                 if *icon == "+" {
                     ui.painter().line_segment([center - Vec2::new(5., 0.), center + Vec2::new(5., 0.)], Stroke::new(1.3, MUTED));
                     ui.painter().line_segment([center - Vec2::new(0., 5.), center + Vec2::new(0., 5.)], Stroke::new(1.3, MUTED));
                 } else {
-                    let aspect = *w as f32 / *h as f32;
+                    let aspect = if let Action::New(w, h) = preset { *w as f32 / *h as f32 } else { 1.5 };
                     let size = if aspect > 1. { Vec2::new(13., 13. / aspect) } else { Vec2::new(13. * aspect, 13.) };
                     ui.painter().rect_stroke(Rect::from_center_size(center, size), 1., Stroke::new(1.3, MUTED), egui::StrokeKind::Inside);
                 }
-                ui.painter().text(rect.center() + Vec2::new(8., 0.), Align2::CENTER_CENTER, *label, FontId::proportional(12.), INK);
+                ui.painter().text(rect.center() + Vec2::new(8., 0.), Align2::CENTER_CENTER, *label, theme::medium(14.), INK);
                 response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, *label));
                 if response.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                    action = Some(Action::New(*w, *h));
+                    action = Some(*preset);
                 }
             }
         });
-        ui.add_space(8.);
     }
     action
 }
 
 pub fn gallery(ui: &mut egui::Ui, textures: &HashMap<String, TextureHandle>, category: &mut String, search: &str) -> Option<Action> {
+    let t = Tokens::for_kind(ThemeKind::StudioLight);
     let mut action = None;
-    ui.horizontal_wrapped(|ui| {
-        ui.label(RichText::new("Skip the blank canvas.").size(23.).strong().color(INK));
-        ui.label(RichText::new("Start with something good.").size(13.).color(MUTED));
+    ui.scope(|ui| {
+        // A text heading does not need the controls' 40px minimum row height.
+        ui.spacing_mut().interact_size.y = 0.;
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new("Skip the blank canvas.").size(20.).strong().color(INK));
+            ui.label(RichText::new("Start with something good.").size(13.).color(MUTED));
+        });
     });
-    ui.add_space(15.);
+    vertical_gap(ui, ROW_GAP);
     ui.horizontal_wrapped(|ui| {
         for name in ["For you", "Social", "Presentations", "Posters", "Branding"] {
             let selected = category == name;
-            if ui
-                .add(
-                    egui::Button::new(RichText::new(name).size(12.).color(if selected { PURPLE } else { MUTED }))
-                        .fill(if selected { Color32::from_rgb(238, 232, 252) } else { Color32::TRANSPARENT })
-                        .stroke(Stroke::NONE)
-                        .corner_radius(16)
-                        .min_size(Vec2::new(75., 31.)),
-                )
-                .clicked()
-            {
+            if nav_chip(ui, name, selected, Vec2::new(75., CONTROL_HEIGHT), 12.).clicked() {
                 *category = name.into();
             }
         }
     });
-    ui.add_space(15.);
+    vertical_gap(ui, SECTION_GAP);
     let items = STARTERS
         .iter()
         .enumerate()
@@ -302,16 +408,20 @@ pub fn gallery(ui: &mut egui::Ui, textures: &HashMap<String, TextureHandle>, cat
         })
         .collect::<Vec<_>>();
     let columns = grid_columns(ui.available_width(), 160., 6);
-    for row in items.chunks(columns) {
+    for (row_index, row) in items.chunks(columns).enumerate() {
+        if row_index > 0 {
+            vertical_gap(ui, SECTION_GAP);
+        }
         ui.columns(columns, |uis| {
             for (i, (index, starter)) in row.iter().enumerate() {
                 let Some(ui) = uis.get_mut(i) else {
                     continue;
                 };
+                ui.spacing_mut().item_spacing.y = RELATED_GAP / 2.;
                 let width = ui.available_width();
                 let height = (width * 0.94).clamp(150., 225.);
                 let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), egui::Sense::click());
-                ui.painter().rect_filled(rect, 12., Color32::from_rgb(239, 237, 233));
+                ui.painter().rect_filled(rect, t.radius_lg, Color32::from_rgb(239, 237, 233));
                 if let Some(texture) = textures.get(&format!("starter/{}", starter.slug)) {
                     let size = texture.size_vec2();
                     let scale = ((width - 32.) / size.x).min((height - 28.) / size.y);
@@ -320,7 +430,7 @@ pub fn gallery(ui: &mut egui::Ui, textures: &HashMap<String, TextureHandle>, cat
                     ui.painter().rect_filled(rect.shrink(15.), 3., starter.background);
                 }
                 if response.hovered() || response.has_focus() {
-                    ui.painter().rect_stroke(rect, 12., Stroke::new(2., PURPLE), egui::StrokeKind::Inside);
+                    ui.painter().rect_stroke(rect, t.radius_lg, Stroke::new(2., PURPLE), egui::StrokeKind::Inside);
                     let badge = Rect::from_center_size(rect.center_bottom() - Vec2::new(0., 20.), Vec2::new(110., 26.));
                     ui.painter().rect_filled(badge, 13., Color32::WHITE);
                     ui.painter().text(badge.center(), Align2::CENTER_CENTER, "Use this template →", FontId::proportional(11.), INK);
@@ -329,14 +439,13 @@ pub fn gallery(ui: &mut egui::Ui, textures: &HashMap<String, TextureHandle>, cat
                 if response.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                     action = Some(Action::Template(*index));
                 }
-                ui.add_space(10.);
+                vertical_gap(ui, RELATED_GAP);
                 if ui.add(egui::Label::new(RichText::new(starter.name).size(13.).strong().color(INK)).truncate().sense(egui::Sense::click())).clicked() {
                     action = Some(Action::Template(*index));
                 }
                 ui.add(egui::Label::new(RichText::new(format!("{} · {}", starter.category, starter.dimensions)).size(12.).color(MUTED)).truncate());
             }
         });
-        ui.add_space(24.);
     }
     if items.is_empty() {
         ui.label(RichText::new("No designs match that search. Try another word or category.").color(MUTED));
