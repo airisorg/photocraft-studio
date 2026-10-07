@@ -74,6 +74,17 @@ fn hash(s: impl AsRef<[u8]>) -> String {
 fn token() -> String {
     format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple())
 }
+// A zero-sized SQLx cache still creates named statements unless persistence is false.
+// Transaction poolers can assign another PostgreSQL connection after each transaction.
+fn query(sql: &str) -> sqlx::query::Query<'_, sqlx::Postgres, sqlx::postgres::PgArguments> {
+    sqlx::query(sql).persistent(false)
+}
+fn scalar<O>(sql: &str) -> sqlx::query::QueryScalar<'_, sqlx::Postgres, O, sqlx::postgres::PgArguments>
+where
+    (O,): for<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow>,
+{
+    sqlx::query_scalar(sql).persistent(false)
+}
 fn db(s: &App) -> Result<&PgPool> {
     let pool =
         s.db.as_ref()
@@ -95,8 +106,8 @@ async fn ready_db(s: &App) -> Result<&PgPool> {
         }
         let pool = s.db.as_ref().ok_or(sqlx::Error::PoolClosed)?;
         let mut tx = pool.begin().await?;
-        sqlx::query("SET LOCAL lock_timeout = '5s'").execute(&mut *tx).await?;
-        sqlx::query("SELECT pg_advisory_xact_lock(735193624)").execute(&mut *tx).await?;
+        query("SET LOCAL lock_timeout = '5s'").execute(&mut *tx).await?;
+        query("SELECT pg_advisory_xact_lock(735193624)").execute(&mut *tx).await?;
         sqlx::Executor::execute(&mut *tx, include_str!("../migrations/001_cloud.sql")).await?;
         tx.commit().await?;
         s.ready.store(true, Ordering::Release);
@@ -113,6 +124,7 @@ async fn ready_db(s: &App) -> Result<&PgPool> {
             Some("53300") => 5,
             Some("42501") => 6,
             Some("55P03") => 7,
+            Some("42P05" | "26000") => 11,
             _ => 8,
         },
         Ok(Err(_)) => 9,
@@ -136,6 +148,7 @@ fn startup_issue(s: &App) -> Option<&'static str> {
         7 => Some("migration_lock_timeout"),
         8 => Some("database_setup"),
         10 => Some("setup_timeout"),
+        11 => Some("prepared_statement_conflict"),
         _ => Some("setup_unavailable"),
     }
 }
@@ -167,17 +180,16 @@ async fn account(s: &App, h: &HeaderMap) -> Result<Account> {
     if t.len() != 64 {
         return Err(ApiError(StatusCode::UNAUTHORIZED, "Session expired".into()));
     }
-    let r = sqlx::query(
-        "SELECT a.id,a.email,a.name FROM photocraft.sessions s JOIN photocraft.accounts a ON a.id=s.account_id WHERE s.hash=$1 AND s.expires_at>now()",
-    )
-    .bind(hash(t))
-    .fetch_optional(db(s)?)
-    .await?
-    .ok_or(ApiError(StatusCode::UNAUTHORIZED, "Session expired. Sign in again.".into()))?;
+    let r =
+        query("SELECT a.id,a.email,a.name FROM photocraft.sessions s JOIN photocraft.accounts a ON a.id=s.account_id WHERE s.hash=$1 AND s.expires_at>now()")
+            .bind(hash(t))
+            .fetch_optional(db(s)?)
+            .await?
+            .ok_or(ApiError(StatusCode::UNAUTHORIZED, "Session expired. Sign in again.".into()))?;
     Ok(Account { id: r.get("id"), email: r.get("email"), name: r.get("name") })
 }
 async fn role(s: &App, a: &Account, id: Uuid, write: bool, owner: bool) -> Result<String> {
-    let r=sqlx::query("SELECT CASE WHEN p.owner_id=$2 THEN 'owner' ELSE m.role END AS role FROM photocraft.projects p LEFT JOIN photocraft.members m ON m.project_id=p.id AND m.email=$3 WHERE p.id=$1")
+    let r=query("SELECT CASE WHEN p.owner_id=$2 THEN 'owner' ELSE m.role END AS role FROM photocraft.projects p LEFT JOIN photocraft.members m ON m.project_id=p.id AND m.email=$3 WHERE p.id=$1")
         .bind(id).bind(a.id).bind(&a.email).fetch_optional(db(s)?).await?.ok_or_else(forbidden)?;
     let r = r.get::<Option<String>, _>("role").ok_or_else(forbidden)?;
     if (write && r == "view") || (owner && r != "owner") {
@@ -351,15 +363,15 @@ async fn finish_sign_in(s: &App, t: &str, ty: &str) -> Result<Response> {
     let id = u.get("id").and_then(Value::as_str).and_then(|v| Uuid::parse_str(v).ok()).ok_or(bad("Missing account identity"))?;
     let email = text(u.get("email").and_then(Value::as_str).ok_or(bad("An email address is required"))?, 320)?.to_lowercase();
     let name = text(u.pointer("/user_metadata/full_name").and_then(Value::as_str).unwrap_or(&email), 160)?;
-    sqlx::query("INSERT INTO photocraft.accounts(id,email,name) VALUES($1,$2,$3) ON CONFLICT(id) DO UPDATE SET email=EXCLUDED.email,name=EXCLUDED.name")
+    query("INSERT INTO photocraft.accounts(id,email,name) VALUES($1,$2,$3) ON CONFLICT(id) DO UPDATE SET email=EXCLUDED.email,name=EXCLUDED.name")
         .bind(id)
         .bind(email)
         .bind(name)
         .execute(&mut *tx)
         .await?;
     let t = token();
-    sqlx::query("INSERT INTO photocraft.sessions(hash,account_id) VALUES($1,$2)").bind(hash(&t)).bind(id).execute(&mut *tx).await?;
-    sqlx::query("DELETE FROM photocraft.sessions WHERE expires_at<now()").execute(&mut *tx).await?;
+    query("INSERT INTO photocraft.sessions(hash,account_id) VALUES($1,$2)").bind(hash(&t)).bind(id).execute(&mut *tx).await?;
+    query("DELETE FROM photocraft.sessions WHERE expires_at<now()").execute(&mut *tx).await?;
     tx.commit().await?;
     let mut r = Redirect::to("/").into_response();
     r.headers_mut().append(header::SET_COOKIE, session_cookie(s, "pc_session", &t, 604800)?);
@@ -368,7 +380,7 @@ async fn finish_sign_in(s: &App, t: &str, ty: &str) -> Result<Response> {
 }
 async fn logout(State(s): State<App>, h: HeaderMap) -> Result<Response> {
     if let Some(t) = cookie(&h, "pc_session") {
-        sqlx::query("DELETE FROM photocraft.sessions WHERE hash=$1").bind(hash(t)).execute(db(&s)?).await?;
+        query("DELETE FROM photocraft.sessions WHERE hash=$1").bind(hash(t)).execute(db(&s)?).await?;
     }
     let mut r = Json(json!({"ok":true})).into_response();
     r.headers_mut().insert(header::SET_COOKIE, session_cookie(&s, "pc_session", "", 0)?);
@@ -381,7 +393,7 @@ async fn projects(State(s): State<App>, h: HeaderMap) -> Result<Json<Value>> {
     let q = format!(
         "SELECT {PROJECT_FIELDS} AS v FROM photocraft.projects p LEFT JOIN photocraft.members m ON m.project_id=p.id AND m.email=$1 WHERE p.owner_id=$2 OR m.email=$1 ORDER BY p.updated_at DESC LIMIT 500"
     );
-    let rows = sqlx::query(&q).bind(&a.email).bind(a.id).fetch_all(db(&s)?).await?;
+    let rows = query(&q).bind(&a.email).bind(a.id).fetch_all(db(&s)?).await?;
     Ok(Json(json!(rows.iter().map(|r| r.get::<Value, _>("v")).collect::<Vec<_>>())))
 }
 #[derive(Deserialize)]
@@ -393,19 +405,19 @@ async fn create_project(State(s): State<App>, h: HeaderMap, Json(v): Json<NewPro
     let title = text(&v.title, 160)?;
     let id = Uuid::new_v4();
     let mut tx = db(&s)?.begin().await?;
-    sqlx::query("SELECT id FROM photocraft.accounts WHERE id=$1 FOR UPDATE").bind(a.id).execute(&mut *tx).await?;
-    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM photocraft.projects WHERE owner_id=$1").bind(a.id).fetch_one(&mut *tx).await?;
+    query("SELECT id FROM photocraft.accounts WHERE id=$1 FOR UPDATE").bind(a.id).execute(&mut *tx).await?;
+    let n: i64 = scalar("SELECT count(*) FROM photocraft.projects WHERE owner_id=$1").bind(a.id).fetch_one(&mut *tx).await?;
     if n >= 500 {
         return Err(bad("Workspace limit: 500 projects"));
     }
-    sqlx::query("INSERT INTO photocraft.projects(id,owner_id,title) VALUES($1,$2,$3)").bind(id).bind(a.id).bind(&title).execute(&mut *tx).await?;
+    query("INSERT INTO photocraft.projects(id,owner_id,title) VALUES($1,$2,$3)").bind(id).bind(a.id).bind(&title).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(Json(json!({"id":id,"title":title,"revision":0,"role":"owner"})))
 }
 async fn project(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>) -> Result<Json<Value>> {
     let a = account(&s, &h).await?;
     let r = role(&s, &a, id, false, false).await?;
-    let p = sqlx::query("SELECT title,revision,width,height FROM photocraft.projects WHERE id=$1").bind(id).fetch_one(db(&s)?).await?;
+    let p = query("SELECT title,revision,width,height FROM photocraft.projects WHERE id=$1").bind(id).fetch_one(db(&s)?).await?;
     let rev: i64 = p.get("revision");
     let content = version_meta(db(&s)?, id, rev).await?;
     Ok(Json(
@@ -424,17 +436,17 @@ async fn update_project(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>
     role(&s, &a, id, true, true).await?;
     let title = v.title.as_deref().map(|v| text(v, 160)).transpose()?;
     let folder = v.folder.map(|f| if f.is_empty() { Ok(f) } else { text(&f, 100) }).transpose()?;
-    sqlx::query("UPDATE photocraft.projects SET title=coalesce($2,title),folder=coalesce($3,folder),starred=coalesce($4,starred),trashed=coalesce($5,trashed),updated_at=now() WHERE id=$1").bind(id).bind(title).bind(folder).bind(v.starred).bind(v.trashed).execute(db(&s)?).await?;
+    query("UPDATE photocraft.projects SET title=coalesce($2,title),folder=coalesce($3,folder),starred=coalesce($4,starred),trashed=coalesce($5,trashed),updated_at=now() WHERE id=$1").bind(id).bind(title).bind(folder).bind(v.starred).bind(v.trashed).execute(db(&s)?).await?;
     Ok(Json(json!({"ok":true})))
 }
 async fn versions(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>) -> Result<Json<Value>> {
     let a = account(&s, &h).await?;
     role(&s, &a, id, false, false).await?;
-    let rows=sqlx::query("SELECT json_build_object('revision',v.revision,'title',v.title,'author',a.name,'createdAt',v.created_at,'bytes',octet_length(v.data),'sha256',v.sha256) AS v FROM photocraft.versions v JOIN photocraft.accounts a ON a.id=v.author_id WHERE v.project_id=$1 ORDER BY v.revision DESC LIMIT 200").bind(id).fetch_all(db(&s)?).await?;
+    let rows=query("SELECT json_build_object('revision',v.revision,'title',v.title,'author',a.name,'createdAt',v.created_at,'bytes',octet_length(v.data),'sha256',v.sha256) AS v FROM photocraft.versions v JOIN photocraft.accounts a ON a.id=v.author_id WHERE v.project_id=$1 ORDER BY v.revision DESC LIMIT 200").bind(id).fetch_all(db(&s)?).await?;
     Ok(Json(json!(rows.iter().map(|r| r.get::<Value, _>("v")).collect::<Vec<_>>())))
 }
 async fn version_meta(pool: &PgPool, id: Uuid, rev: i64) -> Result<Value> {
-    let r = sqlx::query("SELECT octet_length(data) AS bytes,sha256 FROM photocraft.versions WHERE project_id=$1 AND revision=$2")
+    let r = query("SELECT octet_length(data) AS bytes,sha256 FROM photocraft.versions WHERE project_id=$1 AND revision=$2")
         .bind(id)
         .bind(rev)
         .fetch_optional(pool)
@@ -451,17 +463,15 @@ async fn file_part(pool: &PgPool, id: Uuid, q: ContentQuery) -> Result<Response>
     if part >= 200 {
         return Err(bad("Invalid chunk number"));
     }
-    let rev =
-        if let Some(r) = q.revision { r } else { sqlx::query_scalar("SELECT revision FROM photocraft.projects WHERE id=$1").bind(id).fetch_one(pool).await? };
-    let r =
-        sqlx::query("SELECT substring(data from $3 for $4) AS data,octet_length(data) AS bytes FROM photocraft.versions WHERE project_id=$1 AND revision=$2")
-            .bind(id)
-            .bind(rev)
-            .bind((part * CHUNK + 1) as i32)
-            .bind(CHUNK as i32)
-            .fetch_optional(pool)
-            .await?
-            .ok_or_else(forbidden)?;
+    let rev = if let Some(r) = q.revision { r } else { scalar("SELECT revision FROM photocraft.projects WHERE id=$1").bind(id).fetch_one(pool).await? };
+    let r = query("SELECT substring(data from $3 for $4) AS data,octet_length(data) AS bytes FROM photocraft.versions WHERE project_id=$1 AND revision=$2")
+        .bind(id)
+        .bind(rev)
+        .bind((part * CHUNK + 1) as i32)
+        .bind(CHUNK as i32)
+        .fetch_optional(pool)
+        .await?
+        .ok_or_else(forbidden)?;
     if part * CHUNK >= r.get::<i32, _>("bytes") as usize {
         return Err(bad("Chunk is beyond the file"));
     }
@@ -475,7 +485,7 @@ async fn content(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>, Query
 async fn thumbnail(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>) -> Result<Response> {
     let a = account(&s, &h).await?;
     role(&s, &a, id, false, false).await?;
-    let v: Option<Vec<u8>> = sqlx::query_scalar("SELECT thumbnail FROM photocraft.projects WHERE id=$1").bind(id).fetch_one(db(&s)?).await?;
+    let v: Option<Vec<u8>> = scalar("SELECT thumbnail FROM photocraft.projects WHERE id=$1").bind(id).fetch_one(db(&s)?).await?;
     Ok(([(header::CONTENT_TYPE, "image/png")], v.ok_or_else(forbidden)?).into_response())
 }
 async fn put_thumbnail(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>, b: Bytes) -> Result<Json<Value>> {
@@ -489,7 +499,7 @@ async fn put_thumbnail(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>,
     {
         return Err(bad("Invalid PNG preview"));
     }
-    sqlx::query("UPDATE photocraft.projects SET thumbnail=$2 WHERE id=$1").bind(id).bind(b.to_vec()).execute(db(&s)?).await?;
+    query("UPDATE photocraft.projects SET thumbnail=$2 WHERE id=$1").bind(id).bind(b.to_vec()).execute(db(&s)?).await?;
     Ok(Json(json!({"ok":true})))
 }
 async fn duplicate(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>) -> Result<Json<Value>> {
@@ -497,18 +507,18 @@ async fn duplicate(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>) -> 
     role(&s, &a, id, false, false).await?;
     let new = Uuid::new_v4();
     let mut tx = db(&s)?.begin().await?;
-    sqlx::query("SELECT id FROM photocraft.accounts WHERE id=$1 FOR UPDATE").bind(a.id).execute(&mut *tx).await?;
-    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM photocraft.projects WHERE owner_id=$1").bind(a.id).fetch_one(&mut *tx).await?;
+    query("SELECT id FROM photocraft.accounts WHERE id=$1 FOR UPDATE").bind(a.id).execute(&mut *tx).await?;
+    let count: i64 = scalar("SELECT count(*) FROM photocraft.projects WHERE owner_id=$1").bind(a.id).fetch_one(&mut *tx).await?;
     if count >= 500 {
         return Err(bad("Workspace limit: 500 projects"));
     }
-    let used: i64 = sqlx::query_scalar(
+    let used: i64 = scalar(
         "SELECT coalesce(sum(octet_length(v.data)),0)::bigint FROM photocraft.versions v JOIN photocraft.projects p ON p.id=v.project_id WHERE p.owner_id=$1",
     )
     .bind(a.id)
     .fetch_one(&mut *tx)
     .await?;
-    let size: Option<i32> = sqlx::query_scalar(
+    let size: Option<i32> = scalar(
         "SELECT octet_length(v.data) FROM photocraft.versions v JOIN photocraft.projects p ON p.id=v.project_id AND p.revision=v.revision WHERE p.id=$1",
     )
     .bind(id)
@@ -517,8 +527,8 @@ async fn duplicate(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>) -> 
     if used + i64::from(size.unwrap_or(0)) > ACCOUNT_QUOTA {
         return Err(bad("Workspace storage limit reached"));
     }
-    sqlx::query("INSERT INTO photocraft.projects(id,owner_id,title,revision,width,height,thumbnail) SELECT $2,$3,left(title,153)||' (copy)',CASE WHEN revision>0 THEN 1 ELSE 0 END,width,height,thumbnail FROM photocraft.projects WHERE id=$1").bind(id).bind(new).bind(a.id).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO photocraft.versions(project_id,revision,author_id,title,data,sha256) SELECT $2,1,$3,'Created a copy',v.data,v.sha256 FROM photocraft.versions v JOIN photocraft.projects p ON p.id=v.project_id AND p.revision=v.revision WHERE p.id=$1").bind(id).bind(new).bind(a.id).execute(&mut *tx).await?;
+    query("INSERT INTO photocraft.projects(id,owner_id,title,revision,width,height,thumbnail) SELECT $2,$3,left(title,153)||' (copy)',CASE WHEN revision>0 THEN 1 ELSE 0 END,width,height,thumbnail FROM photocraft.projects WHERE id=$1").bind(id).bind(new).bind(a.id).execute(&mut *tx).await?;
+    query("INSERT INTO photocraft.versions(project_id,revision,author_id,title,data,sha256) SELECT $2,1,$3,'Created a copy',v.data,v.sha256 FROM photocraft.versions v JOIN photocraft.projects p ON p.id=v.project_id AND p.revision=v.revision WHERE p.id=$1").bind(id).bind(new).bind(a.id).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(Json(json!({"id":new})))
 }
@@ -552,34 +562,32 @@ async fn begin_upload(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>, 
     let p = db(&s)?;
     let mut tx = p.begin().await?;
     // Serialize reservation counts across processes; parallel tabs cannot bypass the limit.
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))").bind(format!("photocraft.uploads/{}", a.id)).execute(&mut *tx).await?;
-    sqlx::query("DELETE FROM photocraft.uploads WHERE author_id=$1 AND created_at<now()-interval '1 hour'").bind(a.id).execute(&mut *tx).await?;
-    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM photocraft.uploads WHERE author_id=$1").bind(a.id).fetch_one(&mut *tx).await?;
+    query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))").bind(format!("photocraft.uploads/{}", a.id)).execute(&mut *tx).await?;
+    query("DELETE FROM photocraft.uploads WHERE author_id=$1 AND created_at<now()-interval '1 hour'").bind(a.id).execute(&mut *tx).await?;
+    let n: i64 = scalar("SELECT count(*) FROM photocraft.uploads WHERE author_id=$1").bind(a.id).fetch_one(&mut *tx).await?;
     if n >= 5 {
         return Err(bad("Too many pending uploads; finish one or retry in an hour"));
     }
     let next = Uuid::new_v4();
-    sqlx::query(
-        "INSERT INTO photocraft.uploads(id,project_id,author_id,base_revision,bytes,parts,sha256,title,width,height) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
-    )
-    .bind(next)
-    .bind(id)
-    .bind(a.id)
-    .bind(v.base_revision)
-    .bind(v.bytes as i64)
-    .bind(v.parts as i32)
-    .bind(v.sha256.to_lowercase())
-    .bind(title)
-    .bind(v.width)
-    .bind(v.height)
-    .execute(&mut *tx)
-    .await?;
+    query("INSERT INTO photocraft.uploads(id,project_id,author_id,base_revision,bytes,parts,sha256,title,width,height) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)")
+        .bind(next)
+        .bind(id)
+        .bind(a.id)
+        .bind(v.base_revision)
+        .bind(v.bytes as i64)
+        .bind(v.parts as i32)
+        .bind(v.sha256.to_lowercase())
+        .bind(title)
+        .bind(v.width)
+        .bind(v.height)
+        .execute(&mut *tx)
+        .await?;
     tx.commit().await?;
     Ok(Json(json!({"id":next})))
 }
 async fn upload_chunk(State(s): State<App>, h: HeaderMap, Path((id, part)): Path<(Uuid, i32)>, b: Bytes) -> Result<Json<Value>> {
     let a = account(&s, &h).await?;
-    let r = sqlx::query("SELECT project_id,parts,bytes FROM photocraft.uploads WHERE id=$1 AND author_id=$2 AND created_at>now()-interval '1 hour'")
+    let r = query("SELECT project_id,parts,bytes FROM photocraft.uploads WHERE id=$1 AND author_id=$2 AND created_at>now()-interval '1 hour'")
         .bind(id)
         .bind(a.id)
         .fetch_optional(db(&s)?)
@@ -591,7 +599,7 @@ async fn upload_chunk(State(s): State<App>, h: HeaderMap, Path((id, part)): Path
     if part < 0 || part >= parts || b.len() != if part == parts - 1 { size as usize - (part as usize) * CHUNK } else { CHUNK } {
         return Err(bad("Chunk does not match the declared upload"));
     }
-    sqlx::query("INSERT INTO photocraft.chunks(upload_id,part,data) VALUES($1,$2,$3) ON CONFLICT(upload_id,part) DO UPDATE SET data=EXCLUDED.data")
+    query("INSERT INTO photocraft.chunks(upload_id,part,data) VALUES($1,$2,$3) ON CONFLICT(upload_id,part) DO UPDATE SET data=EXCLUDED.data")
         .bind(id)
         .bind(part)
         .bind(b.to_vec())
@@ -603,7 +611,7 @@ async fn commit_upload(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>)
     let a = account(&s, &h).await?;
     let p = db(&s)?;
     let mut tx = p.begin().await?;
-    let u = sqlx::query("SELECT * FROM photocraft.uploads WHERE id=$1 AND author_id=$2 AND created_at>now()-interval '1 hour' FOR UPDATE")
+    let u = query("SELECT * FROM photocraft.uploads WHERE id=$1 AND author_id=$2 AND created_at>now()-interval '1 hour' FOR UPDATE")
         .bind(id)
         .bind(a.id)
         .fetch_optional(&mut *tx)
@@ -612,17 +620,17 @@ async fn commit_upload(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>)
     let project: Uuid = u.get("project_id");
     // Use this transaction's connection: concurrent commits must not exhaust the pool while
     // each waits for a second connection to authorize its own upload.
-    let can_write:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM photocraft.projects p LEFT JOIN photocraft.members m ON m.project_id=p.id AND m.email=$3 WHERE p.id=$1 AND (p.owner_id=$2 OR m.role='edit'))").bind(project).bind(a.id).bind(&a.email).fetch_one(&mut *tx).await?;
+    let can_write:bool=scalar("SELECT EXISTS(SELECT 1 FROM photocraft.projects p LEFT JOIN photocraft.members m ON m.project_id=p.id AND m.email=$3 WHERE p.id=$1 AND (p.owner_id=$2 OR m.role='edit'))").bind(project).bind(a.id).bind(&a.email).fetch_one(&mut *tx).await?;
     if !can_write {
         return Err(forbidden());
     }
-    let pr = sqlx::query("SELECT revision,owner_id,trashed FROM photocraft.projects WHERE id=$1 FOR UPDATE").bind(project).fetch_one(&mut *tx).await?;
-    sqlx::query("SELECT id FROM photocraft.accounts WHERE id=$1 FOR UPDATE").bind(pr.get::<Uuid, _>("owner_id")).execute(&mut *tx).await?;
+    let pr = query("SELECT revision,owner_id,trashed FROM photocraft.projects WHERE id=$1 FOR UPDATE").bind(project).fetch_one(&mut *tx).await?;
+    query("SELECT id FROM photocraft.accounts WHERE id=$1 FOR UPDATE").bind(pr.get::<Uuid, _>("owner_id")).execute(&mut *tx).await?;
     if pr.get::<bool, _>("trashed") {
         return Err(bad("Restore this project from Trash before saving"));
     }
     let revision: i64 = pr.get("revision");
-    let rows = sqlx::query("SELECT part,data FROM photocraft.chunks WHERE upload_id=$1 ORDER BY part").bind(id).fetch_all(&mut *tx).await?;
+    let rows = query("SELECT part,data FROM photocraft.chunks WHERE upload_id=$1 ORDER BY part").bind(id).fetch_all(&mut *tx).await?;
     if rows.len() != u.get::<i32, _>("parts") as usize {
         return Err(bad("Upload is incomplete; retry the missing chunks"));
     }
@@ -639,23 +647,20 @@ async fn commit_upload(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>)
     }
     let merged = revision != u.get::<i64, _>("base_revision");
     if merged {
-        let base: Option<Vec<u8>> = sqlx::query_scalar("SELECT data FROM photocraft.versions WHERE project_id=$1 AND revision=$2")
+        let base: Option<Vec<u8>> = scalar("SELECT data FROM photocraft.versions WHERE project_id=$1 AND revision=$2")
             .bind(project)
             .bind(u.get::<i64, _>("base_revision"))
             .fetch_optional(&mut *tx)
             .await?;
-        let latest: Option<Vec<u8>> = sqlx::query_scalar("SELECT data FROM photocraft.versions WHERE project_id=$1 AND revision=$2")
-            .bind(project)
-            .bind(revision)
-            .fetch_optional(&mut *tx)
-            .await?;
+        let latest: Option<Vec<u8>> =
+            scalar("SELECT data FROM photocraft.versions WHERE project_id=$1 AND revision=$2").bind(project).bind(revision).fetch_optional(&mut *tx).await?;
         bytes = base.zip(latest).and_then(|(base, latest)| merge::documents(&base, &bytes, &latest, MAX_FILE)).ok_or(ApiError(
             StatusCode::CONFLICT,
             "You and a collaborator changed the same content. Your edits are safe here. Save a copy, or open the latest version to compare.".into(),
         ))?;
     }
     let checksum = hash(&bytes);
-    let used: i64 = sqlx::query_scalar(
+    let used: i64 = scalar(
         "SELECT coalesce(sum(octet_length(v.data)),0)::bigint FROM photocraft.versions v JOIN photocraft.projects p ON p.id=v.project_id WHERE p.owner_id=$1",
     )
     .bind(pr.get::<Uuid, _>("owner_id"))
@@ -665,7 +670,7 @@ async fn commit_upload(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>)
         return Err(bad("Workspace storage limit (1 GB including history) reached. Download your work."));
     }
     let next = revision + 1;
-    sqlx::query("INSERT INTO photocraft.versions(project_id,revision,author_id,title,data,sha256) VALUES($1,$2,$3,$4,$5,$6)")
+    query("INSERT INTO photocraft.versions(project_id,revision,author_id,title,data,sha256) VALUES($1,$2,$3,$4,$5,$6)")
         .bind(project)
         .bind(next)
         .bind(a.id)
@@ -674,23 +679,21 @@ async fn commit_upload(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>)
         .bind(checksum)
         .execute(&mut *tx)
         .await?;
-    sqlx::query(
-        "UPDATE photocraft.projects SET revision=$2,width=$3,height=$4,thumbnail=CASE WHEN $5 THEN NULL ELSE thumbnail END,updated_at=now() WHERE id=$1",
-    )
-    .bind(project)
-    .bind(next)
-    .bind(u.get::<i32, _>("width"))
-    .bind(u.get::<i32, _>("height"))
-    .bind(merged)
-    .execute(&mut *tx)
-    .await?;
-    sqlx::query("DELETE FROM photocraft.uploads WHERE id=$1").bind(id).execute(&mut *tx).await?;
+    query("UPDATE photocraft.projects SET revision=$2,width=$3,height=$4,thumbnail=CASE WHEN $5 THEN NULL ELSE thumbnail END,updated_at=now() WHERE id=$1")
+        .bind(project)
+        .bind(next)
+        .bind(u.get::<i32, _>("width"))
+        .bind(u.get::<i32, _>("height"))
+        .bind(merged)
+        .execute(&mut *tx)
+        .await?;
+    query("DELETE FROM photocraft.uploads WHERE id=$1").bind(id).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(Json(json!({"revision":next,"merged":merged})))
 }
 async fn cancel_upload(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>) -> Result<Json<Value>> {
     let a = account(&s, &h).await?;
-    let deleted = sqlx::query("DELETE FROM photocraft.uploads WHERE id=$1 AND author_id=$2").bind(id).bind(a.id).execute(db(&s)?).await?.rows_affected();
+    let deleted = query("DELETE FROM photocraft.uploads WHERE id=$1 AND author_id=$2").bind(id).bind(a.id).execute(db(&s)?).await?.rows_affected();
     if deleted == 0 {
         return Err(forbidden());
     }
@@ -699,7 +702,7 @@ async fn cancel_upload(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>)
 async fn members(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>) -> Result<Json<Value>> {
     let a = account(&s, &h).await?;
     role(&s, &a, id, false, true).await?;
-    let rows = sqlx::query("SELECT m.email,m.role,EXISTS(SELECT 1 FROM photocraft.accounts a WHERE a.email=m.email) AS joined,(SELECT status FROM photocraft.invitation_deliveries d WHERE d.project_id=m.project_id AND d.email=m.email ORDER BY created_at DESC LIMIT 1) AS delivery FROM photocraft.members m WHERE m.project_id=$1 ORDER BY m.email").bind(id).fetch_all(db(&s)?).await?;
+    let rows = query("SELECT m.email,m.role,EXISTS(SELECT 1 FROM photocraft.accounts a WHERE a.email=m.email) AS joined,(SELECT status FROM photocraft.invitation_deliveries d WHERE d.project_id=m.project_id AND d.email=m.email ORDER BY created_at DESC LIMIT 1) AS delivery FROM photocraft.members m WHERE m.project_id=$1 ORDER BY m.email").bind(id).fetch_all(db(&s)?).await?;
     Ok(Json(json!(rows.iter().map(|r| json!({"email":r.get::<String,_>("email"),"role":r.get::<String,_>("role"),"joined":r.get::<bool,_>("joined"),"delivery":r.get::<Option<String>,_>("delivery")})).collect::<Vec<_>>())))
 }
 #[derive(Deserialize)]
@@ -715,9 +718,9 @@ async fn set_member(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>, Js
         return Err(bad("Enter a valid email and access role"));
     }
     if v.role == "remove" {
-        sqlx::query("DELETE FROM photocraft.members WHERE project_id=$1 AND email=$2").bind(id).bind(email).execute(db(&s)?).await?;
+        query("DELETE FROM photocraft.members WHERE project_id=$1 AND email=$2").bind(id).bind(email).execute(db(&s)?).await?;
     } else {
-        sqlx::query("INSERT INTO photocraft.members(project_id,email,role) VALUES($1,$2,$3) ON CONFLICT(project_id,email) DO UPDATE SET role=EXCLUDED.role")
+        query("INSERT INTO photocraft.members(project_id,email,role) VALUES($1,$2,$3) ON CONFLICT(project_id,email) DO UPDATE SET role=EXCLUDED.role")
             .bind(id)
             .bind(email)
             .bind(v.role)
@@ -731,22 +734,22 @@ async fn create_share(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>) 
     role(&s, &a, id, true, true).await?;
     let t = token();
     let mut tx = db(&s)?.begin().await?;
-    sqlx::query("DELETE FROM photocraft.shares WHERE project_id=$1").bind(id).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO photocraft.shares(hash,project_id) VALUES($1,$2)").bind(hash(&t)).bind(id).execute(&mut *tx).await?;
+    query("DELETE FROM photocraft.shares WHERE project_id=$1").bind(id).execute(&mut *tx).await?;
+    query("INSERT INTO photocraft.shares(hash,project_id) VALUES($1,$2)").bind(hash(&t)).bind(id).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(Json(json!({"url":format!("{}/?share={t}",s.origin)})))
 }
 async fn revoke_shares(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>) -> Result<Json<Value>> {
     let a = account(&s, &h).await?;
     role(&s, &a, id, true, true).await?;
-    sqlx::query("DELETE FROM photocraft.shares WHERE project_id=$1").bind(id).execute(db(&s)?).await?;
+    query("DELETE FROM photocraft.shares WHERE project_id=$1").bind(id).execute(db(&s)?).await?;
     Ok(Json(json!({"ok":true})))
 }
 async fn shared_id(s: &App, key: &str) -> Result<Uuid> {
     if key.len() != 64 {
         return Err(forbidden());
     }
-    sqlx::query_scalar("SELECT p.id FROM photocraft.shares s JOIN photocraft.projects p ON p.id=s.project_id WHERE s.hash=$1 AND NOT p.trashed")
+    scalar("SELECT p.id FROM photocraft.shares s JOIN photocraft.projects p ON p.id=s.project_id WHERE s.hash=$1 AND NOT p.trashed")
         .bind(hash(key))
         .fetch_optional(db(s)?)
         .await?
@@ -754,7 +757,7 @@ async fn shared_id(s: &App, key: &str) -> Result<Uuid> {
 }
 async fn shared_project(State(s): State<App>, Path(key): Path<String>) -> Result<Json<Value>> {
     let id = shared_id(&s, &key).await?;
-    let r = sqlx::query("SELECT title,revision,width,height FROM photocraft.projects WHERE id=$1").bind(id).fetch_one(db(&s)?).await?;
+    let r = query("SELECT title,revision,width,height FROM photocraft.projects WHERE id=$1").bind(id).fetch_one(db(&s)?).await?;
     let revision: i64 = r.get("revision");
     Ok(Json(
         json!({"id":id,"title":r.get::<String,_>("title"),"revision":revision,"width":r.get::<i32,_>("width"),"height":r.get::<i32,_>("height"),"role":"view","content":version_meta(db(&s)?,id,revision).await?}),
@@ -768,7 +771,7 @@ async fn shared_content(State(s): State<App>, Path(key): Path<String>, Query(mut
 async fn comments(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>) -> Result<Json<Value>> {
     let a = account(&s, &h).await?;
     role(&s, &a, id, false, false).await?;
-    let rows=sqlx::query("SELECT json_build_object('id',c.id,'body',c.body,'resolved',c.resolved,'author',a.name,'createdAt',c.created_at) AS v FROM photocraft.comments c JOIN photocraft.accounts a ON a.id=c.author_id WHERE project_id=$1 ORDER BY c.created_at DESC LIMIT 200").bind(id).fetch_all(db(&s)?).await?;
+    let rows=query("SELECT json_build_object('id',c.id,'body',c.body,'resolved',c.resolved,'author',a.name,'createdAt',c.created_at) AS v FROM photocraft.comments c JOIN photocraft.accounts a ON a.id=c.author_id WHERE project_id=$1 ORDER BY c.created_at DESC LIMIT 200").bind(id).fetch_all(db(&s)?).await?;
     Ok(Json(json!(rows.iter().map(|r| r.get::<Value, _>("v")).collect::<Vec<_>>())))
 }
 #[derive(Deserialize)]
@@ -779,12 +782,12 @@ async fn add_comment(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>, J
     let a = account(&s, &h).await?;
     role(&s, &a, id, false, false).await?;
     let body = text(&v.body, 4000)?;
-    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM photocraft.comments WHERE project_id=$1").bind(id).fetch_one(db(&s)?).await?;
+    let n: i64 = scalar("SELECT count(*) FROM photocraft.comments WHERE project_id=$1").bind(id).fetch_one(db(&s)?).await?;
     if n >= 1000 {
         return Err(bad("This project has reached 1,000 comments"));
     }
     let cid = Uuid::new_v4();
-    sqlx::query("INSERT INTO photocraft.comments(id,project_id,author_id,body) VALUES($1,$2,$3,$4)")
+    query("INSERT INTO photocraft.comments(id,project_id,author_id,body) VALUES($1,$2,$3,$4)")
         .bind(cid)
         .bind(id)
         .bind(a.id)
@@ -800,7 +803,7 @@ struct Resolve {
 async fn resolve_comment(State(s): State<App>, h: HeaderMap, Path((id, cid)): Path<(Uuid, Uuid)>, Json(v): Json<Resolve>) -> Result<Json<Value>> {
     let a = account(&s, &h).await?;
     role(&s, &a, id, true, false).await?;
-    let n = sqlx::query("UPDATE photocraft.comments SET resolved=$3 WHERE project_id=$1 AND id=$2")
+    let n = query("UPDATE photocraft.comments SET resolved=$3 WHERE project_id=$1 AND id=$2")
         .bind(id)
         .bind(cid)
         .bind(v.resolved)
@@ -815,13 +818,13 @@ async fn resolve_comment(State(s): State<App>, h: HeaderMap, Path((id, cid)): Pa
 async fn presence(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>) -> Result<Json<Value>> {
     let a = account(&s, &h).await?;
     let access = role(&s, &a, id, false, false).await?;
-    sqlx::query("INSERT INTO photocraft.presence(project_id,account_id) VALUES($1,$2) ON CONFLICT(project_id,account_id) DO UPDATE SET seen_at=now()")
+    query("INSERT INTO photocraft.presence(project_id,account_id) VALUES($1,$2) ON CONFLICT(project_id,account_id) DO UPDATE SET seen_at=now()")
         .bind(id)
         .bind(a.id)
         .execute(db(&s)?)
         .await?;
-    let rows=sqlx::query("SELECT a.name FROM photocraft.presence p JOIN photocraft.accounts a ON a.id=p.account_id WHERE p.project_id=$1 AND p.seen_at>now()-interval '30 seconds' ORDER BY a.name LIMIT 50").bind(id).fetch_all(db(&s)?).await?;
-    let revision: i64 = sqlx::query_scalar("SELECT revision FROM photocraft.projects WHERE id=$1").bind(id).fetch_one(db(&s)?).await?;
+    let rows=query("SELECT a.name FROM photocraft.presence p JOIN photocraft.accounts a ON a.id=p.account_id WHERE p.project_id=$1 AND p.seen_at>now()-interval '30 seconds' ORDER BY a.name LIMIT 50").bind(id).fetch_all(db(&s)?).await?;
+    let revision: i64 = scalar("SELECT revision FROM photocraft.projects WHERE id=$1").bind(id).fetch_one(db(&s)?).await?;
     Ok(Json(json!({"people":rows.iter().map(|r|r.get::<String,_>("name")).collect::<Vec<_>>(),"revision":revision,"role":access})))
 }
 

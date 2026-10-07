@@ -15,34 +15,33 @@ pub(crate) async fn invite(State(s): State<App>, h: HeaderMap, Path(id): Path<Uu
     let pool = db(&s)?;
     let mut tx = pool.begin().await?;
     // Serialize the owner's rate limit, including concurrent requests and failed sends.
-    sqlx::query("SELECT id FROM photocraft.accounts WHERE id=$1 FOR UPDATE").bind(a.id).execute(&mut *tx).await?;
-    let recent: i64 = sqlx::query_scalar("SELECT count(*) FROM photocraft.invitation_deliveries WHERE sender_id=$1 AND created_at>now()-interval '1 hour'")
+    query("SELECT id FROM photocraft.accounts WHERE id=$1 FOR UPDATE").bind(a.id).execute(&mut *tx).await?;
+    let recent: i64 = scalar("SELECT count(*) FROM photocraft.invitation_deliveries WHERE sender_id=$1 AND created_at>now()-interval '1 hour'")
         .bind(a.id)
         .fetch_one(&mut *tx)
         .await?;
-    let cooldown: bool =
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM photocraft.invitation_deliveries WHERE email=$1 AND created_at>now()-interval '1 minute')")
-            .bind(&email)
-            .fetch_one(&mut *tx)
-            .await?;
+    let cooldown: bool = scalar("SELECT EXISTS(SELECT 1 FROM photocraft.invitation_deliveries WHERE email=$1 AND created_at>now()-interval '1 minute')")
+        .bind(&email)
+        .fetch_one(&mut *tx)
+        .await?;
     if recent >= 20 || cooldown {
         return Err(ApiError(
             StatusCode::TOO_MANY_REQUESTS,
             "Please wait before sending another invitation. Limit: 20 per hour and one per recipient per minute.".into(),
         ));
     }
-    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM photocraft.members WHERE project_id=$1").bind(id).fetch_one(&mut *tx).await?;
+    let count: i64 = scalar("SELECT count(*) FROM photocraft.members WHERE project_id=$1").bind(id).fetch_one(&mut *tx).await?;
     if count >= 100 {
         return Err(bad("This project has reached 100 collaborators"));
     }
-    sqlx::query("INSERT INTO photocraft.members(project_id,email,role) VALUES($1,$2,$3) ON CONFLICT(project_id,email) DO UPDATE SET role=EXCLUDED.role")
+    query("INSERT INTO photocraft.members(project_id,email,role) VALUES($1,$2,$3) ON CONFLICT(project_id,email) DO UPDATE SET role=EXCLUDED.role")
         .bind(id)
         .bind(&email)
         .bind(&v.role)
         .execute(&mut *tx)
         .await?;
     let delivery = Uuid::new_v4();
-    sqlx::query("INSERT INTO photocraft.invitation_deliveries(id,project_id,sender_id,email) VALUES($1,$2,$3,$4)")
+    query("INSERT INTO photocraft.invitation_deliveries(id,project_id,sender_id,email) VALUES($1,$2,$3,$4)")
         .bind(delivery)
         .bind(id)
         .bind(a.id)
@@ -59,11 +58,7 @@ pub(crate) async fn invite(State(s): State<App>, h: HeaderMap, Path(id): Path<Uu
         .send()
         .await
         .is_ok_and(|r| r.status().is_success());
-    sqlx::query("UPDATE photocraft.invitation_deliveries SET status=$2 WHERE id=$1")
-        .bind(delivery)
-        .bind(if sent { "sent" } else { "failed" })
-        .execute(pool)
-        .await?;
+    query("UPDATE photocraft.invitation_deliveries SET status=$2 WHERE id=$1").bind(delivery).bind(if sent { "sent" } else { "failed" }).execute(pool).await?;
     if !sent {
         return Err(ApiError(
             StatusCode::BAD_GATEWAY,
