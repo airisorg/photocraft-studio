@@ -91,7 +91,6 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
         // Photoshop doesn't dim the window behind dialogs: previews must be judged at true contrast.
         let modal = egui::Modal::new(id).area(area).backdrop_color(egui::Color32::TRANSPARENT).show(ctx, |ui| {
             sizing = ui.is_sizing_pass();
-            ui.set_min_width(380.0);
             let wide = crate::prefs_ui::width(&d.fields);
             let file_width = crate::file_ui::dialog_width(&d.fields);
             let min_width = file_width.unwrap_or(if d.kind == DialogKind::NewDocument { 800.0 } else { wide.map_or(380.0, |w| w.min(460.0)) });
@@ -111,54 +110,65 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
             ui.add_space(4.0);
             crate::widgets::hairline(ui);
             ui.add_space(8.0);
-            match d.kind {
-                DialogKind::NewDocument => crate::new_doc_ui::body(ui, &mut fields),
-                DialogKind::About if fields.get("systemInfo").and_then(Value::as_bool) == Some(true) => {
-                    let lines = crate::gpu_status::system_info(app);
-                    for l in &lines {
-                        ui.add(egui::Label::new(egui::RichText::new(l).font(crate::theme::mono(12.0))).selectable(true));
+            // Keep the original forms and widgets; constrain only their viewport. Actions stay
+            // outside the scroll area, so even the widest native dialog can be cancelled on a phone.
+            egui::ScrollArea::both()
+                .id_salt(("dialog-body", d.id))
+                .max_width(viewport_width)
+                .max_height((ctx.content_rect().height() - 160.0).max(120.0))
+                .auto_shrink([true, true])
+                .show(ui, |ui| {
+                    ui.set_min_width(if d.kind == DialogKind::NewDocument { min_width.min(viewport_width) } else { min_width });
+                    ui.set_max_width(if d.kind == DialogKind::NewDocument { max_width.min(viewport_width) } else { max_width });
+                    match d.kind {
+                        DialogKind::NewDocument => crate::new_doc_ui::body(ui, &mut fields),
+                        DialogKind::About if fields.get("systemInfo").and_then(Value::as_bool) == Some(true) => {
+                            let lines = crate::gpu_status::system_info(app);
+                            for l in &lines {
+                                ui.add(egui::Label::new(egui::RichText::new(l).font(crate::theme::mono(12.0))).selectable(true));
+                            }
+                            ui.add_space(8.0);
+                            if crate::widgets::secondary_button(ui, tl!("Copy"), 84.0).clicked() {
+                                ui.ctx().copy_text(lines.join("\n"));
+                            }
+                        }
+                        DialogKind::About => {
+                            ui.label(tl!("PhotoCraft — an open-source, native image editor written in Rust."));
+                            ui.label(crate::i18n::fmt(tl!("Version {version}"), &[("version", &photocraft_engine::build_info::long_version())]));
+                            ui.add_space(12.0);
+                            ui.vertical_centered(|ui| {
+                                crate::links::discord_button(app, ui, 220.0);
+                                ui.add_space(8.0);
+                                crate::links::link_row(app, ui);
+                            });
+                            ui.add_space(10.0);
+                            ui.weak("egui · wgpu · photocraft-engine");
+                        }
+                        DialogKind::Command if crate::fill_ui::owns(&fields) => crate::fill_ui::body(app, ui, &mut fields),
+                        DialogKind::Command if crate::rasterize_prompt::owns(&fields) => crate::rasterize_prompt::body(ui, &fields),
+                        DialogKind::Command if crate::variables_ui::owns(&fields) => crate::variables_ui::body(app, ui, &mut fields),
+                        DialogKind::Command if crate::file_ui::owns(&fields) => crate::file_ui::body(app, ui, &mut fields),
+                        DialogKind::Command if crate::color_picker_ui::owns(&fields) => crate::color_picker_ui::body(ui, &mut fields),
+                        DialogKind::Command if crate::color_range_ui::owns(&fields) => crate::color_range_ui::body(app, ui, &mut fields),
+                        DialogKind::Command if crate::prefs_ui::owns(&fields) => crate::prefs_ui::body(app, ui, &mut fields),
+                        DialogKind::Command if fields.contains_key("__export") => crate::export_dialog::body(app, ui, &mut fields),
+                        DialogKind::Command if fields.contains_key("__sizing") => crate::sizing::body(ui, &mut fields),
+                        DialogKind::Command if crate::adjust_dialog::owns(&fields) => crate::adjust_dialog::body(app, ui, &mut fields),
+                        DialogKind::Command if fields.contains_key("__filter") => {
+                            // Color Settings: the monitor profile in use can change while it is open.
+                            if fields.get("__command").and_then(Value::as_str) == Some("edit.colorSettings") {
+                                fields.insert("__note".into(), Value::String(crate::monitor_status::note(app)));
+                            }
+                            crate::filter_dialog::body(ui, &mut fields)
+                        }
+                        DialogKind::Command if fields.contains_key("__form") => crate::view_cmds::form_body(ui, &mut fields),
+                        DialogKind::Command => {}
+                        DialogKind::LayerStyle => crate::layer_style::body(ui, &mut fields),
+                        DialogKind::Error => {
+                            ui.label(fields.get("message").and_then(Value::as_str).unwrap_or("Error"));
+                        }
                     }
-                    ui.add_space(8.0);
-                    if crate::widgets::secondary_button(ui, tl!("Copy"), 84.0).clicked() {
-                        ui.ctx().copy_text(lines.join("\n"));
-                    }
-                }
-                DialogKind::About => {
-                    ui.label(tl!("PhotoCraft — an open-source, native image editor written in Rust."));
-                    ui.label(crate::i18n::fmt(tl!("Version {version}"), &[("version", &photocraft_engine::build_info::long_version())]));
-                    ui.add_space(12.0);
-                    ui.vertical_centered(|ui| {
-                        crate::links::discord_button(app, ui, 220.0);
-                        ui.add_space(8.0);
-                        crate::links::link_row(app, ui);
-                    });
-                    ui.add_space(10.0);
-                    ui.weak("egui · wgpu · photocraft-engine");
-                }
-                DialogKind::Command if crate::fill_ui::owns(&fields) => crate::fill_ui::body(app, ui, &mut fields),
-                DialogKind::Command if crate::rasterize_prompt::owns(&fields) => crate::rasterize_prompt::body(ui, &fields),
-                DialogKind::Command if crate::variables_ui::owns(&fields) => crate::variables_ui::body(app, ui, &mut fields),
-                DialogKind::Command if crate::file_ui::owns(&fields) => crate::file_ui::body(app, ui, &mut fields),
-                DialogKind::Command if crate::color_picker_ui::owns(&fields) => crate::color_picker_ui::body(ui, &mut fields),
-                DialogKind::Command if crate::color_range_ui::owns(&fields) => crate::color_range_ui::body(app, ui, &mut fields),
-                DialogKind::Command if crate::prefs_ui::owns(&fields) => crate::prefs_ui::body(app, ui, &mut fields),
-                DialogKind::Command if fields.contains_key("__export") => crate::export_dialog::body(app, ui, &mut fields),
-                DialogKind::Command if fields.contains_key("__sizing") => crate::sizing::body(ui, &mut fields),
-                DialogKind::Command if crate::adjust_dialog::owns(&fields) => crate::adjust_dialog::body(app, ui, &mut fields),
-                DialogKind::Command if fields.contains_key("__filter") => {
-                    // Color Settings: the monitor profile in use can change while it is open.
-                    if fields.get("__command").and_then(Value::as_str) == Some("edit.colorSettings") {
-                        fields.insert("__note".into(), Value::String(crate::monitor_status::note(app)));
-                    }
-                    crate::filter_dialog::body(ui, &mut fields)
-                }
-                DialogKind::Command if fields.contains_key("__form") => crate::view_cmds::form_body(ui, &mut fields),
-                DialogKind::Command => {}
-                DialogKind::LayerStyle => crate::layer_style::body(ui, &mut fields),
-                DialogKind::Error => {
-                    ui.label(fields.get("message").and_then(Value::as_str).unwrap_or("Error"));
-                }
-            }
+                });
             ui.add_space(8.0);
             // Align::Min, not Center: a centred row fills the height left over from last frame's
             // (larger) size, so a dialog whose body gets shorter would never shrink back.
@@ -193,12 +203,13 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
         });
         shown.push(modal.inner);
         // Pin once laid out at its real size (the first frame is an invisible sizing pass).
-        if !sizing && (pinned.is_none() || drag != egui::Vec2::ZERO) {
+        if !sizing {
             let screen = ctx.content_rect();
             // Keep the whole dialog (and so its title bar) on screen.
-            let room = (screen.size() - modal.response.rect.size()).max(egui::Vec2::ZERO);
+            let margin = egui::vec2(12.0, 28.0);
+            let room = (screen.size() - modal.response.rect.size() - margin).max(egui::Vec2::splat(12.0));
             let offset = pinned.unwrap_or(modal.response.rect.min - screen.min) + drag;
-            ctx.data_mut(|m| m.insert_temp(id, offset.clamp(egui::Vec2::ZERO, room)));
+            ctx.data_mut(|m| m.insert_temp(id, offset.clamp(egui::Vec2::splat(12.0), room)));
         }
         // Esc cancels (topmost dialog, no popup open). A click outside does nothing: Photoshop keeps
         // the dialog, and the pointer may be panning or zooming the canvas under it.
