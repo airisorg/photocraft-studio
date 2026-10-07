@@ -7,10 +7,12 @@ import json
 import os
 from pathlib import Path
 import sys
+import unittest
 from urllib.parse import urlparse
 
 from PIL import Image
 from playwright.sync_api import sync_playwright
+from visual_assertions import assert_header_geometry
 
 url = sys.argv[1]
 if urlparse(url).scheme != 'https':
@@ -58,7 +60,12 @@ with sync_playwright() as p:
     execute('shape.create',{'kind':'roundedRect','rect':[90,390,720,110],'radii':24,'fill':'#23222a','name':'Caption card'})
     execute('type.create',{'x':115,'y':465,'text':'Made in PhotoCraft','size':52,'color':'#ffffff'})
     before=command('ui.inspect')
+    page.mouse.move(10,850)
+    page.wait_for_timeout(150)
     page.screenshot(path=str(out/'hosted-editor.png'))
+    with Image.open(out/'hosted-editor.png') as editor:
+        header_rects=assert_header_geometry(unittest.TestCase(),editor,['More','Save'])
+        editor.crop((1080,0,1440,64)).save(out/'hosted-header.png')
     with page.expect_download() as event:
         command('ui.menu.invoke',{'id':'file.export.quickExportAsPng'})
     image_path=out/'hosted-export.png'
@@ -77,7 +84,7 @@ with sync_playwright() as p:
     resources=page.evaluate('performance.getEntriesByType("resource").filter(e=>e.name.endsWith(".wasm")).map(e=>({url:e.name,durationMs:e.duration,encodedBytes:e.encodedBodySize,decodedBytes:e.decodedBodySize}))')
     (out/'hosted-evidence.json').write_text(json.dumps({'url':url,'browser':browser.version,'renderer':before['perf']['timings']['gpuInfo'],
         'beforeLayers':len(before['document']['layers']),'exportSize':[960,640],'reimportSize':[after['document']['width'],after['document']['height']],
-        'pageErrors':errors,'wasmResources':resources,'configuration':configuration},indent=2))
+        'pageErrors':errors,'wasmResources':resources,'configuration':configuration,'headerRects':header_rects},indent=2))
     print('Hosted guest edit, PNG export and re-import passed.')
     context.close()
     browser.close()

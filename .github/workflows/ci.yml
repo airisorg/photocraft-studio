@@ -1,9 +1,12 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
   pull_request:
+  workflow_call:
+    inputs:
+      source_ref:
+        type: string
+        required: true
   workflow_dispatch:
     inputs:
       fuzz:
@@ -13,6 +16,9 @@ on:
       fuzz_seconds:
         description: "Seconds per fuzz target"
         default: "600"
+
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -36,6 +42,9 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
+          persist-credentials: false
 
       - name: Install Linux system dependencies (egui/winit/rfd)
         if: runner.os == 'Linux'
@@ -103,6 +112,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -122,6 +134,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
@@ -151,6 +166,9 @@ jobs:
           - { crate: format, name: load }
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@nightly
       - uses: Swatinem/rust-cache@v2
         with:

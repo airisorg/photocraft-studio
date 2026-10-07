@@ -187,3 +187,40 @@ incomplete tool interactions, dead preferences, type coverage, file compatibilit
 large-document operations. Those are not fixed by workspace styling or additional database
 capacity. See `docs/scorecard.md` and its dated performance baseline; no new performance
 measurement or comprehensive native parity claim is made by this UI review.
+
+### Header and dialog regression coverage
+
+The editor header gives Share the primary position next to the account avatar. Existing
+cloud documents show a quiet save status and a cloud icon for manual saving; new local
+documents retain an explicit Save design action. Secondary actions use PhotoCraft's existing
+Lucide icons and tooltips. Controls have 36 px surfaces, 8 px gaps and a common vertical
+center; the avatar is 40 px. Long document names truncate before the actions.
+
+`tests/web/visual_assertions.py` measures actual screenshot pixels because the egui canvas
+does not expose its controls as DOM boxes. Browser tests 23–24 check control heights,
+centers, gaps and clipping across five native themes and desktop/tablet/phone widths, plus
+long guest titles. The original uneven header fails this check. These measurements detect
+alignment regressions; they do not establish complete visual or accessibility parity.
+
+Sharing keeps long member addresses within the window, exposes Can view / Can edit /
+Remove access through the existing membership API, and separates invitation delivery from
+access status. A modal input boundary prevents a drag behind a cloud window from painting
+the document. Escape closes a member dropdown before closing its parent window.
+Tests 25–28 cover long addresses, blocked background painting, permission changes, and
+11 original native dialog types at three widths with unchanged document history on cancel.
+
+Native dialogs retain their original fields and engine commands. A constrained scroll area
+keeps their title and action footer available; New Document wraps its existing preset grid
+and details on narrow screens. No editor model, file format, renderer or command was
+reimplemented, and this change adds no dependency.
+
+The saved rendering preference now controls the web GPU compositor on restart, through the
+original `effective_rendering_mode` policy. Test 30 selects CPU/Automatic, checks local
+persistence, restarts, verifies the actual compositor, then paints and undoes. CPU mode
+refers to image composition; the egui browser interface still requires a graphics context.
+Test 29 measures backing pixels and rendered controls at DPR 1/1.25/1.5/2 with matching
+Chromium process and context scales, both before and after viewport resizing.
+
+Upstream synchronization and tested deployment packaging are documented in
+[upstream-updates.md](upstream-updates.md). The full acceptance gaps and release gates are
+tracked in [web-verification-retrospective.md](web-verification-retrospective.md).

@@ -59,6 +59,7 @@ pub fn start() {
                     app.set_theme(&cc.egui_ctx, ThemeKind::Pro);
                     if let Some(rs) = cc.wgpu_render_state.clone()
                         && !force_cpu
+                        && app.session.prefs().performance.effective_rendering_mode() != photocraft_engine::prefs::RenderingMode::Cpu
                     {
                         log::info!("photocraft-web: wgpu backend {:?}", rs.adapter.get_info().backend);
                         app.set_wgpu(rs);
@@ -167,6 +168,7 @@ struct WebShell {
 
 impl eframe::App for WebShell {
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        self.cloud.handle_input(ctx);
         let dropped = ctx.input_mut(|i| std::mem::take(&mut i.raw.dropped_files));
         for f in dropped {
             let inbox = self.inbox.clone();

@@ -19,6 +19,7 @@ import zipfile
 from PIL import Image
 from playwright.sync_api import sync_playwright
 import psycopg
+from visual_assertions import assert_header_geometry, assert_dialog_inside
 
 BASE = os.environ.get('PHOTOCRAFT_TEST_ORIGIN', 'http://127.0.0.1:8876')
 DATABASE = os.environ.get('PHOTOCRAFT_TEST_DATABASE_URL', 'postgresql://photocraft_test@127.0.0.1:55438/postgres')
@@ -61,8 +62,8 @@ class BrowserAcceptance(unittest.TestCase):
             self.db.execute('DELETE FROM photocraft.accounts WHERE id=ANY(%s::uuid[])', (self.accounts,))
         self.assertEqual(self.errors, [], 'Uncaught browser errors')
 
-    def context_page(self, query='', viewport=None, token=None, browser=None):
-        ctx = (browser or self.browser).new_context(viewport=viewport or {'width': 1440, 'height': 960}, accept_downloads=True)
+    def context_page(self, query='', viewport=None, token=None, browser=None, device_scale_factor=1):
+        ctx = (browser or self.browser).new_context(viewport=viewport or {'width': 1440, 'height': 960}, accept_downloads=True, device_scale_factor=device_scale_factor)
         self.contexts.append(ctx)
         if token:
             ctx.add_cookies([{'name': 'pc_session', 'value': token, 'url': BASE, 'httpOnly': True, 'sameSite': 'Lax'}])
@@ -318,14 +319,14 @@ class BrowserAcceptance(unittest.TestCase):
         self.execute('edit.fill', {'color':'#ff0000'})
         self.wait_revision(2)
         other_context.set_offline(False)
-        second.mouse.click(1320,32)
+        second.mouse.click(1258,32)
         second.wait_for_timeout(2000)
         self.assertTrue(self.inspect(second)['document']['canUndo'])
         self.assertEqual(self.projects()[0]['revision'], 2, 'A stale browser overwrote the saved document')
         second.screenshot(path=str(ARTIFACTS/'conflict-preserved.png'))
-        second.mouse.click(1070,32)
+        second.mouse.click(1170,32)
         second.wait_for_timeout(200)
-        second.mouse.click(1090,64)
+        second.mouse.click(1190,64)
         deadline=time.monotonic()+15
         while time.monotonic()<deadline:
             projects=self.projects()
@@ -390,7 +391,7 @@ class BrowserAcceptance(unittest.TestCase):
         self.execute('layer.renameLayer',{'layer':layers[1]['id'],'name':'Owner card'})
         self.wait_revision(2)
         other_context.set_offline(False)
-        second.mouse.click(1320,32)
+        second.mouse.click(1354,32)
         self.wait_revision(3)
         expected={'Collaborator background','Owner card'}
         deadline=time.monotonic()+15
@@ -495,7 +496,7 @@ class BrowserAcceptance(unittest.TestCase):
         self.page.wait_for_timeout(300)
         before = Image.open(io.BytesIO(self.page.screenshot())).convert('RGB').crop((510,300,900,650))
         document = self.inspect()['document']
-        self.page.mouse.click(1230,32)
+        self.page.mouse.click(1328,32)
         self.page.wait_for_timeout(200)
         opened = Image.open(io.BytesIO(self.page.screenshot())).convert('RGB').crop((510,300,900,650))
         self.assertNotEqual(before.tobytes(),opened.tobytes())
@@ -556,7 +557,7 @@ class BrowserAcceptance(unittest.TestCase):
         self.new(640,480)
         self.page.mouse.click(1320,32)
         project = self.wait_revision(1)
-        self.page.mouse.click(1230,32)
+        self.page.mouse.click(1328,32)
         self.page.wait_for_timeout(200)
         self.page.mouse.click(850,406)
         self.page.wait_for_timeout(150)
@@ -576,7 +577,7 @@ class BrowserAcceptance(unittest.TestCase):
         self.assertEqual(self.context.request.get(BASE+'/api/share/'+key).status,404)
         self.page.keyboard.press('Escape')
         self.page.wait_for_timeout(150)
-        self.page.mouse.click(1140,32)
+        self.page.mouse.click(1214,32)
         self.page.wait_for_timeout(200)
         self.page.mouse.click(625,370)
         self.page.keyboard.type('Keep the native PhotoCraft controls.')
@@ -589,16 +590,194 @@ class BrowserAcceptance(unittest.TestCase):
         self.page.screenshot(path=str(ARTIFACTS/'comments-posted.png'))
         self.page.keyboard.press('Escape')
         self.page.wait_for_timeout(150)
-        self.page.mouse.click(1070,32)
+        self.page.mouse.click(1170,32)
         self.page.wait_for_timeout(150)
         with self.page.expect_response(lambda r: r.url.endswith('/versions')) as event:
-            self.page.mouse.click(1100,183)
+            self.page.mouse.click(1200,183)
         self.assertTrue(event.value.ok)
         self.assertEqual(len(event.value.json()),1)
         self.page.wait_for_timeout(150)
         self.page.screenshot(path=str(ARTIFACTS/'version-history.png'))
         self.page.keyboard.press('Escape')
         self.assertEqual(self.inspect()['document']['width'],640)
+
+
+
+    def test_23_header_control_geometry(self):
+        self.signed_in()
+        self.new(640,480)
+        self.page.mouse.click(1320,32)
+        self.wait_revision(1)
+        observations=[]
+        for theme in ['studio','studioLight','pro','proMedium','classic']:
+            self.command('ui.set',{'theme':theme})
+            for width in [1440,768,390]:
+                with self.subTest(theme=theme,width=width):
+                    self.page.set_viewport_size({'width':width,'height':960})
+                    self.page.mouse.move(10,850)
+                    self.page.wait_for_timeout(150)
+                    picture=self.page.screenshot()
+                    (ARTIFACTS/f'header-owner-{theme}-{width}.png').write_bytes(picture)
+                    actions=['More','Comments','Save','Share'] if width>=760 else ['More','Save','Share']
+                    rects=assert_header_geometry(self,Image.open(io.BytesIO(picture)),actions)
+                    observations.append({'theme':theme,'width':width,'rects':rects})
+        (ARTIFACTS/'header-geometry.json').write_text(json.dumps(observations,indent=2))
+        self.page.set_viewport_size({'width':1440,'height':960})
+        self.command('ui.set',{'theme':'studio'})
+        self.page.wait_for_timeout(150)
+        self.page.screenshot(path=str(ARTIFACTS/'header-controls.png'),clip={'x':990,'y':0,'width':450,'height':64})
+
+    def test_24_guest_header_geometry_with_long_title(self):
+        self.execute('file.new',{'width':640,'height':480,'name':'A long document title '*20,'background':'white'})
+        for width in [1440,768,390]:
+            with self.subTest(width=width):
+                self.page.set_viewport_size({'width':width,'height':960})
+                self.page.mouse.move(10,850)
+                self.page.wait_for_timeout(150)
+                picture=self.page.screenshot()
+                (ARTIFACTS/f'header-guest-long-title-{width}.png').write_bytes(picture)
+                assert_header_geometry(self,Image.open(io.BytesIO(picture)),['More','Save'])
+
+    def test_25_share_with_long_collaborator_addresses_stays_inside_viewport(self):
+        self.signed_in()
+        self.new(640,480)
+        self.page.mouse.click(1320,32)
+        project=self.wait_revision(1)
+        email='a-very-long-collaborator-address-at-an-organization@example.invalid'
+        response=self.context.request.put(BASE+'/api/projects/'+project['id']+'/members',
+            headers={'Origin':BASE},data={'email':email,'role':'edit'})
+        self.assertTrue(response.ok)
+        for width,height in [(1440,960),(768,1024),(390,844),(844,390)]:
+            with self.subTest(width=width,height=height):
+                self.page.set_viewport_size({'width':width,'height':height})
+                self.page.mouse.move(0,0)
+                self.page.wait_for_timeout(250)
+                before=Image.open(io.BytesIO(self.page.screenshot()))
+                self.page.mouse.click(width-112,32)
+                self.page.mouse.move(0,0)
+                self.page.wait_for_timeout(350)
+                picture=self.page.screenshot()
+                (ARTIFACTS/f'share-long-member-{width}.png').write_bytes(picture)
+                try:
+                    assert_dialog_inside(self,before,Image.open(io.BytesIO(picture)))
+                finally:
+                    self.page.keyboard.press('Escape')
+                    self.page.wait_for_timeout(150)
+
+    def test_26_sharing_window_blocks_canvas_painting(self):
+        self.signed_in()
+        self.new(640,480)
+        self.page.mouse.click(1320,32)
+        self.wait_revision(1)
+        self.page.mouse.click(1328,32)
+        self.page.wait_for_timeout(300)
+        before=self.inspect()['document']['history']
+        self.page.mouse.move(200,400)
+        self.page.mouse.down()
+        self.page.mouse.move(300,450,steps=8)
+        self.page.mouse.up()
+        self.page.wait_for_timeout(200)
+        self.assertEqual(self.inspect()['document']['history'],before,'Sharing must block accidental painting behind the window')
+        self.page.keyboard.press('Escape')
+        self.page.wait_for_timeout(200)
+        self.page.mouse.move(200,400)
+        self.page.mouse.down()
+        self.page.mouse.move(300,450,steps=8)
+        self.page.mouse.up()
+        self.page.wait_for_timeout(200)
+        self.assertNotEqual(self.inspect()['document']['history'],before,'Closing sharing must restore native canvas input')
+
+    def test_27_native_dialogs_fit_and_cancel_without_changing_document(self):
+        self.new(640,480)
+        commands=['file.new','image.imageSize','image.canvasSize','file.export.exportAs',
+                  'edit.fill','image.adjustments.levels','image.adjustments.curves',
+                  'filter.blur.gaussianBlur','select.colorRange','edit.preferences.general','help.about']
+        for width,height in [(1440,960),(768,1024),(390,844)]:
+            self.page.set_viewport_size({'width':width,'height':height})
+            for command in commands:
+                with self.subTest(width=width,command=command):
+                    self.page.mouse.move(0,0)
+                    self.page.wait_for_timeout(150)
+                    document=self.inspect()['document']
+                    before=Image.open(io.BytesIO(self.page.screenshot()))
+                    self.command('ui.menu.invoke',{'id':command})
+                    self.page.wait_for_timeout(250)
+                    dialogs=self.inspect()['dialogs']
+                    self.assertEqual(len(dialogs),1,command)
+                    picture=self.page.screenshot()
+                    (ARTIFACTS/f'native-dialog-{command}-{width}.png').write_bytes(picture)
+                    try:
+                        assert_dialog_inside(self,before,Image.open(io.BytesIO(picture)))
+                    finally:
+                        self.command('ui.dialog.cancel',{'dialog':dialogs[0]['id']})
+                        self.page.wait_for_timeout(100)
+                    self.assertEqual(self.inspect()['document']['layers'],document['layers'])
+                    self.assertEqual(self.inspect()['document']['history'],document['history'])
+
+    def test_28_collaborator_permission_menu_and_escape(self):
+        self.signed_in()
+        self.new(640,480)
+        self.page.mouse.click(1320,32)
+        project=self.wait_revision(1)
+        path=BASE+'/api/projects/'+project['id']+'/members'
+        self.assertTrue(self.context.request.put(path,headers={'Origin':BASE},
+            data={'email':'collaborator@example.invalid','role':'edit'}).ok)
+        self.page.wait_for_timeout(350)
+        self.page.mouse.click(1328,32)
+        self.page.wait_for_timeout(300)
+        self.page.mouse.click(850,470)
+        self.page.wait_for_timeout(200)
+        self.page.screenshot(path=str(ARTIFACTS/'member-access-menu.png'))
+        self.page.keyboard.press('Escape')
+        self.page.wait_for_timeout(150)
+        self.page.mouse.click(850,470)  # Escape closes the dropdown, leaving sharing open.
+        self.page.wait_for_timeout(200)
+        with self.page.expect_response(lambda r:r.url==path and r.request.method=='PUT') as event:
+            self.page.mouse.click(850,507)
+        self.assertTrue(event.value.ok)
+        self.page.wait_for_timeout(250)
+        self.assertEqual(self.context.request.get(path).json()[0]['role'],'view')
+        self.page.screenshot(path=str(ARTIFACTS/'member-now-viewer.png'))
+
+    def test_29_canvas_resolution_tracks_display_density_and_resize(self):
+        observations=[]
+        for density in [1,1.25,1.5,2]:
+            with self.subTest(density=density):
+                # Chromium emulation changes devicePixelRatio but not ResizeObserver's physical
+                # devicePixelContentBoxSize. Launch at the real scale as well; eframe uses
+                # that physical box for sharp canvas sizing.
+                browser=self.pw.chromium.launch(executable_path=os.environ.get('PHOTOCRAFT_CHROME'),
+                    headless=True,args=['--enable-unsafe-webgpu','--enable-unsafe-swiftshader',
+                                       '--force-device-scale-factor='+str(density)])
+                self.addCleanup(browser.close)
+                _,page=self.context_page(browser=browser,device_scale_factor=density)
+                self.new(page=page)
+                for width,height in [(1440,960),(831,900)]:
+                    page.set_viewport_size({'width':width,'height':height})
+                    page.wait_for_timeout(250)
+                    metrics=page.evaluate('''() => { const c=document.querySelector('canvas'),r=c.getBoundingClientRect();
+                        return {dpr:devicePixelRatio,width:c.width,height:c.height,cssWidth:r.width,cssHeight:r.height}; }''')
+                    self.assertAlmostEqual(metrics['width'],metrics['cssWidth']*density,delta=1)
+                    self.assertAlmostEqual(metrics['height'],metrics['cssHeight']*density,delta=1)
+                    picture=page.screenshot(scale='css')
+                    (ARTIFACTS/f'density-{density}-{width}.png').write_bytes(picture)
+                    assert_header_geometry(self,Image.open(io.BytesIO(picture)),['More','Save'])
+                    observations.append(metrics)
+        (ARTIFACTS/'display-density.json').write_text(json.dumps(observations,indent=2))
+
+    def test_30_rendering_preference_survives_browser_restart(self):
+        self.new()
+        for mode,accelerated in [('cpu',False),('auto',True)]:
+            with self.subTest(mode=mode):
+                self.execute('prefs.set',{'path':'performance.renderingMode','value':mode})
+                self.page.wait_for_function('(mode)=>JSON.parse(localStorage.getItem("photocraft.preferences")||"{}").performance?.renderingMode===mode',arg=mode)
+                self.load(self.page)
+                self.new()
+                self.stroke()
+                state=self.inspect()
+                self.assertEqual(state['perf']['timings']['gpu'],accelerated)
+                self.assertTrue(state['document']['canUndo'])
+                self.execute('edit.undo')
 
 
 if __name__ == '__main__':

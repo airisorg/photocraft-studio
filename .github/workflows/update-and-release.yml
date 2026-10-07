@@ -1,0 +1,75 @@
+name: Upstream and tested web release
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '23 */6 * * *'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: tested-web-release
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      needed: ${{ steps.candidate.outputs.needed }}
+      base: ${{ steps.candidate.outputs.base }}
+      candidate: ${{ steps.candidate.outputs.candidate }}
+      upstream: ${{ steps.candidate.outputs.upstream }}
+      branch: ${{ steps.candidate.outputs.branch }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Merge upstream into an isolated candidate
+        id: candidate
+        env:
+          CANDIDATE_BRANCH: automation/upstream-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          git config user.name 'PhotoCraft update bot'
+          git config user.email 'photocraft-update@users.noreply.github.com'
+          python3 packaging/web/upstream-release.py prepare --branch "$CANDIDATE_BRANCH" >> "$GITHUB_OUTPUT"
+  native:
+    needs: prepare
+    if: needs.prepare.outputs.needed == 'true'
+    uses: ./.github/workflows/ci.yml
+    with:
+      source_ref: ${{ needs.prepare.outputs.candidate }}
+  browser:
+    needs: prepare
+    if: needs.prepare.outputs.needed == 'true'
+    uses: ./.github/workflows/web-cloud.yml
+    with:
+      source_ref: ${{ needs.prepare.outputs.candidate }}
+  promote:
+    needs: [prepare, native, browser]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      # Promotion code comes from the trusted workflow revision, never from the candidate.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          name: browser-cloud-evidence
+          path: /tmp/photocraft-acceptance
+      - name: Promote the exact tested source and prebuilt web app
+        env:
+          BASE_SHA: ${{ needs.prepare.outputs.base }}
+          CANDIDATE_SHA: ${{ needs.prepare.outputs.candidate }}
+          UPSTREAM_SHA: ${{ needs.prepare.outputs.upstream }}
+          CANDIDATE_BRANCH: ${{ needs.prepare.outputs.branch }}
+        run: |
+          git config user.name 'PhotoCraft update bot'
+          git config user.email 'photocraft-update@users.noreply.github.com'
+          python3 packaging/web/upstream-release.py promote \
+            --base "$BASE_SHA" --candidate "$CANDIDATE_SHA" --upstream "$UPSTREAM_SHA" \
+            --branch "$CANDIDATE_BRANCH" --package /tmp/photocraft-acceptance/photocraft-tofu.zip
+          echo 'Native and browser acceptance passed. tofu-release now contains the tested package.' >> "$GITHUB_STEP_SUMMARY"
