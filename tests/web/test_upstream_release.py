@@ -5,6 +5,8 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import unittest
 import zipfile
@@ -143,6 +145,30 @@ class UpstreamRelease(unittest.TestCase):
             self.prepare()
         with self.assertRaisesRegex(ValueError, 'reserved'):
             release.prepare('main', str(self.upstream))
+
+    def test_packaged_untracked_source_cannot_claim_a_clean_commit(self):
+        script = self.source / 'packaging/web/tofu-package.py'
+        script.parent.mkdir(parents=True)
+        self.commit(str(script.relative_to(self.source)), Path(SPEC.origin).with_name('tofu-package.py').read_text())
+        self.commit('.gitignore', 'dist/\n')
+        for name in ['LICENSE-MIT', 'LICENSE-APACHE', 'NOTICE']:
+            self.commit(name, 'Fixture notice')
+        assets = self.source / 'dist/web'
+        assets.mkdir(parents=True)
+        (assets / 'editor.wasm').write_bytes(b'\0asm-test-fixture')
+        output = self.root / 'package-provenance.zip'
+
+        def manifest():
+            subprocess.run([sys.executable, str(script), str(output)], check=True, capture_output=True, text=True)
+            with zipfile.ZipFile(output) as archive:
+                return json.loads(archive.read('release-source.json')), archive.namelist()
+
+        clean, _ = manifest()
+        self.assertFalse(clean['dirty'])
+        Path('uncommitted-adapter.rs').write_text('unreviewed implementation')
+        dirty, files = manifest()
+        self.assertIn('uncommitted-adapter.rs', files)
+        self.assertTrue(dirty['dirty'], 'Packaged source absent from the named commit must never claim to be clean')
 
 
 if __name__ == '__main__':
