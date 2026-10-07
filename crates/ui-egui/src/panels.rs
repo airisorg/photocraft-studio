@@ -289,6 +289,13 @@ pub fn title_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
         .frame(egui::Frame::NONE.fill(t.chrome).inner_margin(egui::Margin { left, right: 10, top: 0, bottom: 0 }))
         .show(ui, |ui| {
             let full = ui.max_rect();
+            // Narrow browser windows retain every native menu without overlapping controls.
+            if full.width() < 800.0 {
+                egui::ScrollArea::horizontal().id_salt("compact-menu-bar").show(ui, |ui| {
+                    crate::menus::menu_bar(app, ui);
+                });
+                return;
+            }
             let drag = ui.interact(full, ui.id().with("titledrag"), Sense::click_and_drag());
             if drag.drag_started() {
                 ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
