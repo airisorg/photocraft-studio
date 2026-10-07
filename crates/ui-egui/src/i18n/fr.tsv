@@ -562,12 +562,6 @@
 	Fit Artboard on Screen	Adapter le plan de travail à l'écran
 	100%	100 %
 	200%	200 %
-	75%	75 %
-	125%	125 %
-	150%	150 %
-	175%	175 %
-	250%	250 %
-	300%	300 %
 	Print Size	Taille d'impression
 	Pixel Aspect Ratio	Format des pixels
 	Pixel Aspect Ratio Correction	Correction du format des pixels
@@ -2490,10 +2484,3 @@ cameraRaw	Blending	Fusion
 	Patch Tool	Outil Pièce
 	Patch:	Pièce :
 	Lasso around an area, then drag the selection	Entourez une zone au lasso, puis faites glisser la sélection
-
-# Warp grid presets (#388)
-	3 x 3	3 × 3
-	4 x 4	4 × 4
-	5 x 5	5 × 5
-	Grid:	Grille :
-	Edit Type	Modifier le texte
