@@ -32,6 +32,7 @@ pub const UI_COMMANDS: &[(&str, &str, &[&str], Option<&str>)] = &[
     ("view.show.targetPath", "Target Path", &["View", "Show"], Some("Cmd+Shift+H")),
     ("view.screenMode.cycle", "Cycle Screen Mode", &[], Some("F")),
     ("edit.freeTransformCopy", "Free Transform a Copy", &[], Some("Cmd+Alt+T")),
+    ("type.editText", "Edit Type", &[], None),
     ("view.zoomIn", "Zoom In", &["View"], Some("Cmd+=")),
     ("view.zoomOut", "Zoom Out", &["View"], Some("Cmd+-")),
     ("view.fitOnScreen", "Fit on Screen", &["View"], Some("Cmd+0")),
@@ -310,6 +311,13 @@ pub(crate) fn invoke_unguarded(app: &mut PhotocraftApp, ctx: &egui::Context, id:
         "layer.layerStyle.blendingOptions" if params.as_object().is_none_or(|o| o.is_empty()) => {
             crate::layer_style::open(app, Some(crate::layer_style::BLENDING)).map(|d| json!({"dialog": d})).ok_or_else(|| "no active layer".to_string())
         }
+        "type.editText" => {
+            crate::type_tool::edit_active(app)?;
+            if let Some(focus) = ctx.memory(|m| m.focused()) {
+                ctx.memory_mut(|m| m.surrender_focus(focus));
+            }
+            Ok(Value::Null)
+        }
         // Layer Content Options…: the adjustment / fill controls live in Properties.
         "layer.layerContentOptions" => {
             let r = app.run(id, params)?;
@@ -385,6 +393,9 @@ pub(crate) fn invoke_unguarded(app: &mut PhotocraftApp, ctx: &egui::Context, id:
             let at = params.get("at").and_then(Value::as_array).and_then(|a| Some([a.first()?.as_f64()?, a.get(1)?.as_f64()?]));
             crate::transform_tool::split(app, id, at).map(|_| json!({"transform": app.ui.transform}))
         }
+        "edit.transform.warpGrid" if app.ui.transform.as_ref().is_some_and(|t| t.warp.is_some()) && params.get("warp").is_none() => {
+            crate::transform_tool::edit_session_warp(app, id, &params).map(|_| json!({"transform": app.ui.transform}))
+        }
         sz if crate::sizing::is_sizing(sz) && params.as_object().is_none_or(|o| o.is_empty()) => {
             Ok(json!({"dialog": crate::sizing::open(app, sz).ok_or("no document")?}))
         }
@@ -453,6 +464,9 @@ pub fn is_enabled(app: &PhotocraftApp, id: &str) -> bool {
     if let Some(e) = crate::plugin_ui::is_enabled(app, id) {
         return e;
     }
+    if let Some(e) = crate::transform_tool::is_enabled(app, id) {
+        return e;
+    }
     match id {
         "file.open" | "file.exit" | "file.clearRecent" | "help.about" | "help.systemInfo" | "edit.search" => true,
         i if i.starts_with("file.openRecent.") => true,
@@ -473,6 +487,11 @@ pub fn is_enabled(app: &PhotocraftApp, id: &str) -> bool {
         "edit.paste" | "file.newFromClipboard" => app.session.is_enabled(id) || app.services.clipboard_get_image.is_some(),
         "edit.pasteSpecial.pasteInPlace" => app.session.is_enabled(id) || (app.services.clipboard_get_image.is_some() && app.session.active().is_some()),
         "select.selectAndMask" => app.session.is_enabled("select.refineEdge"),
+        "type.editText" => app
+            .session
+            .active()
+            .and_then(|s| s.active_layer.and_then(|id| s.doc.layer(id)))
+            .is_some_and(|l| matches!(l.content, photocraft_doc::LayerContent::Text(_))),
         "select.transformSelection" => app.ui.transform.is_none() && app.session.is_enabled("select.transformSelection"),
         i if (i.starts_with("view.zoom") || i == "view.fitOnScreen" || i == "view.actualPixels") || i == "window.newWindowForDocument" => {
             app.session.active().is_some()
@@ -841,6 +860,11 @@ fn render_level_rows(ui: &mut egui::Ui, items: &[&MenuItem], depth: usize, click
             }
             let hit = nav.row(ui, depth - 1, it.enabled, Some(&it.id), |ui, _| {
                 let r = ui.add_enabled(it.enabled, b);
+                let r = match it.id.as_str() {
+                    "image.mode.bits8" | "image.mode.bits16" => r.on_hover_text(crate::i18n::tr(lang, "Integer")),
+                    "image.mode.bits32" => r.on_hover_text(crate::i18n::tr(lang, "Floating point")),
+                    _ => r,
+                };
                 let hit = r.clicked();
                 (r, hit)
             });
@@ -909,6 +933,28 @@ pub fn apply_workspace(app: &mut PhotocraftApp) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn select_menu_contains_every_selection_context_action_and_more() {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({"width": 32, "height": 32})).unwrap();
+        app.run("select.rect", json!({"x": 2, "y": 2, "width": 8, "height": 8})).unwrap();
+        let items = menu_items(&app);
+        let top: Vec<_> = items.iter().filter(|i| i.path.len() == 1 && i.path.first().is_some_and(|p| p == "Select")).collect();
+        // Context actions live somewhere under Select (Feather stays in Select > Modify, as in the
+        // reference menus).
+        let select: Vec<_> = items.iter().filter(|i| i.path.first().is_some_and(|p| p == "Select")).collect();
+        for &(label, id) in crate::canvas_tool_menu::entries(true).iter().chain(crate::canvas_tool_menu::entries(false)) {
+            assert!(select.iter().any(|i| i.id == id && i.label == label), "Select menu missing {label} ({id})");
+        }
+        assert!(top.iter().any(|i| i.id == "select.all"));
+        assert!(top.iter().any(|i| i.id == "select.colorRange"));
+        assert!(
+            items.iter().any(|i| i.id == "select.modify.feather" && i.path.iter().map(String::as_str).eq(["Select", "Modify"])),
+            "keep the Photoshop Modify route"
+        );
+        assert!(!top.iter().any(|i| i.id == "select.modify.feather"), "no extra top-level Feather");
+    }
 
     #[test]
     fn menu_bar_labels_have_horizontal_padding_and_open_menus() {

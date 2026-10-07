@@ -75,8 +75,10 @@ fn is_file(_path: &str) -> bool {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+/// Every file the engine opens is read here: in bounded reads, with a clear error when it does
+/// not fit in memory (see [`photocraft_format::read`]).
 pub(crate) fn read_file(path: &str) -> Result<Vec<u8>> {
-    std::fs::read(path).map_err(|e| EngineError::Other(format!("{path}: {e}")))
+    photocraft_format::read_file(std::path::Path::new(path)).map_err(|e| EngineError::Other(format!("{path}: {e}")))
 }
 #[cfg(target_arch = "wasm32")]
 pub(crate) fn read_file(path: &str) -> Result<Vec<u8>> {
@@ -113,9 +115,10 @@ pub(crate) fn list_images(dir: &str) -> Result<Vec<String>> {
 }
 
 /// Extensions the batch commands pick up from a folder.
+#[cfg(not(target_arch = "wasm32"))]
 const OPENABLE: &[&str] = &[
-    "psd", "psb", "pcraft", "png", "jpg", "jpeg", "tif", "tiff", "webp", "gif", "bmp", "tga", "exr", "hdr", "qoi", "ico", "pnm", "ppm", "pgm", "dng", "cr2",
-    "nef", "nrw", "arw", "pef",
+    "psd", "psb", "pcraft", "png", "jpg", "jpeg", "tif", "tiff", "webp", "gif", "bmp", "tga", "exr", "hdr", "qoi", "ico", "pnm", "ppm", "pgm", "heic", "heif",
+    "hif", "dng", "cr2", "nef", "nrw", "arw", "pef",
 ];
 
 pub(crate) fn file_name(path: &str) -> String {
