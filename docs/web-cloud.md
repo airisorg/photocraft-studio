@@ -43,13 +43,43 @@ requests are limited to 20 per owner per hour and one per recipient per minute. 
 presence, current roles and committed updates every 1.5 seconds.
 Version history is retained; the initial quota is 1 GB per owner including versions.
 
+Browser recovery retains **one most recently visited document** for the current account
+(or guest), including clean documents opened from the cloud. A successful replacement
+atomically evicts older eligible snapshots. Legacy lists are compacted to their newest
+timestamp; a guest handoff is adopted into the signed-in account, while unrelated account
+records remain isolated. Delayed older writes cannot evict newer activity. Recovery keys
+retain document identity, so an obsolete Recover control cannot open a different document.
+Recovery opens an independent local copy, without inheriting a closed document's cloud
+binding. Sign-in does not redirect while other unsaved tabs would be lost: those documents
+must be downloaded first. The sign-out choice still clears private browser recovery.
+
+Browser storage warnings are independent of cloud-save state: a failed local snapshot
+retries on its own timer and does not postpone cloud autosave. The warning remains visible
+until the affected recovery operation succeeds. A cloud failure retains its own Retry
+action when browser storage recovers.
+
+Opening a downloaded native file, recovering a snapshot or selecting a template creates a
+local document. Persisted native document IDs do not confer a cloud destination. The web
+shell passes file-picker and dropped bytes to PhotoCraft's original importer, then detaches
+the newly admitted document from old cloud bindings. Pending save/sync replies are checked
+against their original document request before they can change bindings or local content.
+
 ## Deployment
 
 Build the editor using the existing Trunk pipeline. Package its output alongside the HTTP
 service's Dockerfile. The container serves `/` and `/healthz` on `PORT`. Set `APP_ORIGIN` to the
 Tofu-returned HTTPS origin. Tofu-managed `DATABASE_URL`, `SUPABASE_CA_CERT`, `SUPABASE_URL`, and
-`SUPABASE_ANON_KEY` stay in its environment. PostgreSQL uses verified TLS and unnamed parameterized queries for transaction-pooler
-compatibility. Disabling SQLx's statement cache alone does not disable statement names. The HTTP editor starts immediately. Cloud routes become available only after the idempotent
+`SUPABASE_ANON_KEY` stay in its environment. PostgreSQL uses verified TLS and unnamed
+parameterized queries. Disabling SQLx's statement cache alone does not disable statement
+names. Unnamed queries alone also do not establish transaction-pool compatibility: the
+`tests/web/probe_transaction_pool.py` regression exposed a failure when the backend changed
+between prepare and execute. Each parameterized query now runs inside an explicit short
+transaction; every write commits before its successful HTTP response. Existing multi-query
+transactions remain intact, and no added transaction spans an email-provider request.
+The acceptance workflow runs the API suite through a fixture that rotates database backends
+at idle transaction boundaries. This proves the adapter's tested protocol behavior, not the
+exact pooler version or cause of the earlier hosted 503.
+The HTTP editor starts immediately. Cloud routes become available only after the idempotent
 schema migration commits under an advisory lock. Setup runs inside bounded cloud requests, so a serverless host cannot suspend it after an
 unrelated response. Concurrent setup is serialized and migration lock waits are bounded; the
 browser retries configuration while storage is unavailable. The public configuration reports
