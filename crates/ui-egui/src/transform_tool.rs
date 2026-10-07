@@ -5,7 +5,8 @@
 //! axis, ⌥ scales about the reference point, ⌘-drag a corner distorts (⌘⌥⇧: perspective), ⌘-drag
 //! an edge skews (⇧ along the edge), drag outside rotates (⇧ snaps to 15°), drag inside moves
 //! (⇧ locks to 8 directions), the reference point can be dragged and ⌥-click puts it under the
-//! pointer. Arrow keys nudge the box (move_mods.rs). ↩ commits, Esc cancels.
+//! pointer. Arrow keys nudge the box (move_mods.rs). ↩ commits, Esc cancels. Undo and Redo step
+//! through the session's own changes (`Steps`), not the document's history.
 
 use std::sync::Arc;
 
@@ -29,13 +30,6 @@ pub struct TransformPreview {
     gesture: Option<Gesture>,
     /// Warp-mode drag: (control point, pointer start, mesh points at the start).
     warp_drag: Option<(usize, [f64; 2], Vec<[f64; 2]>)>,
-    /// Armed split tool. None while the buttons are off and control points drag as usual.
-    split_tool: Option<SplitTool>,
-    /// Document point the split guide is following (a drag, or the hover while placing).
-    split_pointer: Option<[f64; 2]>,
-    split_placing: bool,
-    /// Option-click places a split without a button armed.
-    split_quick: bool,
     steps: Steps,
 }
 
@@ -137,8 +131,15 @@ pub fn begin(app: &mut PhotocraftApp, ctx: &egui::Context) -> Result<(), String>
     let max_side = ctx.input(|i| i.max_texture_side).max(app.gpu.as_ref().map_or(1, |g| g.max_texture_side()));
     let (image, uv) = preview_image(&doc, id, lifted.as_ref(), b, max_side);
     let texture = crate::transform_tex::PreviewTextures::new(ctx, format!("transform-{session}"), image, uv);
-    app.transform_preview =
-        Some(TransformPreview { session, doc: Arc::new(pd), texture, opacity: layer.opacity * layer.fill_opacity, gesture: None, warp_drag: None });
+    app.transform_preview = Some(TransformPreview {
+        session,
+        doc: Arc::new(pd),
+        texture,
+        opacity: layer.opacity * layer.fill_opacity,
+        gesture: None,
+        warp_drag: None,
+        steps: Steps::default(),
+    });
     app.ui.transform = Some(TransformSession {
         session,
         layer: id.0,
@@ -149,91 +150,6 @@ pub fn begin(app: &mut PhotocraftApp, ctx: &egui::Context) -> Result<(), String>
         warp: None,
         selection: false,
         target: None,
-        copy: false,
-    });
-    Ok(())
-}
-
-/// Free Transform on a copy (⌥⌘T, no menu item): duplicates the active layer (with a selection,
-/// its selected pixels, as Layer via Copy) and transforms the copy (#352).
-pub fn begin_copy(app: &mut PhotocraftApp, ctx: &egui::Context) -> Result<(), String> {
-    let selection = app.session.active().is_some_and(|d| d.doc.selection.is_some());
-    app.run(if selection { "layer.new.layerViaCopy" } else { "layer.duplicate" }, json!({}))?;
-    if let Err(e) = begin(app, ctx) {
-        take_back_copy(app);
-        return Err(e);
-    }
-    if let Some(t) = app.ui.transform.as_mut() {
-        t.copy = true;
-    }
-    Ok(())
-}
-
-/// Undoes the copy a cancelled or failed ⌥⌘T made, leaving nothing to redo.
-fn take_back_copy(app: &mut PhotocraftApp) {
-    app.session.undo();
-    if let Some(st) = app.session.active_mut() {
-        st.history.clear_redo();
-    }
-    app.sync_views();
-}
-
-/// After ⌥⌘T's transform: the copy and the transform become one history step (the transform's).
-fn fold_copy(app: &mut PhotocraftApp) {
-    if let Some(st) = app.session.active_mut() {
-        st.history.purge_last();
-    }
-}
-
-/// Free Transform of a targeted unlinked layer mask, alpha channel or Quick Mask by itself: the
-/// box frames its content (within the selection) and previews the moving values in grey over the
-/// document with them vacated.
-fn begin_lone(
-    app: &mut PhotocraftApp,
-    ctx: &egui::Context,
-    doc: Arc<Document>,
-    surf: photocraft_raster::Surface,
-    target: serde_json::Value,
-) -> Result<(), String> {
-    use photocraft_engine::transform_cmds as tc;
-    let b = tc::target_bounds(&doc, &surf);
-    if b.is_empty() {
-        return Err("Could not transform: nothing is selected".into());
-    }
-    let whole;
-    let sel = match &doc.selection {
-        Some(s) => s,
-        None => {
-            let mut s = photocraft_raster::Surface::new(photocraft_color::PixelFormat::GRAY8);
-            s.fill_rect(b, &[1.0]);
-            whole = s;
-            &whole
-        }
-    };
-    let (lifted, rest) = tc::split_gray_selected(&surf, sel).ok_or("this channel can't be transformed")?;
-    crate::type_tool::commit(app);
-    let layer = app.session.active().and_then(|st| st.active_layer).map_or(0, |l| l.0);
-    let mut pd = (*doc).clone();
-    let tp = json!({ "target": target });
-    if let Ok(Some(s)) = tc::lone_target_mut(&mut pd, Some(LayerId(layer)), &tp) {
-        *s = rest;
-    }
-    let rect = [b.x0 as f64, b.y0 as f64, b.x1 as f64, b.y1 as f64];
-    let session = app.ui.alloc_id();
-    let max_side = ctx.input(|i| i.max_texture_side).max(app.gpu.as_ref().map_or(1, |g| g.max_texture_side()));
-    let (image, uv) = crate::transform_tex::read_surface(&lifted, None, b, max_side);
-    let texture = crate::transform_tex::PreviewTextures::new(ctx, format!("transform-{session}"), image, uv);
-    app.transform_preview = Some(TransformPreview { session, doc: Arc::new(pd), texture, opacity: 0.6, gesture: None, warp_drag: None });
-    app.ui.transform = Some(TransformSession {
-        session,
-        layer,
-        rect,
-        quad: corners(rect),
-        pivot: [(rect[0] + rect[2]) / 2.0, (rect[1] + rect[3]) / 2.0],
-        interpolation: "bicubic".into(),
-        warp: None,
-        selection: false,
-        target: Some(target),
         copy: false,
     });
     start_steps(app);
@@ -309,19 +225,8 @@ fn begin_lone(
     let max_side = ctx.input(|i| i.max_texture_side).max(app.gpu.as_ref().map_or(1, |g| g.max_texture_side()));
     let (image, uv) = crate::transform_tex::read_surface(&lifted, None, b, max_side);
     let texture = crate::transform_tex::PreviewTextures::new(ctx, format!("transform-{session}"), image, uv);
-    app.transform_preview = Some(TransformPreview {
-        session,
-        doc: Arc::new(pd),
-        texture,
-        opacity: 0.6,
-        gesture: None,
-        warp_drag: None,
-        split_tool: None,
-        split_pointer: None,
-        split_placing: false,
-        split_quick: false,
-        steps: Steps::default(),
-    });
+    app.transform_preview =
+        Some(TransformPreview { session, doc: Arc::new(pd), texture, opacity: 0.6, gesture: None, warp_drag: None, steps: Steps::default() });
     app.ui.transform = Some(TransformSession {
         session,
         layer,
@@ -366,19 +271,8 @@ pub fn begin_selection(app: &mut PhotocraftApp, ctx: &egui::Context) -> Result<(
     let texture = crate::transform_tex::PreviewTextures::new(ctx, format!("transform-{session}"), egui::ColorImage::new([tw, th], px), uv);
     let mut pd = (*doc).clone();
     pd.selection = None;
-    app.transform_preview = Some(TransformPreview {
-        session,
-        doc: Arc::new(pd),
-        texture,
-        opacity: 1.0,
-        gesture: None,
-        warp_drag: None,
-        split_tool: None,
-        split_pointer: None,
-        split_placing: false,
-        split_quick: false,
-        steps: Steps::default(),
-    });
+    app.transform_preview =
+        Some(TransformPreview { session, doc: Arc::new(pd), texture, opacity: 1.0, gesture: None, warp_drag: None, steps: Steps::default() });
     app.ui.transform = Some(TransformSession {
         session,
         layer: layer.0,
@@ -560,6 +454,65 @@ pub fn cancel(app: &mut PhotocraftApp) {
     if copy {
         take_back_copy(app);
     }
+}
+
+/// The session's starting box: where Undo stops.
+fn start_steps(app: &mut PhotocraftApp) {
+    if let (Some(t), Some(pv)) = (&app.ui.transform, app.transform_preview.as_mut()) {
+        pv.steps = Steps { settled: Some(Step::of(t)), ..Steps::default() };
+    }
+}
+
+/// Record the box as an undo step whenever it comes to rest in a new state: once per drag (on
+/// release), nudge or option edit (once typing in its field ends). Call once per frame.
+pub fn track_steps(app: &mut PhotocraftApp, ctx: &egui::Context) {
+    let (Some(t), Some(pv)) = (&app.ui.transform, app.transform_preview.as_mut()) else { return };
+    if pv.gesture.is_some() || pv.warp_drag.is_some() || ctx.input(|i| i.pointer.any_down()) || ctx.text_edit_focused() {
+        return;
+    }
+    pv.steps.settle(Step::of(t));
+}
+
+/// While transforming, Undo and Redo apply to the box: `Some(enabled)` for those commands (and
+/// Toggle Last State, which would change the document under the box), `None` for the rest.
+pub fn is_enabled(app: &PhotocraftApp, id: &str) -> Option<bool> {
+    let t = app.ui.transform.as_ref()?;
+    let steps = app.transform_preview.as_ref().map(|pv| &pv.steps);
+    match id {
+        "edit.undo" => Some(steps.is_some_and(|s| s.can_undo(&Step::of(t)))),
+        "edit.redo" => Some(steps.is_some_and(|s| !s.redo.is_empty())),
+        "edit.toggleLastState" => Some(false),
+        _ => None,
+    }
+}
+
+/// While transforming, the box owns the history for every caller (menus, shortcuts, the control
+/// channel, MCP): Undo and Redo step through it, and Toggle Last State, which would change the
+/// document under the box, is refused. `None` for other commands or when not transforming.
+pub fn intercept(app: &mut PhotocraftApp, id: &str) -> Option<Result<serde_json::Value, String>> {
+    app.ui.transform.as_ref()?;
+    match id {
+        "edit.undo" => Some(Ok(step(app, false))),
+        "edit.redo" => Some(Ok(step(app, true))),
+        "edit.toggleLastState" => Some(Err("Commit or cancel the transform first".into())),
+        _ => None,
+    }
+}
+
+/// Undo (or redo) one step of the open session; nothing mid-drag or with no step to take.
+fn step(app: &mut PhotocraftApp, redo: bool) -> serde_json::Value {
+    let Some(t) = app.ui.transform.as_mut() else { return serde_json::Value::Null };
+    let Some(pv) = app.transform_preview.as_mut().filter(|pv| pv.gesture.is_none() && pv.warp_drag.is_none()) else {
+        return serde_json::Value::Null;
+    };
+    let s = &mut pv.steps;
+    s.settle(Step::of(t));
+    let (from, to) = if redo { (&mut s.redo, &mut s.undo) } else { (&mut s.undo, &mut s.redo) };
+    let Some(step) = from.pop() else { return serde_json::Value::Null };
+    to.push(Step::of(t));
+    s.settled = Some(step.clone());
+    step.restore(t);
+    json!({"transform": t})
 }
 
 /// Which part of the box a document point hits.
@@ -1544,114 +1497,6 @@ mod tests {
     }
 
     #[test]
-    fn interior_patch_points_are_hidden_and_grid_anchors_stay() {
-        assert!(on_section_edge(0, 0) && on_section_edge(1, 0) && on_section_edge(0, 2));
-        assert!(!on_section_edge(1, 1) && !on_section_edge(2, 2));
-        let b = [0.0, 0.0, 30.0, 30.0];
-        let w = Warp::custom(BezierMesh::identity(b, 1, 1), b);
-        assert!(warp_hit(&w, [10.0, 10.0], 4.0).is_none(), "the point inside the patch is not shown");
-        assert_eq!(warp_hit(&w, [0.0, 0.0], 4.0), Some(0));
-        let grid = Warp::custom(BezierMesh::identity(b, 3, 3), b);
-        assert_eq!(warp_hit(&grid, [10.0, 10.0], 4.0), Some(33), "a grid-corner anchor stays draggable");
-        assert!(warp_hit(&grid, [30.0 / 9.0, 30.0 / 9.0], 2.0).is_none());
-    }
-
-    #[test]
-    fn grid_menu_reads_default_and_even_presets() {
-        let b = [0.0, 0.0, 100.0, 80.0];
-        let plain = BezierMesh::identity(b, 1, 1);
-        assert_eq!(warp_grid_id(&plain), "default");
-        assert_eq!(warp_grid_id(&BezierMesh::identity(b, 3, 3)), "3");
-        assert_eq!(warp_grid_id(&BezierMesh::identity(b, 4, 4)), "4");
-        assert_eq!(warp_grid_id(&BezierMesh::identity(b, 5, 5)), "5");
-        assert_eq!(warp_grid_id(&BezierMesh::identity(b, 2, 2)), "custom");
-        let mut split = plain.clone();
-        assert!(split.split_u(0.5));
-        assert_eq!(warp_grid_id(&split), "custom");
-        assert!(single_patch(&plain));
-        assert!(!single_patch(&BezierMesh::identity(b, 3, 3)));
-    }
-
-    #[test]
-    fn split_tool_places_the_line_where_the_pointer_releases() {
-        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
-        app.session.execute("file.new", json!({"width": 64, "height": 64})).unwrap();
-        app.sync_views();
-        app.session.execute("layer.new.layer", json!({})).unwrap();
-        app.session
-            .edit("paint", |doc, a| {
-                doc.layer_mut(a.unwrap()).unwrap().surface_mut().unwrap().fill_rect(photocraft_geom::Rect::new(8, 8, 32, 32), &[1.0, 0.0, 0.0, 1.0]);
-                Ok(())
-            })
-            .unwrap();
-        begin_warp(&mut app, &egui::Context::default()).unwrap();
-        app.transform_preview.as_mut().unwrap().split_tool = Some(SplitTool::Vertical);
-        let knots = |app: &PhotocraftApp| app.ui.transform.as_ref().unwrap().warp.as_ref().unwrap().mesh.as_ref().unwrap().us.clone();
-        assert_eq!(knots(&app).len(), 2);
-        let mods = egui::Modifiers::NONE;
-        warp_pointer(&mut app, ToolEvent::Down { x: 20.0, y: 20.0, pressure: 1.0 }, 2.0, mods);
-        warp_pointer(&mut app, ToolEvent::Move { x: 14.0, y: 20.0, pressure: 1.0 }, 2.0, mods);
-        assert_eq!(knots(&app).len(), 2, "the line is only a guide until release");
-        warp_pointer(&mut app, ToolEvent::Up { x: 14.0, y: 20.0 }, 2.0, mods);
-        let us = knots(&app);
-        let has = |ks: &[f64], u: f64| ks.iter().any(|k| (k - u).abs() < 0.02);
-        // The default grid's thirds stay; the release cuts the section that contains it.
-        assert!(has(&us, 0.25) && has(&us, 1.0 / 3.0) && has(&us, 2.0 / 3.0), "{us:?}");
-        let vs = app.ui.transform.as_ref().unwrap().warp.as_ref().unwrap().mesh.as_ref().unwrap().vs.clone();
-        assert!(has(&vs, 1.0 / 3.0) && has(&vs, 2.0 / 3.0), "horizontal sections stay: {vs:?}");
-        assert!(app.transform_preview.as_ref().unwrap().split_tool.is_some(), "the tool stays armed");
-        // Option-click in the open places both lines, without a button armed.
-        app.transform_preview.as_mut().unwrap().split_tool = None;
-        let alt = egui::Modifiers::ALT;
-        warp_pointer(&mut app, ToolEvent::Down { x: 20.0, y: 20.0, pressure: 1.0 }, 2.0, alt);
-        warp_pointer(&mut app, ToolEvent::Up { x: 20.0, y: 20.0 }, 2.0, alt);
-        let m = app.ui.transform.as_ref().unwrap().warp.as_ref().unwrap().mesh.as_ref().unwrap();
-        assert!(m.us.len() == us.len() + 1 && has(&m.vs, 0.5), "crosswise cuts the open section: us {:?} vs {:?}", m.us, m.vs);
-    }
-
-    #[test]
-    fn split_of_a_grid_cuts_one_section_and_keeps_the_rest() {
-        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
-        app.session.execute("file.new", json!({"width": 64, "height": 64})).unwrap();
-        app.sync_views();
-        app.session.execute("layer.new.layer", json!({})).unwrap();
-        app.session
-            .edit("paint", |doc, a| {
-                doc.layer_mut(a.unwrap()).unwrap().surface_mut().unwrap().fill_rect(photocraft_geom::Rect::new(8, 8, 32, 32), &[1.0, 0.0, 0.0, 1.0]);
-                Ok(())
-            })
-            .unwrap();
-        begin_warp(&mut app, &egui::Context::default()).unwrap();
-        let rect = app.ui.transform.as_ref().unwrap().rect;
-        let before = BezierMesh::identity(rect, 3, 3);
-        app.ui.transform.as_mut().unwrap().warp = Some(Warp::custom(before.clone(), rect));
-        // Middle of the centre column (s = 0.5), inside the top row of cells.
-        let x = rect[0] + 0.5 * (rect[2] - rect[0]);
-        let y = rect[1] + (1.0 / 6.0) * (rect[3] - rect[1]);
-        app.transform_preview.as_mut().unwrap().split_tool = Some(SplitTool::Vertical);
-        let mods = egui::Modifiers::NONE;
-        warp_pointer(&mut app, ToolEvent::Down { x, y, pressure: 1.0 }, 2.0, mods);
-        warp_pointer(&mut app, ToolEvent::Up { x, y }, 2.0, mods);
-        let m = app.ui.transform.as_ref().unwrap().warp.as_ref().unwrap().mesh.as_ref().unwrap();
-        assert_eq!(m.vs.len(), before.vs.len(), "horizontal sections are not rebuilt: {:?}", m.vs);
-        for (a, b) in m.vs.iter().zip(&before.vs) {
-            assert!((a - b).abs() < 1e-6, "{:?} vs {:?}", m.vs, before.vs);
-        }
-        assert_eq!(m.us.len(), before.us.len() + 1, "one cut: {:?}", m.us);
-        for u in [0.0, 1.0 / 3.0, 0.5, 2.0 / 3.0, 1.0] {
-            assert!(m.us.iter().any(|k| (k - u).abs() < 1e-3), "missing {u} in {:?}", m.us);
-        }
-        let (nx0, nx1) = (before.nx(), m.nx());
-        for j in 0..before.ny() {
-            for i in 0..3 {
-                let a = before.points[j * nx0 + i];
-                let b = m.points[j * nx1 + i];
-                assert!((a[0] - b[0]).abs() < 1e-6 && (a[1] - b[1]).abs() < 1e-6, "left section moved");
-            }
-        }
-    }
-
-    #[test]
     fn corner_drag_scales_proportionally_about_opposite_corner() {
         let mut s = session();
         drag(&mut s, [100.0, 50.0], [200.0, 60.0], egui::Modifiers::NONE);
@@ -1924,6 +1769,32 @@ mod tests {
         begin_warp(&mut app, &ctx).unwrap();
         leave_warp(&mut app);
         assert!(app.ui.transform.as_ref().unwrap().warp.is_none());
+    }
+
+    /// A press on a preset warp that misses its points leaves the preset alone (no invisible undo
+    /// step); grabbing a point turns it into a custom mesh.
+    #[test]
+    fn a_press_on_a_preset_warp_converts_it_only_when_it_grabs_a_point() {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        app.session.execute("file.new", json!({"width": 64, "height": 64})).unwrap();
+        app.sync_views();
+        app.session.execute("layer.new.layer", json!({})).unwrap();
+        app.session
+            .edit("paint", |doc, a| {
+                doc.layer_mut(a.unwrap()).unwrap().surface_mut().unwrap().fill_rect(photocraft_geom::Rect::new(8, 8, 32, 32), &[1.0, 0.0, 0.0, 1.0]);
+                Ok(())
+            })
+            .unwrap();
+        begin_warp(&mut app, &egui::Context::default()).unwrap();
+        let t = app.ui.transform.as_mut().unwrap();
+        let preset = Warp::preset(WarpStyle::Arc, 50.0, t.rect);
+        t.warp = Some(preset.clone());
+        warp_pointer(&mut app, ToolEvent::Down { x: 20.0, y: 20.0, pressure: 1.0 }, 2.0);
+        warp_pointer(&mut app, ToolEvent::Up { x: 20.0, y: 20.0 }, 2.0);
+        assert_eq!(app.ui.transform.as_ref().unwrap().warp.as_ref(), Some(&preset), "a miss changes nothing");
+        let corner = preset.to_mesh(1, 1).points[15];
+        warp_pointer(&mut app, ToolEvent::Down { x: corner[0], y: corner[1], pressure: 1.0 }, 2.0);
+        assert_eq!(app.ui.transform.as_ref().unwrap().warp.as_ref().unwrap().style, WarpStyle::Custom);
     }
 
     // ---- Layer masks (#205) ----
