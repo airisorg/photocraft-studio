@@ -19,12 +19,55 @@ it through the UI, persisted state, runtime, and deployment.
 | Dialog actions clipped | Dialog bounding box was inside the viewport | Fields and final actions must remain reachable and visible | Scroll to all fields, use real footer actions, test keyboard focus and resize with the window open |
 | Text felt unlike browser applications | Editor rendered at one tested resolution | Raster scale, font weight, readability, frame pacing and actual screen conditions | Compare canvas backing size with CSS size × DPR; measure reference styles and actual interaction timing |
 | Collaboration confidence too broad | Synthetic local accounts and provider simulation passed | Real identity return, email delivery and independent hosted users | Approved recipient, real callback, two isolated accounts, persistence, revoke and reconnect evidence |
+| Empty project after failed first save; cold-worker Open/Trash fails | API fixtures warmed the same process through `/api/config`, then completed uploads | Any authenticated or public-share request can be the first request on a fresh hosting worker; metadata creation is not a saved document | Start a fresh process without configuration polling; restart between upload stages; inject initial-upload failure and exercise actual retry/trash controls |
+| Send invitation appears inert; granted access hidden after mail failure | Provider simulation checked status and database rows | The sharing window must show pending, accepted and failed outcomes, including partial success | Hold the actual Send request; prevent duplicate submission; fail delivery after granting access; require inline feedback, refreshed members and a retained retry address |
+| Previous project's members/link can appear in another sharing window | Dialogs tested one project at a time | Every asynchronous response belongs to its project and request generation | Delay/reorder project responses, switch projects, then prove old members, links and errors cannot replace the new project's state |
 
 The test for the saved CPU preference failed before the adapter fix: it observed GPU still
 active after restart. The original header failed the pixel geometry check. These are useful
 regressions because they distinguish the broken behavior from the intended behavior.
 
 ## Inventory: scope is larger than a menu count
+
+The Version 0 incident exposed an environment-model gap: one warm local server does not
+represent independently starting hosted workers. The user's open editor displayed
+“Cloud storage is starting” while its project card showed 0 × 0 and Version 0. Initial
+project metadata is committed before upload completion; interrupted uploads must remain
+explicitly incomplete and removable. A background browser-recovery success must not erase
+a cloud failure, and only a positive committed cloud revision can establish cloud-saved
+state. Preserve users' open documents while repairing this path; never reload them as a
+diagnostic shortcut.
+
+The regression scope now includes the first request to a fresh worker, a worker restart
+between upload stages, a failed initial upload, retry using the same project ID, reopening
+committed bytes, and owner Trash/Restore for both complete and incomplete projects.
+
+The server fix reuses `ready_db` at the three database entry boundaries: authenticated
+account lookup, anonymous share lookup, and logout. Invalid or missing session cookies
+still fail before database initialization; initialization does not grant authorization.
+The same cold-worker tests produced ten failed assertions against the old binary and
+passed after the fix. `tests/web/test_startup.py::ColdWorkerReadiness` deliberately avoids
+HTTP health/configuration probes that could warm the worker. API cases 35–36 cover failed
+first-save retry and owner removal of an incomplete reservation. Browser case 35 injects
+an upload failure and exercises the actual card controls and preserved local document.
+These are regression gates for this incident, not a promise that future failures cannot
+occur or that all hosted collaboration journeys have been accepted.
+
+The new browser journey exposed a second defect before this release: egui's selectable
+`Label` adds click handling even when supplied `Sense::hover()`. An incomplete card title
+therefore still attempted a cloud open. The adapter now explicitly gates the resulting
+click on a completed revision; the test clicks both preview and title and rejects an open
+request. Widget configuration alone is not evidence of the resulting interaction behavior.
+
+The sharing regression also reproduced a delayed response from project A replacing project
+B's members and exposing A's view link. Dialog state now carries both project identity and
+a per-channel request generation. The invitation result and input clearing follow the same
+rule. Membership writes serialize per project, including a switch away and back; a late
+write triggers a fresh read for the current project instead of applying obsolete feedback.
+Visible pending/error states also need geometry checks: feedback initially pushed Revoke
+below the desktop window even though scrolling technically kept it reachable. The window
+now budgets for measured wrapped feedback and a bounded spinner row, retaining scrolling
+for small viewports and long member lists.
 
 The current menu source has 627 placements and 626 distinct command IDs. The tool enum has
 45 tools. The upstream scorecards contain 150 individually described acceptance items.
@@ -124,8 +167,8 @@ Each row needs a UI journey and server authorization evidence; API coverage alon
 
 ## Immediate blockers and next checkpoints
 
-- Dropdown, display-density, saved-renderer and phone New Document regressions now pass
-  within the final 31-case local browser suite. Native forms cover 33 viewport states and
+- Dropdown, display-density, saved-renderer and phone New Document regressions passed
+  in the earlier released 31-case local browser suite. Native forms cover 33 viewport states and
   cloud windows cover 20; this does not establish every field or physical-device journey.
 - Wide native Preferences forms remain horizontally scrollable on phones. Being inside
   the viewport is not equivalent to a complete mobile interaction design.
@@ -138,7 +181,7 @@ Each row needs a UI journey and server authorization evidence; API coverage alon
   DOM controls, physical-device acceptance and worker offload are open work, not hidden
   behind this UI patch.
 
-## Release evidence on 2026-10-07
+## Earlier release evidence on 2026-10-07
 
 Tofu deployment `dpl_FnLvDT6zhYaFW3j11qG9tJugTF7S` serves source
 `43a839fedc9d0561aed859765d972678e94127f0`, including upstream
@@ -160,6 +203,24 @@ One diagnostic 6,000 × 4,000 document run recorded a 1,277 ms main-thread long 
 frame gap. This exposes a worker-offload requirement; one sample is neither a benchmark
 distribution nor a passed performance budget. Preserve the native engine while moving
 heavy jobs behind a worker boundary with cancellation and document-revision validation.
+
+## Recovery, sharing and spacing candidate validation
+
+The subsequent recovery/sharing candidate passed all 38 browser scenarios in 392.096 seconds,
+36 API tests, 12 simulated-auth/provider tests, and four cold-worker tests. The browser run
+used WASM SHA-256 `b620764b5530e51341b1e9851dfbe0899b3e2b677395e1c2699be43d49dffdd6`.
+Strict WASM lint, formatting, four native web tests, seven cloud unit tests, cloud lint,
+29-crate dependency-layer validation and six release-pipeline tests also passed during this
+change. The original engine was not changed or replaced; the earlier large native/corpus
+totals above are historical evidence and were not rerun for this adapter-only candidate.
+
+An additional 390×844 local sharing journey checked pending/error feedback, a four-member
+list, the real link controls and successful revocation, with unchanged native document state
+and no browser errors. All invitation requests in these tests were intercepted or sent to a
+loopback provider fixture; they do not prove real inbox delivery. The separate bounded
+[collaboration measurements](collaboration-performance.md) are local observations, not
+hosted capacity or Figma/Canva parity. Hosted release evidence must identify the serving
+deployment and matching artifact after publication.
 
 ## Continuous upstream updates
 

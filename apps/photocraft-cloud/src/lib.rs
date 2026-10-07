@@ -180,10 +180,11 @@ async fn account(s: &App, h: &HeaderMap) -> Result<Account> {
     if t.len() != 64 {
         return Err(ApiError(StatusCode::UNAUTHORIZED, "Session expired".into()));
     }
+    // Each serverless worker must initialize storage on its first authenticated request.
     let r =
         query("SELECT a.id,a.email,a.name FROM photocraft.sessions s JOIN photocraft.accounts a ON a.id=s.account_id WHERE s.hash=$1 AND s.expires_at>now()")
             .bind(hash(t))
-            .fetch_optional(db(s)?)
+            .fetch_optional(ready_db(s).await?)
             .await?
             .ok_or(ApiError(StatusCode::UNAUTHORIZED, "Session expired. Sign in again.".into()))?;
     Ok(Account { id: r.get("id"), email: r.get("email"), name: r.get("name") })
@@ -380,7 +381,7 @@ async fn finish_sign_in(s: &App, t: &str, ty: &str) -> Result<Response> {
 }
 async fn logout(State(s): State<App>, h: HeaderMap) -> Result<Response> {
     if let Some(t) = cookie(&h, "pc_session") {
-        query("DELETE FROM photocraft.sessions WHERE hash=$1").bind(hash(t)).execute(db(&s)?).await?;
+        query("DELETE FROM photocraft.sessions WHERE hash=$1").bind(hash(t)).execute(ready_db(&s).await?).await?;
     }
     let mut r = Json(json!({"ok":true})).into_response();
     r.headers_mut().insert(header::SET_COOKIE, session_cookie(&s, "pc_session", "", 0)?);
@@ -751,7 +752,7 @@ async fn shared_id(s: &App, key: &str) -> Result<Uuid> {
     }
     scalar("SELECT p.id FROM photocraft.shares s JOIN photocraft.projects p ON p.id=s.project_id WHERE s.hash=$1 AND NOT p.trashed")
         .bind(hash(key))
-        .fetch_optional(db(s)?)
+        .fetch_optional(ready_db(s).await?)
         .await?
         .ok_or_else(forbidden)
 }

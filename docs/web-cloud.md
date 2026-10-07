@@ -52,7 +52,10 @@ Tofu-returned HTTPS origin. Tofu-managed `DATABASE_URL`, `SUPABASE_CA_CERT`, `SU
 compatibility. Disabling SQLx's statement cache alone does not disable statement names. The HTTP editor starts immediately. Cloud routes become available only after the idempotent
 schema migration commits under an advisory lock. Setup runs inside bounded cloud requests, so a serverless host cannot suspend it after an
 unrelated response. Concurrent setup is serialized and migration lock waits are bounded; the
-browser retries configuration while storage is unavailable. The public configuration exposes
+browser retries configuration while storage is unavailable. The public configuration reports
+readiness for that worker only; every authenticated request, public-share lookup and logout
+also initializes storage when needed. A completed configuration request on another worker
+cannot establish readiness for the worker handling a save or project action. The configuration exposes
 only fixed diagnostic categories, never connection strings or provider error payloads. `/healthz` distinguishes `starting`, `ready` and `disabled`
 cloud storage while reporting HTTP availability. Sign-in waits briefly for readiness and
 establishes a database transaction before consuming a one-time authentication token.
@@ -114,7 +117,7 @@ cargo run --locked -p photocraft-cloud --example fixture -- /tmp/fixture.pcraft
 # APP_ORIGIN=http://127.0.0.1:8876, PORT=8876 and PUBLIC_DIR=dist/web.
 PHOTOCRAFT_FIXTURE=/tmp/fixture.pcraft python tests/web/test_api.py
 python tests/web/test_auth.py
-python tests/web/test_startup.py
+PHOTOCRAFT_FIXTURE=/tmp/fixture.pcraft python tests/web/test_startup.py
 python tests/web/test_browser.py
 python packaging/web/tofu-package.py dist/photocraft-tofu.zip
 ```
@@ -181,6 +184,26 @@ long-title search and clear, dialog dismissal, project star/trash/restore, shari
 version history. Native file, PSD and PNG round trips, renderer fallbacks, WebKit, interrupted
 network requests, and independent local account collaboration remain in the same suite.
 Four Rust web tests cover startup wiring, project filtering, empty states and grid sizing.
+
+The [workspace design contract](workspace-design-contract.md) records measured references,
+native typography/radius reuse, purposeful spacing, hover/focus/press states and reduced
+motion. Browser cases 32–34 check rendered action geometry, native quick actions, intermediate
+widths, phone content visibility and template search. Case 35 interrupts the first upload,
+preserves the local document and recovery copy, retries the same project, reopens the saved
+pixels, and removes projects through the actual card controls. Incomplete saves are labelled
+explicitly; Retry save is primary, Trash stays available, and Open/Share require saved content.
+
+Invitation feedback is local to the sharing window: sending, provider acceptance, delivery
+failure, and granted membership are separate states. Project dialogs scope responses by
+project and request generation; stale people, comments, history, links and errors cannot
+replace another project's state. Membership writes serialize per project, while a newer
+write may supersede an older read. Browser cases 36–38 exercise held invitation requests,
+partial mail failure, delayed cross-project reads, same-project stale reads, and switching
+away and back during a membership write. No real email is sent by these local fixtures.
+
+Measured local collaboration timings and their limitations are recorded in
+[collaboration performance](collaboration-performance.md); the existing protocol and remaining
+product gaps are in [collaboration architecture](collaboration-architecture.md).
 
 Native gaps must remain distinct from web regressions. The upstream scorecard documents
 incomplete tool interactions, dead preferences, type coverage, file compatibility and expensive
