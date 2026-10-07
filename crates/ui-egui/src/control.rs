@@ -433,7 +433,14 @@ pub fn handle(app: &mut PhotocraftApp, ctx: &egui::Context, req: &ControlRequest
                     // Right-click with the Move tool, or ⌘/Ctrl+right-click: list the layers there.
                     if crate::layer_pick_ui::is_gesture(app.ui.tool, mods) {
                         if down {
+                            app.ui.canvas_tool_menu = None;
                             crate::layer_pick_ui::open(app, screen_point(app, x, y), x, y);
+                        }
+                        continue;
+                    }
+                    if crate::canvas_tool_menu::applies(app.ui.tool) {
+                        if down {
+                            crate::canvas_tool_menu::open(app, app.ui.tool, screen_point(app, x, y));
                         }
                         continue;
                     }
@@ -603,6 +610,22 @@ pub fn inspect(app: &PhotocraftApp, ctx: &egui::Context) -> Value {
         "toolOptions": app.ui.tool_options,
         "textEdit": app.ui.text_edit,
         "layerMenu": app.ui.layer_menu,
+        "canvasToolMenu": app.ui.canvas_tool_menu.as_ref().map(|menu| {
+            json!({
+                "pos": menu.pos,
+                "tool": menu.tool,
+                "entries": if menu.tool == crate::state::Tool::Pen {
+                    crate::canvas_tool_menu::PEN_MENU.iter().map(|row| match row {
+                        Some((label, id)) => json!({"label": label, "id": id, "enabled": crate::canvas_tool_menu::entry_enabled(app, menu, id)}),
+                        None => json!({"separator": true}),
+                    }).collect::<Vec<_>>()
+                } else {
+                    crate::canvas_tool_menu::menu_entries(menu).iter().map(|&(label, id)| {
+                        json!({"label": label, "id": id, "enabled": crate::canvas_tool_menu::entry_enabled(app, menu, id)})
+                    }).collect::<Vec<_>>()
+                }
+            })
+        }),
         "panels": app.ui.panels,
         "views": app.ui.views,
         "dialogs": dialogs,

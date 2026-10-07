@@ -71,6 +71,7 @@ pub mod smart_cmds;
 pub mod smartselect_cmds;
 pub mod snap;
 pub mod stamp_cmds;
+pub mod symmetry_cmds;
 mod timeline_cmds;
 pub mod transform_cmds;
 mod trap_cmds;
@@ -157,6 +158,8 @@ pub struct DocState {
     pub channel_view: channel_cmds::ChannelView,
     /// Select › Isolate Layers: the Layers panel lists only these layers (empty = off; view state).
     pub isolated_layers: Vec<LayerId>,
+    /// Painting symmetry axis made from the selected path (tool state, not document pixels).
+    pub symmetry_path: Option<symmetry_cmds::SymmetryAxis>,
     /// Layers panel: layers whose effects list is collapsed under their row (the fx triangle;
     /// view state, not history). Effects lists start open.
     pub fx_collapsed: Vec<LayerId>,
@@ -180,6 +183,7 @@ impl DocState {
             coalesce: None,
             channel_view: Default::default(),
             isolated_layers: Vec::new(),
+            symmetry_path: None,
             fx_collapsed: Vec::new(),
         }
     }

@@ -1009,6 +1009,8 @@ fn tabs(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
     let active = app.session.active_index();
     let mut activate = None;
     let mut close = None;
+    let mut tab_action = None;
+    let tab_count = app.session.documents().len();
     let (mut focus_open, mut cancel_open) = (None, None);
     let focused_open = app.jobs.focus.is_some();
     egui::Frame::NONE.fill(t.canvas).inner_margin(egui::Margin { left: 8, right: 8, top: 6, bottom: 4 }).show(ui, |ui| {
@@ -1076,35 +1078,6 @@ fn tabs(app: &mut PhotocraftApp, ui: &mut egui::Ui) {
                     focus_open = Some(job);
                 }
             }
-            // Files opening in the background: a tab with a progress underline; × cancels.
-            for (job, name, frac) in crate::jobs_ui::open_tabs(app) {
-                let sel = app.jobs.focus == Some(job);
-                let name_g = ui.painter().layout_no_wrap(name, crate::theme::medium(12.5), t.text);
-                let meta_g = ui.painter().layout_no_wrap(format!("{:.0}%", frac * 100.0), egui::FontId::proportional(10.5), t.text_faint);
-                let w = name_g.size().x + meta_g.size().x + 44.0;
-                let (r, resp) = ui.allocate_exact_size(egui::vec2(w, 26.0), Sense::click());
-                if sel {
-                    ui.painter().rect_filled(r, t.radius_sm, t.card);
-                    ui.painter().rect_stroke(r, t.radius_sm, Stroke::new(1.0, t.card_border), egui::StrokeKind::Inside);
-                } else if resp.hovered() {
-                    ui.painter().rect_filled(r, t.radius_sm, t.hover.gamma_multiply(0.5));
-                }
-                let ny = r.center().y - name_g.size().y / 2.0;
-                ui.painter().galley_with_override_text_color(egui::pos2(r.left() + 10.0, ny), name_g.clone(), if sel { t.text } else { t.text_dim });
-                ui.painter().galley(egui::pos2(r.left() + 16.0 + name_g.size().x, r.center().y - meta_g.size().y / 2.0), meta_g, t.text_faint);
-                crate::jobs_ui::tab_underline(ui, r, frac, &t);
-                let xr = Rect::from_center_size(egui::pos2(r.right() - 12.0, r.center().y), egui::vec2(16.0, 16.0));
-                let xresp = ui.interact(xr, ui.id().with(("tabjobx", job.0)), Sense::click());
-                if xresp.hovered() {
-                    ui.painter().rect_filled(xr, 4.0, t.hover);
-                }
-                crate::icons::paint(ui, xr, "x", 11.0, if xresp.hovered() { t.text } else { t.text_faint });
-                if xresp.on_hover_text(tl!("Cancel opening")).clicked() {
-                    cancel_open = Some(job);
-                } else if resp.clicked() {
-                    focus_open = Some(job);
-                }
-            }
         });
     });
     open_tab_clicks(app, activate, focus_open, cancel_open);
@@ -1138,26 +1111,6 @@ fn tab_context_menu(ui: &mut egui::Ui, index: usize, count: usize) -> Option<(&'
         }
     }
     None
-}
-
-/// Apply tab-strip clicks: a document tab shows that document, an opening tab its progress, and
-/// an opening tab's × cancels the open (closing the half-open tab).
-fn open_tab_clicks(
-    app: &mut PhotocraftApp,
-    activate: Option<usize>,
-    focus_open: Option<photocraft_engine::jobs::JobId>,
-    cancel_open: Option<photocraft_engine::jobs::JobId>,
-) {
-    if let Some(i) = activate {
-        app.session.set_active(i);
-        app.jobs.focus = None;
-    }
-    if let Some(job) = focus_open {
-        app.jobs.focus = Some(job);
-    }
-    if let Some(job) = cancel_open {
-        crate::jobs_ui::cancel(app, job);
-    }
 }
 
 /// Apply tab-strip clicks: a document tab shows that document, an opening tab its progress, and
@@ -1756,7 +1709,14 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
             && let Some(p) = response.interact_pointer_pos()
         {
             let d = xf.to_doc(p);
+            app.ui.canvas_tool_menu = None;
             crate::layer_pick_ui::open(app, [p.x, p.y], d[0], d[1]);
+        }
+        if response.secondary_clicked()
+            && !crate::layer_pick_ui::is_gesture(tool, mods)
+            && let Some(p) = response.interact_pointer_pos()
+        {
+            crate::canvas_tool_menu::open(app, tool, [p.x, p.y]);
         }
         // The (temporary) Hand pans above; its gestures never reach the tool underneath.
         if tool == Tool::Hand {
@@ -1894,6 +1854,7 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
         draw_transform_controls(app, &painter, &xf);
         crate::paint_mouse::show_picker(app, &ctx);
         crate::layer_pick_ui::show(app, &ctx);
+        crate::canvas_tool_menu::show(app, &ctx);
         crate::snap_ui::draw(app, &painter, &xf);
         if border == photocraft_engine::prefs::CanvasBorder::Line {
             painter.rect_stroke(img_rect, 0.0, Stroke::new(1.0, Color32::from_gray(20)), egui::StrokeKind::Outside);
@@ -2861,6 +2822,30 @@ mod tests {
         assert!(brush_tip_centre(Tool::Brush, false, false, 20.0));
         assert!(!brush_tip_centre(Tool::QuickSelection, false, false, 20.0));
         assert!(brush_tip_centre(Tool::BackgroundEraser, false, false, 2.0));
+    }
+
+    #[test]
+    fn tab_context_uses_clicked_document_and_existing_close_commands() {
+        let items = tab_context_items(2, 3);
+        assert_eq!(items.iter().map(|(_, id, _, _)| *id).collect::<Vec<_>>(), ["file.close", "file.closeOthers", "file.closeAll"]);
+        assert_eq!(items[0].2, json!({"document": 2}));
+        assert_eq!(items[1].2, json!({"document": 2}));
+        assert_eq!(items[2].2, json!({}));
+        assert!(!tab_context_items(0, 1)[1].3);
+        assert!(items.iter().all(|(_, id, _, _)| photocraft_engine::commands::find(id).is_some()));
+    }
+
+    #[test]
+    fn tab_close_others_prompts_for_unsaved_nonactive_document() {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({"width": 8, "height": 8, "name": "Keep"})).unwrap();
+        app.run("file.new", json!({"width": 8, "height": 8, "name": "Edited"})).unwrap();
+        app.run("edit.fill", json!({"color": "#ff0000"})).unwrap();
+        assert_eq!(app.session.active_index(), Some(1));
+        let (_, id, params, _) = tab_context_items(0, 2)[1].clone();
+        crate::menus::invoke(&mut app, &egui::Context::default(), id, params).unwrap();
+        assert!(app.discard.is_some(), "close others must ask before discarding the edited tab");
+        assert_eq!(app.session.documents().len(), 2);
     }
 
     #[test]
