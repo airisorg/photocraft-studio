@@ -429,6 +429,50 @@ class CloudContract(unittest.TestCase):
         item = next(p for p in self.req(self.owner, 'GET', '/api/projects').json() if p['id'] == pid)
         self.assertFalse(item['trashed'])
 
+    def test_37_saved_checksum_proof_precedes_history_limit_and_requires_access(self):
+        pid = self.project()
+        self.upload(pid)  # The caller may lose this commit acknowledgment.
+        digest = hashlib.sha256(self.fixture).hexdigest()
+        later = self.edited_fixture(name='Later collaborator version')
+        # Put the acknowledged content beyond the ordinary history page. Filter
+        # before LIMIT 200, or reconciliation would mistake it for an absent save.
+        self.db.execute("INSERT INTO photocraft.versions(project_id,revision,author_id,title,data,sha256) "
+                        "SELECT %s,n,%s,'Later version',%s,%s FROM generate_series(2,202) n",
+                        (pid, self.accounts[0][0], later, hashlib.sha256(later).hexdigest()))
+        self.db.execute('UPDATE photocraft.projects SET revision=202 WHERE id=%s', (pid,))
+        path = f'/api/projects/{pid}/versions'
+        history = self.req(self.owner, 'GET', path).json()
+        self.assertEqual(len(history), 200)
+        self.assertNotIn(1, [row['revision'] for row in history])
+        params = {'sha256': digest.upper(), 'after_revision': 0}
+        self.member(pid, 2, 'view')
+        for who in [self.owner, self.viewer]:
+            rows = self.req(who, 'GET', path, params=params).json()
+            self.assertEqual([row['revision'] for row in rows], [1])
+            self.assertEqual(rows[0]['sha256'], digest)
+            self.assertEqual(rows[0]['bytes'], len(self.fixture))
+        for query in [{**params, 'after_revision': 1}, {**params, 'after_revision': 9223372036854775807},
+                      {**params, 'sha256': '0'*64}]:
+            self.assertEqual(self.req(self.owner, 'GET', path, params=query).json(), [])
+        self.req(self.outsider, 'GET', path, status=404, params=params)
+        self.req(self.anon, 'GET', path, status=401, params=params)
+        self.member(pid, 2, 'remove')
+        self.req(self.viewer, 'GET', path, status=404, params=params)
+        self.assertEqual(self.req(self.owner, 'GET', f'/api/projects/{pid}').json()['revision'], 202)
+
+    def test_38_saved_checksum_filter_rejects_malformed_or_partial_inputs(self):
+        path = f'/api/projects/{self.project()}/versions'
+        valid = {'sha256': 'a'*64, 'after_revision': 0}
+        for params in [
+            {'sha256': 'a'*64}, {'after_revision': 0},
+            *[{**valid, 'sha256': value} for value in ['', 'a'*63, 'a'*65, 'z'*64, 'Ａ'*64]],
+            *[{**valid, 'after_revision': value} for value in [-1, 'NaN', 9223372036854775808]],
+        ]:
+            with self.subTest(params=params):
+                self.req(self.owner, 'GET', path, status=400, params=params)
+        self.assertEqual(self.req(self.owner, 'GET', path, params=valid).json(), [])
+        self.assertEqual(self.req(self.owner, 'GET', path).json(), [])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
