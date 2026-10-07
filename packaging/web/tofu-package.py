@@ -18,7 +18,7 @@ if len(wasm) != 1 or wasm[0].stat().st_size > 26 * 1024 * 1024:
 source = subprocess.check_output(['git', 'ls-files', '--cached', '--others', '--exclude-standard', '-z'], cwd=root).decode().split('\0')
 manifest = {
     'sourceCommit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root, text=True).strip(),
-    'dirty': bool(subprocess.check_output(['git', 'status', '--porcelain', '--untracked-files=no'], cwd=root, text=True).strip()),
+    'dirty': bool(subprocess.check_output(['git', 'status', '--porcelain'], cwd=root, text=True).strip()),
     'wasm': {'path': 'public/' + wasm[0].name, 'sha256': hashlib.sha256(wasm[0].read_bytes()).hexdigest()},
 }
 with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
