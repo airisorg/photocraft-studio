@@ -255,7 +255,7 @@ async fn callback(State(s): State<App>, h: HeaderMap, Query(q): Query<std::colle
         return Err(bad("Account verification failed"));
     }
     let u: Value = user.json().await.map_err(|_| bad("Invalid account response"))?;
-    if !u.get("email_confirmed_at").and_then(Value::as_str).is_some_and(|v| !v.is_empty()) {
+    if u.get("email_confirmed_at").and_then(Value::as_str).is_none_or(|v| v.is_empty()) {
         return Err(bad("Verify your email before joining a shared workspace"));
     }
     let id = u.get("id").and_then(Value::as_str).and_then(|v| Uuid::parse_str(v).ok()).ok_or(bad("Missing account identity"))?;
@@ -462,8 +462,11 @@ async fn begin_upload(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>, 
     }
     let title = text(&v.title, 160)?;
     let p = db(&s)?;
-    sqlx::query("DELETE FROM photocraft.uploads WHERE created_at<now()-interval '1 hour'").execute(p).await?;
-    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM photocraft.uploads WHERE author_id=$1").bind(a.id).fetch_one(p).await?;
+    let mut tx = p.begin().await?;
+    // Serialize reservation counts across processes; parallel tabs cannot bypass the limit.
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))").bind(format!("photocraft.uploads/{}", a.id)).execute(&mut *tx).await?;
+    sqlx::query("DELETE FROM photocraft.uploads WHERE author_id=$1 AND created_at<now()-interval '1 hour'").bind(a.id).execute(&mut *tx).await?;
+    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM photocraft.uploads WHERE author_id=$1").bind(a.id).fetch_one(&mut *tx).await?;
     if n >= 5 {
         return Err(bad("Too many pending uploads; finish one or retry in an hour"));
     }
@@ -481,8 +484,9 @@ async fn begin_upload(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>, 
     .bind(title)
     .bind(v.width)
     .bind(v.height)
-    .execute(p)
+    .execute(&mut *tx)
     .await?;
+    tx.commit().await?;
     Ok(Json(json!({"id":next})))
 }
 async fn upload_chunk(State(s): State<App>, h: HeaderMap, Path((id, part)): Path<(Uuid, i32)>, b: Bytes) -> Result<Json<Value>> {

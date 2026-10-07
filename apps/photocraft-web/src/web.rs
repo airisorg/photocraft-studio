@@ -89,10 +89,10 @@ fn listen_unload() {
             e.set_return_value("");
         }
     });
-    if let Some(w) = web_sys::window() {
-        if w.add_event_listener_with_callback("beforeunload", callback.as_ref().unchecked_ref()).is_ok() {
-            callback.forget();
-        }
+    if let Some(w) = web_sys::window()
+        && w.add_event_listener_with_callback("beforeunload", callback.as_ref().unchecked_ref()).is_ok()
+    {
+        callback.forget();
     }
 }
 

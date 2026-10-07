@@ -136,7 +136,7 @@ class BrowserAcceptance(unittest.TestCase):
 
     def test_01_workspace_new_canvas_button(self):
         self.assertEqual(self.page.title(), 'PhotoCraft Studio')
-        self.page.mouse.click(320, 254)
+        self.page.mouse.click(340, 375)
         self.page.wait_for_timeout(300)
         doc = self.inspect()['document']
         self.assertEqual((doc['width'], doc['height']), (1200, 900))
@@ -207,12 +207,13 @@ class BrowserAcceptance(unittest.TestCase):
         self.assertEqual(len(drafts), 1)
         self.context.set_offline(False)
         self.load(self.page)
-        self.page.mouse.wheel(0, 800)
+        self.page.mouse.click(100,254)
         self.page.wait_for_timeout(300)
         # Recovery lives below the empty workspace card, and is also persisted independently.
         self.assertIsNone(self.inspect()['document'])
         self.assertTrue(drafts[0])
-        self.page.mouse.click(410,841)
+        self.page.screenshot(path=str(ARTIFACTS/"recovery-controls.png"))
+        self.page.mouse.click(410,330)
         self.page.wait_for_timeout(500)
         self.assertEqual(self.inspect()['document']['width'], 320)
 
@@ -225,7 +226,9 @@ class BrowserAcceptance(unittest.TestCase):
         self.execute('layer.duplicate')
         self.wait_revision(2)
         self.load(self.page)
-        self.page.mouse.click(435,710)
+        self.page.mouse.click(100,254)
+        self.page.wait_for_timeout(150)
+        self.page.mouse.click(435,220)
         self.page.wait_for_timeout(700)
         doc = self.inspect()['document']
         self.assertIsNotNone(doc)
@@ -269,6 +272,7 @@ class BrowserAcceptance(unittest.TestCase):
         for width,height in [(390,844), (768,1024), (844,390)]:
             with self.subTest(width=width):
                 _, page = self.context_page(viewport={'width':width,'height':height})
+                page.screenshot(path=str(ARTIFACTS/f'home-{width}x{height}.png'))
                 self.new(page=page)
                 self.stroke(page)
                 self.assertEqual(self.inspect(page)['window']['width'], width)
@@ -304,7 +308,9 @@ class BrowserAcceptance(unittest.TestCase):
         self.page.mouse.click(1295,28)
         self.wait_revision(1)
         _, second = self.context_page(token=token)
-        second.mouse.click(435,710)
+        second.mouse.click(100,254)
+        second.wait_for_timeout(150)
+        second.mouse.click(435,220)
         second.wait_for_timeout(600)
         self.assertIsNotNone(self.inspect(second)['document'])
         self.stroke()
@@ -325,6 +331,37 @@ class BrowserAcceptance(unittest.TestCase):
             second.wait_for_timeout(300)
         else:
             self.fail('Save a copy did not retain the conflicting browser document')
+
+    def test_14_templates_keep_editable_text_and_shapes(self):
+        for slug in ['noise', 'sunday', 'next', 'soul', 'softform', 'afterhours']:
+            with self.subTest(template=slug):
+                response = self.context.request.get(BASE+f'/templates/{slug}.pcraft')
+                self.assertTrue(response.ok)
+                path = ARTIFACTS/f'template-{slug}.pcraft'
+                path.write_bytes(response.body())
+                with zipfile.ZipFile(path) as z:
+                    manifest = json.loads(z.read('manifest.json'))['document']
+                self.open_file(path)
+                doc = self.inspect()['document']
+                self.assertEqual((doc['width'], doc['height']), (manifest['size']['width'], manifest['size']['height']))
+                self.assertGreater(len(doc['layers']), 4)
+                kinds = {layer['content']['kind'] for layer in manifest['layers']}
+                self.assertTrue({'raster', 'text', 'shape'} <= kinds, kinds)
+                text_layer = next(layer for layer in manifest['layers'] if layer['content']['kind']=='text')
+                self.execute('type.edit', {'layer': text_layer['id'], 'text': 'My own design'})
+                self.assertTrue(self.inspect()['document']['canUndo'])
+                self.execute('edit.undo')
+
+
+    def test_15_home_template_card_opens_native_document(self):
+        self.page.mouse.click(330,710)
+        self.page.wait_for_timeout(900)
+        doc = self.inspect()['document']
+        self.assertIsNotNone(doc)
+        self.assertEqual((doc['width'],doc['height']),(1080,1350))
+        self.assertGreater(len(doc['layers']), 4)
+        self.page.screenshot(path=str(ARTIFACTS/'template-from-gallery.png'))
+
 
 
 if __name__ == '__main__':

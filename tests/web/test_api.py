@@ -337,6 +337,18 @@ class CloudContract(unittest.TestCase):
         self.assertIn('immutable', response.headers['Cache-Control'])
         self.assertEqual(response.headers['Content-Type'], 'application/wasm')
 
+    def test_30_concurrent_upload_reservations_enforce_account_limit(self):
+        pid = self.project()
+        payload = {'base_revision': 0, 'bytes': 1, 'parts': 1, 'sha256': 'a'*64,
+                   'title': 'Concurrent reservation', 'width': 1, 'height': 1}
+        cookie = self.owner.cookies.get('pc_session')
+        def reserve(_):
+            return requests.post(BASE+f'/api/projects/{pid}/uploads', json=payload,
+                                 cookies={'pc_session': cookie}, headers={'Origin': BASE}, timeout=20).status_code
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+            statuses = list(pool.map(reserve, range(8)))
+        self.assertEqual(sorted(statuses), [200]*5 + [400]*3)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
