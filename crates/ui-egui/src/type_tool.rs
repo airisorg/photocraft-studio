@@ -204,7 +204,7 @@ pub fn pointer_down(app: &mut PhotocraftApp, x: f64, y: f64, shift: bool) -> boo
         let key = session_key(app);
         begin_edit(app, id, &key);
         let off = hit_offset(app, id, x, y);
-        app.ui.text_edit = Some(TextEdit { layer: id.0, caret: off, anchor: off, session: key, created: false, dragging: true, preedit: None });
+        app.ui.text_edit = Some(TextEdit { layer: id.0, caret: off, anchor: off, session: key, created: false, dragging: true, resize: None, preedit: None });
         return true;
     }
     false
@@ -258,7 +258,7 @@ pub fn pointer_up(app: &mut PhotocraftApp, start: [f64; 2], end: [f64; 2]) {
         }
         // Like Photoshop: the placeholder is selected, so typing replaces it.
         let n = PLACEHOLDER.chars().count();
-        app.ui.text_edit = Some(TextEdit { layer: id, caret: n, anchor: 0, session: key, created: true, dragging: false, preedit: None });
+        app.ui.text_edit = Some(TextEdit { layer: id, caret: n, anchor: 0, session: key, created: true, dragging: false, resize: None, preedit: None });
     }
 }
 
@@ -1392,6 +1392,31 @@ mod tests {
         let doc = &app.session.active().unwrap().doc;
         assert_eq!(doc.layers.last().unwrap().name, "Héllo world");
         assert!(app.ui.text_edit.is_none());
+    }
+
+    #[test]
+    fn dragging_a_box_handle_resizes_the_paragraph_box() {
+        let mut app = app();
+        pointer_up(&mut app, [10.0, 10.0], [110.0, 60.0]);
+        let id = LayerId(app.ui.text_edit.as_ref().unwrap().layer);
+        let steps = app.session.active().unwrap().history.entries().len();
+        // Top-left corner: the box keeps its bottom-right corner.
+        assert!(pointer_down(&mut app, 10.0, 10.0, false));
+        assert_eq!(app.ui.text_edit.as_ref().unwrap().resize, Some(0));
+        pointer_move(&mut app, 20.0, 25.0);
+        pointer_move(&mut app, 30.0, 30.0);
+        pointer_up(&mut app, [10.0, 10.0], [30.0, 30.0]);
+        assert_eq!(box_shape(&app, id), Some((0.0, 0.0, 80.0, 30.0)));
+        let aff = layout(&mut app, id).unwrap().1;
+        assert_eq!((aff.m[4], aff.m[5]), (30.0, 30.0));
+        // The whole drag is one history step, and the edit session survives it.
+        assert_eq!(app.session.active().unwrap().history.entries().len(), steps);
+        assert!(app.ui.text_edit.is_some());
+        // Right edge: only the width changes, and never below the minimum.
+        assert!(pointer_down(&mut app, 110.0, 45.0, false));
+        pointer_move(&mut app, 0.0, 99.0);
+        pointer_up(&mut app, [110.0, 45.0], [0.0, 99.0]);
+        assert_eq!(box_shape(&app, id), Some((0.0, 0.0, MIN_BOX, 30.0)));
     }
 
     #[test]
