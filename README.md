@@ -1,11 +1,12 @@
-<p align="center">
-  <a href="https://getartcraft.com/">
-    <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="docs/brand/artcraft-logo-white.svg">
-      <img alt="ArtCraft" src="docs/brand/artcraft-logo.svg" width="200">
-    </picture>
-  </a>
-</p>
+# PhotoCraft Studio — private web adaptation
+
+Based on PhotoCraft by the ArtCraft team. This modified version adds a browser workspace and a Rust cloud service for deployment on Tofu. It is not an official ArtCraft release.
+
+See [web architecture and deployment](docs/web-cloud.md). The editing engine, formats, GPU compositor and desktop UI remain upstream code.
+
+---
+
+
 
 <h1 align="center">PhotoCraft</h1>
 
@@ -372,7 +373,7 @@ Forks and modified versions must remove them.
 <sub>Adobe, Photoshop, Illustrator, Premiere Pro, Lightroom, Acrobat, After Effects and InDesign are trademarks or registered trademarks of Adobe Inc. in the United States and/or other countries. PhotoCraft is an independent, open-source project and is not affiliated with, sponsored by or endorsed by Adobe Inc.; these names are used only to describe the workflows it is compatible with.</sub>
 
 <p align="center">
-  <a href="https://getartcraft.com/"><img alt="ArtCraft" src="docs/brand/artcraft-mark.svg" width="28"></a><br>
+  <br>
   <sub>Made by the <a href="https://getartcraft.com/">ArtCraft</a> team and community.</sub>
 </p>
 

@@ -21,6 +21,7 @@ const CANVAS_ID: &str = "photocraft_canvas";
 
 pub fn start() {
     eframe::WebLogger::init(log::LevelFilter::Info).ok();
+    listen_unload();
     wasm_bindgen_futures::spawn_local(async {
         let Some(document) = web_sys::window().and_then(|w| w.document()) else {
             log::error!("no document");
@@ -48,6 +49,12 @@ pub fn start() {
                     PhotocraftApp::setup_context(&cc.egui_ctx, ThemeKind::Pro);
                     let inbox: Inbox = Arc::default();
                     let mut app = PhotocraftApp::new(Session::new(), services(inbox.clone(), cc.egui_ctx.clone()));
+                    let (control_tx, control_rx) = std::sync::mpsc::channel();
+                    install_bridge(control_tx, cc.egui_ctx.clone());
+                    app = app.with_control(control_rx);
+                    if local_storage().and_then(|s| s.get_item(PREFS_KEY).ok().flatten()).is_none() {
+                        app.session.edit_prefs(|p| p.interface.theme = photocraft_engine::prefs::Theme::Studio);
+                    }
                     listen_pen(&pen_target, app.stylus.feed.clone());
                     app.set_theme(&cc.egui_ctx, ThemeKind::Pro);
                     if let Some(rs) = cc.wgpu_render_state.clone()
@@ -56,7 +63,8 @@ pub fn start() {
                         log::info!("photocraft-web: wgpu backend {:?}", rs.adapter.get_info().backend);
                         app.set_wgpu(rs);
                     }
-                    Ok(Box::new(WebShell { app, inbox }))
+                    let cloud = crate::cloud::Cloud::new(&cc.egui_ctx);
+                    Ok(Box::new(WebShell { app, inbox, cloud }))
                 }),
             )
             .await;
@@ -67,6 +75,52 @@ pub fn start() {
             }
         }
     });
+}
+
+thread_local! {static UNSAVED:std::cell::Cell<bool>=const{std::cell::Cell::new(false)};}
+pub(crate) fn set_unsaved(value: bool) {
+    UNSAVED.with(|v| v.set(value));
+}
+fn listen_unload() {
+    use wasm_bindgen::closure::Closure;
+    let callback = Closure::<dyn FnMut(web_sys::BeforeUnloadEvent)>::new(|e: web_sys::BeforeUnloadEvent| {
+        if UNSAVED.with(|v| v.get()) {
+            e.prevent_default();
+            e.set_return_value("");
+        }
+    });
+    if let Some(w) = web_sys::window() {
+        if w.add_event_listener_with_callback("beforeunload", callback.as_ref().unchecked_ref()).is_ok() {
+            callback.forget();
+        }
+    }
+}
+
+/// Same-origin automation seam, using the exact native control protocol. No network listener,
+/// filesystem access or credentials: foreign origins cannot access this window property.
+fn install_bridge(tx: std::sync::mpsc::Sender<photocraft_ui_egui::ControlRequest>, ctx: egui::Context) {
+    use wasm_bindgen::closure::Closure;
+    let f = Closure::<dyn FnMut(String, String) -> js_sys::Promise>::new(move |method: String, params: String| {
+        let tx = tx.clone();
+        let ctx = ctx.clone();
+        wasm_bindgen_futures::future_to_promise(async move {
+            let params = serde_json::from_str(&params).map_err(|_| wasm_bindgen::JsValue::from_str("Invalid command JSON"))?;
+            let (req, rx) = photocraft_ui_egui::ControlRequest::new(method, params);
+            tx.send(req).map_err(|_| wasm_bindgen::JsValue::from_str("Editor is unavailable"))?;
+            ctx.request_repaint();
+            for _ in 0..1800 {
+                if let Ok(v) = rx.try_recv() {
+                    return Ok(wasm_bindgen::JsValue::from_str(&v.to_string()));
+                }
+                gloo_timers::future::TimeoutFuture::new(16).await;
+            }
+            Err(wasm_bindgen::JsValue::from_str("Editor command timed out"))
+        })
+    });
+    if let Some(w) = web_sys::window() {
+        let _ = js_sys::Reflect::set(&w, &"photocraftCommand".into(), f.as_ref());
+        f.forget();
+    }
 }
 
 /// Pen pressure, tilt, twist and the eraser button from Pointer Events (eframe forwards none of them for pens) into
@@ -108,6 +162,7 @@ fn query() -> String {
 struct WebShell {
     app: PhotocraftApp,
     inbox: Inbox,
+    cloud: crate::cloud::Cloud,
 }
 
 impl eframe::App for WebShell {
@@ -128,10 +183,11 @@ impl eframe::App for WebShell {
             });
         }
         self.app.logic(ctx, frame);
+        self.cloud.update(&mut self.app, ctx);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
-        self.app.ui(ui, frame);
+        self.cloud.ui(&mut self.app, ui, frame);
     }
 }
 
@@ -184,7 +240,7 @@ fn local_storage() -> Option<web_sys::Storage> {
 }
 
 /// Trigger a browser download of `bytes` named after the last component of `path`.
-fn download(path: &str, bytes: &[u8]) -> Result<(), String> {
+pub(crate) fn download(path: &str, bytes: &[u8]) -> Result<(), String> {
     let js = |e: wasm_bindgen::JsValue| format!("{e:?}");
     let name = std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "photocraft".into());
     let window = web_sys::window().ok_or("no window")?;

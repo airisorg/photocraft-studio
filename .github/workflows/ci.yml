@@ -17,6 +17,10 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  # Private-repository runners have smaller disks. Retain every test without multi-GB symbols.
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_PROFILE_TEST_DEBUG: 0
+  CARGO_INCREMENTAL: 0
 
 concurrency:
   group: ci-${{ github.ref }}
