@@ -20,9 +20,9 @@ with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED, compresslevel=9) as archive
         if any(part.startswith('.env') or part in {'.git', 'node_modules', 'target', 'corpus', 'test-results'} for part in Path(name).parts):
             continue
         archive.write(path, name)
-    for path in sorted(assets.iterdir()):
-        if path.is_file() and path.suffix in {'.html', '.js', '.wasm', '.svg', '.png'}:
-            archive.write(path, 'public/'+path.name)
+    for path in sorted(assets.rglob('*')):
+        if path.is_file() and path.suffix in {'.html', '.js', '.wasm', '.svg', '.png', '.pcraft'}:
+            archive.write(path, 'public/'+path.relative_to(assets).as_posix())
     for name in ['LICENSE-MIT', 'LICENSE-APACHE', 'NOTICE']:
         archive.write(root/name, 'public/'+name)
 print(f'{out}: {out.stat().st_size:,} bytes; WASM {wasm[0].stat().st_size:,} bytes')
