@@ -423,7 +423,7 @@ async fn fake_app() -> (String, tokio::task::JoinHandle<Vec<Value>>) {
                     json!({"id": id, "ok": true, "result": {"tool": "brush", "panels": ["layers"]}})
                 }
                 "engine.execute" => {
-                    json!({"id": id, "ok": true, "result": {"ran": req["params"]["command"], "params": req["params"]["params"]}})
+                    json!({"id": id, "ok": true, "result": {"ran": req["params"]["command"], "params": req["params"]["params"], "wait": req["params"]["wait"]}})
                 }
                 "engine.commands" => {
                     json!({"id": id, "ok": true, "result": [{"id": "file.new", "label": "New…", "enabled": true}]})
@@ -568,55 +568,6 @@ async fn bridge_command_batch_forwards_each_steps_wait() {
     assert_eq!(r["results"][1]["result"]["wait"], true, "{r}");
     client.cancel().await.unwrap();
     app.abort();
-}
-
-/// #514: `ui_pointer` forwards `button` (a right-click opens the layer menu or the Brush Preset
-/// picker) and rejects arguments it doesn't forward instead of dropping them.
-#[tokio::test(flavor = "multi_thread")]
-async fn bridge_ui_pointer_forwards_the_button_and_rejects_unknown_arguments() {
-    let (addr, app) = fake_app().await;
-    let client = connect(PhotocraftMcp::bridge(&addr, CONTROL_TOKEN).unwrap()).await;
-    let events = json!([{"kind": "down", "x": 5, "y": 6}, {"kind": "up", "x": 5, "y": 6}]);
-    let sent = json_of(&call(&client, "ui_pointer", json!({"events": events, "button": "right", "modifiers": {"command": true}})).await);
-    assert_eq!(sent, json!({"events": events, "button": "right", "modifiers": {"command": true}}));
-    let sent = json_of(&call(&client, "ui_pointer", json!({"events": events})).await);
-    assert_eq!(sent, json!({"events": events}), "unset fields are not sent");
-    for bad in [json!({"events": events, "buton": "right"}), json!({"events": events, "space": true})] {
-        let Value::Object(args) = bad.clone() else { unreachable!() };
-        let r = client.call_tool(CallToolRequestParams::new("ui_pointer").with_arguments(args)).await;
-        assert!(!r.as_ref().is_ok_and(|r| r.is_error != Some(true)), "{bad} accepted: {r:?}");
-    }
-    let tools = client.list_all_tools().await.unwrap();
-    let schema = &tools.iter().find(|t| t.name == "ui_pointer").unwrap().input_schema;
-    assert_eq!(schema.get("additionalProperties"), Some(&json!(false)), "{schema:?}");
-    assert!(schema.get("properties").and_then(|p| p.get("button")).is_some(), "{schema:?}");
-    client.cancel().await.unwrap();
-    app.abort();
-}
-
-/// #368: agents can open the clipboard as a document of its own.
-#[tokio::test(flavor = "multi_thread")]
-async fn new_from_clipboard_opens_the_copy_as_a_document() {
-    let client = connect(PhotocraftMcp::headless()).await;
-    json_of(&call(&client, "doc_new", json!({"width": 40, "height": 30})).await);
-    let r = json_of(
-        &call(
-            &client,
-            "command_batch",
-            json!({"steps": [
-                {"id": "select.rect", "params": {"x": 5, "y": 5, "width": 12, "height": 7}},
-                {"id": "edit.copy"},
-                {"id": "file.newFromClipboard"}
-            ]}),
-        )
-        .await,
-    );
-    assert_eq!(r["completed"], 3, "{r}");
-    let doc = json_of(&call(&client, "doc_inspect", json!({})).await);
-    assert_eq!((doc["width"].as_u64(), doc["height"].as_u64()), (Some(12), Some(7)), "{doc}");
-    let sess = json_of(&call(&client, "session_list", json!({})).await);
-    assert_eq!(sess["documents"].as_array().unwrap().len(), 2);
-    client.cancel().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -435,6 +435,29 @@ mod tests {
     }
 
     #[test]
+    fn batch_steps_can_start_background_jobs() {
+        let mut h = Headless::new();
+        h.handle("doc.new", json!({"width": 600, "height": 400})).unwrap();
+        let steps = json!([
+            {"command": "layer.new.layer"},
+            {"command": "edit.fill", "params": {"color": "#808080"}},
+            {"command": "filter.blur.gaussianBlur", "params": {"radius": 40}, "wait": false}
+        ]);
+        let r = h.handle("batch", json!({"steps": steps})).unwrap();
+        assert_eq!(r["completed"], 3, "{r}");
+        let job = r["results"][2]["result"]["job"].as_u64().unwrap_or_else(|| panic!("no job id: {r}"));
+        assert_eq!(r["results"][2]["result"]["pending"], true);
+        let listed = h.handle("jobs.list", json!({})).unwrap();
+        assert!(listed["jobs"].as_array().unwrap().iter().any(|j| j["id"] == job), "{listed}");
+        let t = std::time::Instant::now();
+        while h.session.jobs().iter().any(|j| j.id.0 == job) {
+            assert!(t.elapsed().as_secs() < 60);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            h.handle("jobs.list", json!({})).unwrap();
+        }
+    }
+
+    #[test]
     fn automation_preview_rejects_oversized_full_size_and_numeric_wraparound() {
         let mut h = Headless::new();
         h.handle("doc.new", json!({"width": 2049, "height": 1})).unwrap();
