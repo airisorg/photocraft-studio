@@ -21,8 +21,11 @@ USAGE:
   photocraft-cli run (<file> | --new <json>) --cmd <id> [--params <json>] [--cmd …] [--out <file>] [--format <ext>] [--quality <1-100>]
       Open a file, run engine commands in order, save the result. Each --params
       applies to the preceding --cmd. Prints each command's JSON result.
-  photocraft-cli batch --actions <actions.json> --in <dir> --out <dir> [--format <ext>] [--quality <1-100>]
-      Apply an action list ([{\"command\": id, \"params\": {…}}, …]) to every image in a directory.
+  photocraft-cli batch --actions <actions.json> --in <dir> --out <dir> [--format <ext>] [--quality <1-100>] [--in-place]
+      Apply an action list to every image in a directory. Steps are [id, params] pairs,
+      {\"command\": id, \"params\": {…}} objects or bare ids, as a recorded action or droplet stores them
+      (a list, or wrapped in {\"actions\": …}, {\"steps\": …} or a droplet). An --out folder that is the
+      --in folder is refused, as the results would replace the originals; --in-place allows it.
   photocraft-cli droplet <file.pcdroplet> <file-or-dir>… [--out <dir>]
       Run a droplet (File › Automate › Create Droplet) on images and folders.
   photocraft-cli commands [--json] [--filter <text>]
@@ -59,7 +62,7 @@ const SUBCOMMANDS: &[Subcommand] = &[
     Subcommand { name: "convert", values: &["--format", "--quality"], bare: &[], run: convert },
     Subcommand { name: "info", values: &[], bare: &["--compact"], run: |a, out, _| info(a, out) },
     Subcommand { name: "run", values: &["--new", "--cmd", "--params", "--out", "--format", "--quality"], bare: &[], run: run_cmds },
-    Subcommand { name: "batch", values: &["--actions", "--in", "--out", "--format", "--quality"], bare: &[], run: batch },
+    Subcommand { name: "batch", values: &["--actions", "--in", "--out", "--format", "--quality"], bare: &["--in-place"], run: batch },
     Subcommand { name: "droplet", values: &["--out"], bare: &[], run: droplet },
     Subcommand { name: "commands", values: &["--filter"], bare: &["--json"], run: |a, out, _| commands(a, out) },
     Subcommand {
@@ -304,6 +307,8 @@ fn batch(a: &Args, out: &mut dyn Write, err: &mut dyn Write) -> R {
     inputs.sort();
     let (mut ok, mut failed) = (0, 0);
     let mut written = photocraft_engine::file_cmds::OutputClaims::default();
+    // `--format .jpg` names outputs `<stem>.jpg`, as `--format jpg` does (#490).
+    let format = a.get("--format").map(|f| f.strip_prefix('.').unwrap_or(f));
     for input in &inputs {
         let ext = format.map(str::to_owned).or_else(|| input.extension().map(|e| e.to_string_lossy().into_owned())).unwrap_or_else(|| "png".into());
         let stem = input.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
