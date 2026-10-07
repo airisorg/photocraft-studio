@@ -779,6 +779,25 @@ class BrowserAcceptance(unittest.TestCase):
                 self.assertTrue(state['document']['canUndo'])
                 self.execute('edit.undo')
 
+    def test_31_phone_creation_uses_visible_native_field_and_footer(self):
+        self.page.set_viewport_size({'width':390,'height':844})
+        self.page.wait_for_timeout(250)
+        self.page.mouse.click(295,273)  # Workspace Create a design.
+        self.page.wait_for_timeout(400)
+        self.assertEqual(self.inspect()['dialogs'][0]['kind'],'NewDocument')
+        self.page.screenshot(path=str(ARTIFACTS/'phone-new-document-fields.png'))
+        self.page.mouse.dblclick(78,541)  # Native Width field, reached without protocol setters.
+        self.page.keyboard.press('ControlOrMeta+A')
+        self.page.keyboard.type('256')
+        self.page.keyboard.press('Tab')
+        self.page.wait_for_timeout(150)
+        self.page.mouse.click(323,794)  # Native Create footer, above the hosting credit.
+        self.page.wait_for_timeout(300)
+        state=self.inspect()
+        self.assertEqual(state['dialogs'],[])
+        self.assertEqual((state['document']['width'],state['document']['height']),(256,1080))
+        self.page.screenshot(path=str(ARTIFACTS/'phone-native-created.png'))
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)
