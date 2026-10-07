@@ -210,7 +210,7 @@ no MCP framing, no app start-up per command. Configure its file access with the 
 | Method | Params |
 |---|---|
 | `engine.execute` | `{command, params?, wait?}`: any engine command (`wait: false` starts a long one as a background job: `{job, pending}`) |
-| `jobs.list` / `jobs.cancel` | `{}` / `{job?}`: background jobs (applying finished ones); cancel one or all |
+| `jobs.list` / `jobs.cancel` | `{}` / `{job?}`: background jobs; cancel one or all. Every request (and MCP tool call) first applies the jobs that finished, so `doc.save`, `doc.inspect`, `doc.render` and `session.list` include a finished job's result without polling `jobs.list` first |
 | `engine.commands` | `{filter?}`: registry with params docs and enablement |
 | `session.list` | open documents and the active index |
 | `doc.open` / `doc.new` | `{path}` / `file.new` params |
@@ -245,8 +245,16 @@ The desktop and headless TCP listeners currently enforce:
 
 An oversized line, excess connection, unauthenticated request, or unauthorized filesystem path is
 rejected before command dispatch or file effects. The headless JSON-lines stdio server also
-enforces the request and reply byte ceilings. MCP tool results are checked as encoded JSON,
+enforces the request and reply byte ceilings; MCP over stdio (`photocraft-cli mcp`) does not
+cap request bytes, because the MCP SDK reads its own request lines (only MCP tool results are
+checked). A TCP connection is closed after an oversized
+line; on stdio an oversized or non-UTF-8 line gets one error reply (`id: null`), the rest of that
+line is skipped without being dispatched, and the session and its open documents keep serving. MCP tool results are checked as encoded JSON,
 including the text/image content envelope, and the MCP bridge bounds incoming desktop replies.
+A `batch` or `command_batch` stops at the first step whose result no longer fits the reply budget
+(that step may have run; later ones do not). MCP charges each result at its size escaped inside
+the text content, so the reply still lists `completed`, `failed` and every result so far, ending
+with the budget error.
 
 Headless automation previews (`doc.render` / MCP `doc_render_preview`) allow a maximum requested
 edge of 2048 pixels and a source document of at most 67,108,864 pixels. `maxSide: 0` (MCP

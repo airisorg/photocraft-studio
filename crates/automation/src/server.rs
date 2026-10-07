@@ -530,7 +530,7 @@ impl PhotocraftMcp {
         };
         let mut results = Vec::new();
         let mut failed = 0;
-        let mut reply_budget = BatchReplyBudget::default();
+        let mut reply_budget = BatchReplyBudget::escaped();
         for s in &steps {
             let response = b.call("engine.execute", s.clone()).await;
             let was_error = response.is_err();

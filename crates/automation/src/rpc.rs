@@ -152,7 +152,6 @@ impl Headless {
         let stop = p.get("stopOnError").and_then(Value::as_bool).unwrap_or(true);
         let mut results = Vec::with_capacity(steps.len());
         let mut failed = 0usize;
-        let mut reply_budget = BatchReplyBudget::default();
         for (i, s) in steps.iter().enumerate() {
             let params = s.get("params").cloned().unwrap_or(Value::Null);
             let r = if let Some(c) = str_of(s, "command") {
@@ -209,23 +208,19 @@ pub fn respond(h: &Mutex<Headless>, line: &str) -> Value {
     }
 }
 
-/// Serve JSON lines from `r` to `w` until EOF. Blank lines are ignored.
+/// Serve JSON lines from `r` to `w` until EOF. Blank lines are ignored. An over-long or non-UTF-8
+/// line gets an error reply and is skipped; the session (and its open documents) keeps serving.
 pub fn serve_lines(h: &Mutex<Headless>, mut r: impl BufRead, mut w: impl Write) -> std::io::Result<()> {
     let mut line = String::new();
     loop {
-        match read_bounded_line(&mut r, &mut line)? {
-            LineRead::Eof => return Ok(()),
-            LineRead::TooLong => {
-                write_reply(&mut w, &json!({"id": null, "ok": false, "error": format!("request exceeds {MAX_REQUEST_BYTES} bytes")}))?;
-                w.flush()?;
-                return Ok(());
-            }
-            LineRead::Line => {}
-        }
-        if line.trim().is_empty() {
-            continue;
-        }
-        let reply = respond(h, &line);
+        let (reply, unread_rest) = match read_bounded_line(&mut r, &mut line) {
+            Ok(LineRead::Eof) => return Ok(()),
+            Ok(LineRead::TooLong) => (json!({"id": null, "ok": false, "error": format!("request exceeds {MAX_REQUEST_BYTES} bytes")}), !line.ends_with('\n')),
+            Err(e) if e.kind() == std::io::ErrorKind::InvalidData => (json!({"id": null, "ok": false, "error": "request is not valid UTF-8"}), false),
+            Err(e) => return Err(e),
+            Ok(LineRead::Line) if line.trim().is_empty() => continue,
+            Ok(LineRead::Line) => (respond(h, &line), false),
+        };
         write_reply(&mut w, &reply)?;
         w.flush()?;
         if unread_rest {
@@ -457,6 +452,37 @@ mod tests {
         }
     }
 
+    /// Regression (#503): a finished `wait: false` job was only applied by a later command or
+    /// `jobs.list`, so save, inspect, render and `session.list` still saw the document without it.
+    #[test]
+    fn every_request_sees_a_finished_background_job() {
+        let dir = std::env::temp_dir().join(format!("pc-rpc-job-sync-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (before, after) = (dir.join("before.png"), dir.join("after.png"));
+        let mut h = Headless::trusted_local();
+        h.handle("doc.new", json!({"width": 64, "height": 48})).unwrap();
+        h.handle("engine.execute", json!({"command": "filter.noise.addNoise", "params": {"amount": 50}})).unwrap();
+        h.handle("doc.save", json!({"path": before.to_string_lossy()})).unwrap();
+        let render = |h: &mut Headless| h.handle("doc.render", json!({"maxSide": 0})).unwrap()["base64"].clone();
+        let unblurred = render(&mut h);
+        let revision = |h: &mut Headless| h.handle("session.list", json!({})).unwrap()["documents"][0]["revision"].clone();
+        let start = revision(&mut h);
+        h.handle("engine.execute", json!({"command": "filter.blur.gaussianBlur", "params": {"radius": 4}, "wait": false})).unwrap();
+        // Only reading requests from here on: no command and no `jobs.list`.
+        let t = std::time::Instant::now();
+        while revision(&mut h) == start {
+            assert!(t.elapsed().as_secs() < 60, "session.list never saw the finished job");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let history = h.handle("doc.inspect", json!({})).unwrap()["history"].clone();
+        assert_eq!(history.as_array().unwrap().last().unwrap(), "Gaussian Blur", "{history}");
+        h.handle("doc.save", json!({"path": after.to_string_lossy()})).unwrap();
+        let decode = |p: &std::path::Path| photocraft_codecs::decode(&std::fs::read(p).unwrap()).unwrap().to_rgba8();
+        assert_ne!(decode(&before), decode(&after), "the export holds the blur");
+        assert_ne!(render(&mut h), unblurred, "the preview holds the blur");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn automation_preview_rejects_oversized_full_size_and_numeric_wraparound() {
         let mut h = Headless::new();
@@ -481,6 +507,28 @@ mod tests {
         assert_eq!(reply["ok"], false);
         assert!(reply["error"].as_str().unwrap().contains("request exceeds"));
         assert!(h.lock().unwrap().session.documents().is_empty());
+    }
+
+    /// Regression (#505): an over-long or non-UTF-8 line ended the stdio session, losing every
+    /// open document. Now it gets one error reply, the rest of the line is skipped (never
+    /// dispatched), and the next request is served.
+    #[test]
+    fn stdio_skips_a_rejected_line_and_keeps_the_session() {
+        let h = Mutex::new(Headless::new());
+        let mut input = b"{\"id\":1,\"method\":\"doc.new\",\"params\":{\"width\":8,\"height\":8}}\n".to_vec();
+        input.extend(" ".repeat(MAX_REQUEST_BYTES + 1).into_bytes());
+        input.extend(b"{\"id\":9,\"method\":\"doc.close\"}\n");
+        input.extend(b"\xff\xfe{\"id\":8,\"method\":\"doc.close\"}\n");
+        input.extend(b"{\"id\":2,\"method\":\"session.list\"}\n");
+        let mut out = Vec::new();
+        serve_lines(&h, input.as_slice(), &mut out).unwrap();
+        let replies: Vec<Value> = String::from_utf8(out).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+        assert_eq!(replies.len(), 4, "{replies:?}");
+        assert_eq!(replies[0]["ok"], true);
+        assert!(replies[1]["error"].as_str().unwrap().contains("request exceeds"), "{}", replies[1]);
+        assert!(replies[2]["error"].as_str().unwrap().contains("not valid UTF-8"), "{}", replies[2]);
+        assert_eq!(replies[3]["id"], 2);
+        assert_eq!(replies[3]["result"]["documents"].as_array().unwrap().len(), 1, "the document stays open");
     }
 
     #[test]
