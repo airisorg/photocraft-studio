@@ -485,4 +485,39 @@ mod tests {
             assert!(err < 1e-5, "radius {r}: max error {err}");
         }
     }
+
+    #[test]
+    fn surface_blur_8bit_histogram_matches_the_direct_sum() {
+        // 8-bit levels with some fully transparent pixels, which the sum skips.
+        let src_rect = Rect::new(-14, -14, 40, 34);
+        let mut img = Image::new(src_rect, 4);
+        let mut s = 0x6c07_8965u32;
+        for px in img.data.as_chunks_mut::<4>().0 {
+            for v in px.iter_mut() {
+                s ^= s << 13;
+                s ^= s >> 17;
+                s ^= s << 5;
+                *v = (s % 256) as f32 / 255.0;
+            }
+            if s.is_multiple_of(7) {
+                px[3] = 0.0;
+            }
+        }
+        let ctx = Ctx { bounds: src_rect, mode: crate::ColorMode::Rgb, alpha: true };
+        // The output reaches the source edge, where samples read as transparent.
+        let out = Rect::new(-2, 0, 26, 20);
+        for (r, threshold) in [(1, 2.0), (4, 15.0), (12, 60.0), (12, 255.0)] {
+            let t = (threshold / 255.0) * 2.5;
+            let reach = ((t * 255.0f32).ceil() as usize).min(255);
+            let fast = surface_8bit(&img, out, &ctx, r, t, reach).expect("8-bit input");
+            let direct = surface_direct(&img, out, &ctx, r, t);
+            let err = direct.iter().zip(&fast).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+            assert!(err < 1e-5, "r {r} threshold {threshold}: max error {err}");
+        }
+        // Not 8-bit: the histogram declines and the direct sum is used.
+        // (0, 0) is inside every window above.
+        let i = (14 * src_rect.width() as usize + 14) * 4;
+        img.data[i] = 0.5 / 255.0;
+        assert!(surface_8bit(&img, out, &ctx, 4, 0.1, 26).is_none());
+    }
 }
