@@ -1,5 +1,6 @@
 //! Workspace presentation only; starter files are made by PhotoCraft's existing engine.
 use egui::{Align2, Color32, FontId, Pos2, Rect, RichText, Stroke, TextureHandle, Vec2};
+use photocraft_ui_egui::theme::{ThemeKind, Tokens};
 use std::collections::HashMap;
 
 pub const INK: Color32 = Color32::from_rgb(35, 32, 45);
@@ -27,16 +28,49 @@ pub const STARTERS: [Starter; 6] = [
 #[derive(Clone, Copy)]
 pub enum Action {
     New(u32, u32),
-    Open,
     Template(usize),
 }
 
 pub fn primary(label: &str) -> egui::Button<'_> {
-    egui::Button::new(RichText::new(label).size(14.).color(Color32::WHITE).strong()).fill(PURPLE).corner_radius(10)
+    let t = Tokens::for_kind(ThemeKind::StudioLight);
+    egui::Button::new(RichText::new(label).size(14.).color(t.primary_text).strong()).fill(t.primary_bg).corner_radius(t.radius_sm)
+}
+
+/// Keep cards readable at phone, tablet and ultrawide widths without overflowing a row.
+pub fn grid_columns(width: f32, minimum: f32, maximum: usize) -> usize {
+    (((width + 16.) / (minimum + 16.)).floor() as usize).clamp(1, maximum.max(1))
+}
+
+pub fn empty_message(filter: &str, searching: bool, signed_in: bool) -> (&'static str, &'static str) {
+    if searching {
+        return ("No matching projects", "Try another name or folder, or clear your search.");
+    }
+    if !signed_in {
+        return ("Your workspace starts here", "Start a design now. Sign in from your avatar to save and share projects.");
+    }
+    match filter {
+        "Trash" => ("Trash is empty", "Projects you move to Trash will appear here. You can restore them at any time."),
+        "Starred" => ("Keep your favorites close", "Open a project's menu and choose Star project to find it here."),
+        "Shared with me" => ("Create together", "Projects shared with your sign-in email will appear here."),
+        _ => ("Make your first project", "Create a design or open a file, then choose Save to cloud in the editor."),
+    }
+}
+
+pub fn project_matches(project: &serde_json::Value, filter: &str, search: &str) -> bool {
+    let trashed = project.get("trashed").and_then(serde_json::Value::as_bool) == Some(true);
+    let visible = match filter {
+        "Trash" => trashed,
+        "Starred" => !trashed && project.get("starred").and_then(serde_json::Value::as_bool) == Some(true),
+        "Shared with me" => !trashed && project.get("role").and_then(serde_json::Value::as_str).is_some_and(|r| r == "view" || r == "edit"),
+        _ => !trashed,
+    };
+    let text = |key| project.get(key).and_then(serde_json::Value::as_str).unwrap_or("");
+    visible && format!("{} {}", text("title"), text("folder")).to_lowercase().contains(&search.trim().to_lowercase())
 }
 
 /// One scale for the workspace's buttons, fields and navigation; editor density stays native.
 pub fn workspace_style(ui: &mut egui::Ui) {
+    *ui.visuals_mut() = egui::Visuals::light();
     let style = ui.style_mut();
     style.spacing.item_spacing = Vec2::new(10., 10.);
     style.spacing.button_padding = Vec2::new(14., 10.);
@@ -101,6 +135,9 @@ pub fn nav_button(ui: &mut egui::Ui, label: &str, selected: bool, index: usize) 
     if selected || response.hovered() {
         ui.painter().rect_filled(rect, 10., if selected { Color32::from_rgb(242, 236, 253) } else { PAPER });
     }
+    if response.has_focus() {
+        ui.painter().rect_stroke(rect, 10., Stroke::new(2., PURPLE), egui::StrokeKind::Inside);
+    }
     let origin = rect.min + Vec2::new(16., 13.);
     let stroke = Stroke::new(1.4, color);
     let line = |points: &[[f32; 2]]| {
@@ -162,10 +199,9 @@ fn card_image(painter: &egui::Painter, texture: &TextureHandle, rect: Rect, angl
     painter.add(egui::Shape::mesh(mesh));
 }
 
-pub fn hero(ui: &mut egui::Ui, textures: &HashMap<String, TextureHandle>) -> Option<Action> {
-    let mut action = None;
+pub fn hero(ui: &mut egui::Ui, textures: &HashMap<String, TextureHandle>) {
     let compact = ui.available_width() < 660.;
-    let height = if compact { 270. } else { 274. };
+    let height = if compact { 206. } else { 190. };
     let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), height), egui::Sense::hover());
     ui.painter().rect_filled(rect, 20., Color32::from_rgb(242, 236, 253));
     let text_width = if compact { rect.width() - 48. } else { rect.width() * 0.55 };
@@ -173,34 +209,24 @@ pub fn hero(ui: &mut egui::Ui, textures: &HashMap<String, TextureHandle>) -> Opt
     ui.scope_builder(egui::UiBuilder::new().max_rect(text_rect), |ui| {
         ui.label(RichText::new("A LITTLE SPACE. A LOT OF POSSIBILITY.").size(10.).strong().color(PURPLE));
         ui.add_space(13.);
-        ui.label(RichText::new("Good ideas deserve\na great canvas.").size(if compact { 31. } else { 40. }).strong().color(INK));
+        ui.label(RichText::new("Good ideas deserve\na great canvas.").size(if compact { 28. } else { 32. }).strong().color(INK));
         ui.add_space(10.);
         ui.label(RichText::new("From the first layer to the final detail. Make it yours.").size(13.).color(MUTED));
-        ui.add_space(20.);
-        ui.horizontal(|ui| {
-            if ui.add_sized([155., 39.], primary("+  Create a design")).clicked() {
-                action = Some(Action::New(1200, 900));
-            }
-            if ui.add_sized([118., 39.], egui::Button::new(RichText::new("Open a file ↗").color(INK)).fill(Color32::WHITE).corner_radius(10)).clicked() {
-                action = Some(Action::Open);
-            }
-        });
     });
     if !compact {
         let center = Pos2::new(rect.left() + rect.width() * 0.79, rect.center().y);
-        ui.painter().circle_filled(center, 110., Color32::from_rgb(226, 217, 248));
+        ui.painter().circle_filled(center, 78., Color32::from_rgb(226, 217, 248));
         if let Some(t) = textures.get("starter/sunday") {
-            card_image(ui.painter(), t, Rect::from_center_size(center + Vec2::new(-75., -8.), Vec2::new(130., 163.)), -0.17);
+            card_image(ui.painter(), t, Rect::from_center_size(center + Vec2::new(-54., -4.), Vec2::new(91., 114.)), -0.17);
         }
         if let Some(t) = textures.get("starter/noise") {
-            card_image(ui.painter(), t, Rect::from_center_size(center + Vec2::new(30., -4.), Vec2::new(146., 183.)), 0.12);
+            card_image(ui.painter(), t, Rect::from_center_size(center + Vec2::new(22., -4.), Vec2::new(102., 128.)), 0.12);
         }
-        let tag = Rect::from_center_size(center + Vec2::new(18., 104.), Vec2::new(154., 29.));
+        let tag = Rect::from_center_size(center + Vec2::new(18., 70.), Vec2::new(154., 29.));
         ui.painter().rect_filled(tag, 14., Color32::WHITE);
         ui.painter().text(tag.center(), Align2::CENTER_CENTER, "YOUR NEXT GREAT IDEA", FontId::proportional(9.), PURPLE);
     }
     ui.advance_cursor_after_rect(rect);
-    action
 }
 
 pub fn quick_sizes(ui: &mut egui::Ui) -> Option<Action> {
@@ -275,13 +301,7 @@ pub fn gallery(ui: &mut egui::Ui, textures: &HashMap<String, TextureHandle>, cat
             (category == "For you" || *category == s.category) && format!("{} {}", s.name, s.category).to_lowercase().contains(&search.to_lowercase())
         })
         .collect::<Vec<_>>();
-    let columns = if ui.available_width() < 500. {
-        2
-    } else if ui.available_width() < 1000. {
-        3
-    } else {
-        6
-    };
+    let columns = grid_columns(ui.available_width(), 160., 6);
     for row in items.chunks(columns) {
         ui.columns(columns, |uis| {
             for (i, (index, starter)) in row.iter().enumerate() {
@@ -299,20 +319,21 @@ pub fn gallery(ui: &mut egui::Ui, textures: &HashMap<String, TextureHandle>, cat
                 } else {
                     ui.painter().rect_filled(rect.shrink(15.), 3., starter.background);
                 }
-                if response.hovered() {
+                if response.hovered() || response.has_focus() {
                     ui.painter().rect_stroke(rect, 12., Stroke::new(2., PURPLE), egui::StrokeKind::Inside);
                     let badge = Rect::from_center_size(rect.center_bottom() - Vec2::new(0., 20.), Vec2::new(110., 26.));
                     ui.painter().rect_filled(badge, 13., Color32::WHITE);
                     ui.painter().text(badge.center(), Align2::CENTER_CENTER, "Use this template →", FontId::proportional(11.), INK);
                 }
+                response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Use {} template", starter.name)));
                 if response.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                     action = Some(Action::Template(*index));
                 }
                 ui.add_space(10.);
-                if ui.add(egui::Button::new(RichText::new(starter.name).size(13.).strong().color(INK)).frame(false)).clicked() {
+                if ui.add(egui::Label::new(RichText::new(starter.name).size(13.).strong().color(INK)).truncate().sense(egui::Sense::click())).clicked() {
                     action = Some(Action::Template(*index));
                 }
-                ui.label(RichText::new(format!("{} · {}", starter.category, starter.dimensions)).size(10.).color(MUTED));
+                ui.add(egui::Label::new(RichText::new(format!("{} · {}", starter.category, starter.dimensions)).size(12.).color(MUTED)).truncate());
             }
         });
         ui.add_space(24.);
@@ -321,4 +342,45 @@ pub fn gallery(ui: &mut egui::Ui, textures: &HashMap<String, TextureHandle>, cat
         ui.label(RichText::new("No designs match that search. Try another word or category.").color(MUTED));
     }
     action
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn project_grid_is_readable_at_phone_tablet_and_desktop_widths() {
+        for (width, expected) in [(354., 1), (732., 2), (1170., 4), (2200., 6)] {
+            let columns = grid_columns(width, 240., 6);
+            assert_eq!(columns, expected);
+            assert!((width - 16. * (columns - 1) as f32) / columns as f32 >= 240.);
+        }
+        assert_eq!(grid_columns(0., 240., 6), 1);
+        assert_eq!(grid_columns(f32::NAN, 240., 6), 1);
+    }
+
+    #[test]
+    fn project_filters_preserve_trash_and_role_boundaries() {
+        let own = json!({"title":"Summer café", "folder":"Brand", "role":"owner", "starred":true});
+        let shared = json!({"title":"Team poster", "role":"edit"});
+        let trashed = json!({"title":"Old draft", "role":"view", "trashed":true,"starred":true});
+        assert!(project_matches(&own, "Home", " CAFÉ "));
+        assert!(project_matches(&own, "Starred", "brand"));
+        assert!(!project_matches(&own, "Shared with me", ""));
+        assert!(project_matches(&shared, "Shared with me", "team"));
+        assert!(!project_matches(&trashed, "Shared with me", ""));
+        assert!(!project_matches(&trashed, "Starred", ""));
+        assert!(project_matches(&trashed, "Trash", "draft"));
+        assert!(!project_matches(&json!({}), "Shared with me", ""));
+    }
+
+    #[test]
+    fn empty_states_explain_the_current_view_and_search() {
+        assert_eq!(empty_message("Trash", false, true).0, "Trash is empty");
+        assert!(empty_message("Starred", false, true).1.contains("Star project"));
+        assert!(empty_message("Shared with me", false, true).1.contains("sign-in email"));
+        assert_eq!(empty_message("Trash", true, true).0, "No matching projects");
+        assert!(empty_message("Home", false, false).1.contains("avatar"));
+    }
 }
