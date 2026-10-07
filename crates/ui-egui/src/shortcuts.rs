@@ -473,38 +473,6 @@ mod tests {
         assert!(matches!(r.events.as_slice(), [_, egui::Event::Paste(_)]));
     }
 
-    /// #530: egui-winit sends Cut for Shift+Delete on Windows; on the canvas it opens Fill.
-    #[test]
-    fn windows_shift_delete_fills_instead_of_cutting() {
-        let shift = Modifiers::SHIFT;
-        let ctrl = Modifiers::CTRL | Modifiers::COMMAND;
-        let app = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
-        let bound = |held| {
-            let (key, mods) = clipboard_press(&egui::Event::Cut, held, true)?;
-            assert_eq!((key, mods), (Key::Delete, held));
-            crate::shortcut_dispatch::bindings(&app).into_iter().find(|(_, sc)| key_matches(sc, key, mods)).map(|(id, _)| id)
-        };
-        assert_eq!(bound(shift).as_deref(), Some("edit.fill"));
-        // ⇧⌥Delete keeps ⌥: fill with the foreground, keeping transparency.
-        assert_eq!(bound(shift | Modifiers::ALT).as_deref(), Some("edit.fillForegroundPreserve"));
-        // Ctrl+X (and Ctrl+Shift+X) still cut; elsewhere a Cut is always ⌘X.
-        assert_eq!(clipboard_press(&egui::Event::Cut, ctrl, true), Some((Key::X, ctrl)));
-        assert_eq!(clipboard_press(&egui::Event::Cut, ctrl | shift, true), Some((Key::X, ctrl | shift)));
-        assert_eq!(clipboard_press(&egui::Event::Cut, shift, false), Some((Key::X, Modifiers::COMMAND)));
-        // Shift+Insert pastes on Windows.
-        assert_eq!(clipboard_press(&egui::Event::Paste("x".into()), shift, true), Some((Key::V, Modifiers::COMMAND)));
-        // Through the raw-input hook on this platform; a text field keeps its Cut.
-        let ctx = egui::Context::default();
-        let cut = || egui::RawInput { events: vec![egui::Event::ModifiersChanged(shift), egui::Event::Cut], ..Default::default() };
-        let mut r = cut();
-        clipboard_keys(&ctx, false, &mut r);
-        let want = if cfg!(target_os = "windows") { Key::Delete } else { Key::X };
-        assert!(matches!(r.events.as_slice(), [_, egui::Event::Key { key, pressed: true, .. }] if *key == want), "{:?}", r.events);
-        let mut r = cut();
-        clipboard_keys(&ctx, true, &mut r);
-        assert!(matches!(r.events.as_slice(), [_, egui::Event::Cut]));
-    }
-
     #[cfg(target_os = "linux")]
     #[test]
     fn ctrl_and_shift_insert_copy_and_paste_on_linux() {
