@@ -71,6 +71,11 @@ jobs:
           cargo run --locked -p photocraft-cloud --example fixture -- "$PHOTOCRAFT_FIXTURE"
           python tests/web/test_auth.py
           python tests/web/test_startup.py
+      - name: Verify transaction-pool backend switching
+        env:
+          PUBLIC_DIR: dist/web
+        run: |
+          python tests/web/probe_transaction_pool.py --binary target/debug/photocraft-cloud --output test-results/transaction-pool.json --expect-success --api-suite
       - name: Start disposable service and run acceptance suites
         env:
           DATABASE_URL: postgresql://photocraft_test@127.0.0.1:55438/postgres

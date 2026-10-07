@@ -57,9 +57,32 @@ impl IntoResponse for ApiError {
     }
 }
 impl From<sqlx::Error> for ApiError {
-    fn from(_: sqlx::Error) -> Self {
+    fn from(error: sqlx::Error) -> Self {
+        eprintln!("PhotoCraft cloud request failed: {}", sql_error_diagnostic(&error));
         Self(StatusCode::SERVICE_UNAVAILABLE, "Cloud storage is temporarily unavailable. Your local document is unchanged.".into())
     }
+}
+// Error text can contain SQL, values or connection credentials. Log only fixed categories
+// and a validated SQLSTATE; never format the error or its source chain.
+fn sql_error_diagnostic(error: &sqlx::Error) -> String {
+    let category = match error {
+        sqlx::Error::Database(_) => "database",
+        sqlx::Error::PoolTimedOut => "connection_timeout",
+        sqlx::Error::PoolClosed => "pool_closed",
+        sqlx::Error::Io(_) => "connection_unavailable",
+        sqlx::Error::Tls(_) => "certificate_verification",
+        sqlx::Error::Protocol(_) => "protocol",
+        sqlx::Error::Configuration(_) => "configuration",
+        sqlx::Error::RowNotFound => "row_not_found",
+        sqlx::Error::Decode(_) | sqlx::Error::ColumnDecode { .. } => "decode",
+        sqlx::Error::Encode(_) => "encode",
+        _ => "database_client",
+    };
+    let code = error.as_database_error().and_then(|error| error.code());
+    format!("category={category} sqlstate={}", safe_sqlstate(code.as_deref()).unwrap_or("none"))
+}
+fn safe_sqlstate(code: Option<&str>) -> Option<&str> {
+    code.filter(|code| code.len() == 5 && code.bytes().all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit()))
 }
 type Result<T> = std::result::Result<T, ApiError>;
 fn bad(s: &str) -> ApiError {
@@ -76,6 +99,8 @@ fn token() -> String {
 }
 // A zero-sized SQLx cache still creates named statements unless persistence is false.
 // Transaction poolers can assign another PostgreSQL connection after each transaction.
+// SQLx also separates Parse and Bind with Sync: every query below must run inside an
+// explicit transaction so even its unnamed statement stays on the same backend.
 fn query(sql: &str) -> sqlx::query::Query<'_, sqlx::Postgres, sqlx::postgres::PgArguments> {
     sqlx::query(sql).persistent(false)
 }
@@ -181,17 +206,21 @@ async fn account(s: &App, h: &HeaderMap) -> Result<Account> {
         return Err(ApiError(StatusCode::UNAUTHORIZED, "Session expired".into()));
     }
     // Each serverless worker must initialize storage on its first authenticated request.
+    let mut tx = ready_db(s).await?.begin().await?;
     let r =
         query("SELECT a.id,a.email,a.name FROM photocraft.sessions s JOIN photocraft.accounts a ON a.id=s.account_id WHERE s.hash=$1 AND s.expires_at>now()")
             .bind(hash(t))
-            .fetch_optional(ready_db(s).await?)
+            .fetch_optional(&mut *tx)
             .await?
             .ok_or(ApiError(StatusCode::UNAUTHORIZED, "Session expired. Sign in again.".into()))?;
+    tx.commit().await?;
     Ok(Account { id: r.get("id"), email: r.get("email"), name: r.get("name") })
 }
 async fn role(s: &App, a: &Account, id: Uuid, write: bool, owner: bool) -> Result<String> {
+    let mut tx = db(s)?.begin().await?;
     let r=query("SELECT CASE WHEN p.owner_id=$2 THEN 'owner' ELSE m.role END AS role FROM photocraft.projects p LEFT JOIN photocraft.members m ON m.project_id=p.id AND m.email=$3 WHERE p.id=$1")
-        .bind(id).bind(a.id).bind(&a.email).fetch_optional(db(s)?).await?.ok_or_else(forbidden)?;
+        .bind(id).bind(a.id).bind(&a.email).fetch_optional(&mut *tx).await?.ok_or_else(forbidden)?;
+    tx.commit().await?;
     let r = r.get::<Option<String>, _>("role").ok_or_else(forbidden)?;
     if (write && r == "view") || (owner && r != "owner") {
         return Err(forbidden());
@@ -381,7 +410,9 @@ async fn finish_sign_in(s: &App, t: &str, ty: &str) -> Result<Response> {
 }
 async fn logout(State(s): State<App>, h: HeaderMap) -> Result<Response> {
     if let Some(t) = cookie(&h, "pc_session") {
-        query("DELETE FROM photocraft.sessions WHERE hash=$1").bind(hash(t)).execute(ready_db(&s).await?).await?;
+        let mut tx = ready_db(&s).await?.begin().await?;
+        query("DELETE FROM photocraft.sessions WHERE hash=$1").bind(hash(t)).execute(&mut *tx).await?;
+        tx.commit().await?;
     }
     let mut r = Json(json!({"ok":true})).into_response();
     r.headers_mut().insert(header::SET_COOKIE, session_cookie(&s, "pc_session", "", 0)?);
@@ -391,10 +422,12 @@ async fn logout(State(s): State<App>, h: HeaderMap) -> Result<Response> {
 const PROJECT_FIELDS: &str = "json_build_object('id',p.id,'title',p.title,'folder',p.folder,'starred',p.starred,'trashed',p.trashed,'revision',p.revision,'width',p.width,'height',p.height,'updatedAt',p.updated_at,'role',CASE WHEN p.owner_id=$2 THEN 'owner' ELSE m.role END)";
 async fn projects(State(s): State<App>, h: HeaderMap) -> Result<Json<Value>> {
     let a = account(&s, &h).await?;
+    let mut tx = db(&s)?.begin().await?;
     let q = format!(
         "SELECT {PROJECT_FIELDS} AS v FROM photocraft.projects p LEFT JOIN photocraft.members m ON m.project_id=p.id AND m.email=$1 WHERE p.owner_id=$2 OR m.email=$1 ORDER BY p.updated_at DESC LIMIT 500"
     );
-    let rows = query(&q).bind(&a.email).bind(a.id).fetch_all(db(&s)?).await?;
+    let rows = query(&q).bind(&a.email).bind(a.id).fetch_all(&mut *tx).await?;
+    tx.commit().await?;
     Ok(Json(json!(rows.iter().map(|r| r.get::<Value, _>("v")).collect::<Vec<_>>())))
 }
 #[derive(Deserialize)]
@@ -418,7 +451,9 @@ async fn create_project(State(s): State<App>, h: HeaderMap, Json(v): Json<NewPro
 async fn project(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>) -> Result<Json<Value>> {
     let a = account(&s, &h).await?;
     let r = role(&s, &a, id, false, false).await?;
-    let p = query("SELECT title,revision,width,height FROM photocraft.projects WHERE id=$1").bind(id).fetch_one(db(&s)?).await?;
+    let mut tx = db(&s)?.begin().await?;
+    let p = query("SELECT title,revision,width,height FROM photocraft.projects WHERE id=$1").bind(id).fetch_one(&mut *tx).await?;
+    tx.commit().await?;
     let rev: i64 = p.get("revision");
     let content = version_meta(db(&s)?, id, rev).await?;
     Ok(Json(
@@ -437,21 +472,41 @@ async fn update_project(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>
     role(&s, &a, id, true, true).await?;
     let title = v.title.as_deref().map(|v| text(v, 160)).transpose()?;
     let folder = v.folder.map(|f| if f.is_empty() { Ok(f) } else { text(&f, 100) }).transpose()?;
-    query("UPDATE photocraft.projects SET title=coalesce($2,title),folder=coalesce($3,folder),starred=coalesce($4,starred),trashed=coalesce($5,trashed),updated_at=now() WHERE id=$1").bind(id).bind(title).bind(folder).bind(v.starred).bind(v.trashed).execute(db(&s)?).await?;
+    let mut tx = db(&s)?.begin().await?;
+    query("UPDATE photocraft.projects SET title=coalesce($2,title),folder=coalesce($3,folder),starred=coalesce($4,starred),trashed=coalesce($5,trashed),updated_at=now() WHERE id=$1").bind(id).bind(title).bind(folder).bind(v.starred).bind(v.trashed).execute(&mut *tx).await?;
+    tx.commit().await?;
     Ok(Json(json!({"ok":true})))
 }
-async fn versions(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>) -> Result<Json<Value>> {
+#[derive(Deserialize)]
+struct VersionQuery {
+    sha256: Option<String>,
+    after_revision: Option<i64>,
+}
+async fn versions(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>, Query(q): Query<VersionQuery>) -> Result<Json<Value>> {
     let a = account(&s, &h).await?;
     role(&s, &a, id, false, false).await?;
-    let rows=query("SELECT json_build_object('revision',v.revision,'title',v.title,'author',a.name,'createdAt',v.created_at,'bytes',octet_length(v.data),'sha256',v.sha256) AS v FROM photocraft.versions v JOIN photocraft.accounts a ON a.id=v.author_id WHERE v.project_id=$1 ORDER BY v.revision DESC LIMIT 200").bind(id).fetch_all(db(&s)?).await?;
+    if q.sha256.is_some() != q.after_revision.is_some()
+        || q.sha256.as_ref().is_some_and(|value| value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        || q.after_revision.is_some_and(|revision| revision < 0)
+    {
+        return Err(bad("Provide a valid SHA-256 checksum and a nonnegative base revision together"));
+    }
+    // A lost commit acknowledgment can outlive the ordinary history page. Match
+    // persisted bytes before limiting results; this lookup never changes a revision.
+    let mut tx = db(&s)?.begin().await?;
+    let rows=query("SELECT json_build_object('revision',v.revision,'title',v.title,'author',a.name,'createdAt',v.created_at,'bytes',octet_length(v.data),'sha256',v.sha256) AS v FROM photocraft.versions v JOIN photocraft.accounts a ON a.id=v.author_id WHERE v.project_id=$1 AND ($2::text IS NULL OR v.sha256=$2) AND ($3::bigint IS NULL OR v.revision>$3) ORDER BY v.revision DESC LIMIT 200")
+        .bind(id).bind(q.sha256.map(|value| value.to_ascii_lowercase())).bind(q.after_revision).fetch_all(&mut *tx).await?;
+    tx.commit().await?;
     Ok(Json(json!(rows.iter().map(|r| r.get::<Value, _>("v")).collect::<Vec<_>>())))
 }
 async fn version_meta(pool: &PgPool, id: Uuid, rev: i64) -> Result<Value> {
+    let mut tx = pool.begin().await?;
     let r = query("SELECT octet_length(data) AS bytes,sha256 FROM photocraft.versions WHERE project_id=$1 AND revision=$2")
         .bind(id)
         .bind(rev)
-        .fetch_optional(pool)
+        .fetch_optional(&mut *tx)
         .await?;
+    tx.commit().await?;
     Ok(r.map(|r| json!({"bytes":r.get::<i32,_>("bytes"),"sha256":r.get::<String,_>("sha256")})).unwrap_or(Value::Null))
 }
 #[derive(Deserialize)]
@@ -464,15 +519,17 @@ async fn file_part(pool: &PgPool, id: Uuid, q: ContentQuery) -> Result<Response>
     if part >= 200 {
         return Err(bad("Invalid chunk number"));
     }
-    let rev = if let Some(r) = q.revision { r } else { scalar("SELECT revision FROM photocraft.projects WHERE id=$1").bind(id).fetch_one(pool).await? };
+    let mut tx = pool.begin().await?;
+    let rev = if let Some(r) = q.revision { r } else { scalar("SELECT revision FROM photocraft.projects WHERE id=$1").bind(id).fetch_one(&mut *tx).await? };
     let r = query("SELECT substring(data from $3 for $4) AS data,octet_length(data) AS bytes FROM photocraft.versions WHERE project_id=$1 AND revision=$2")
         .bind(id)
         .bind(rev)
         .bind((part * CHUNK + 1) as i32)
         .bind(CHUNK as i32)
-        .fetch_optional(pool)
+        .fetch_optional(&mut *tx)
         .await?
         .ok_or_else(forbidden)?;
+    tx.commit().await?;
     if part * CHUNK >= r.get::<i32, _>("bytes") as usize {
         return Err(bad("Chunk is beyond the file"));
     }
@@ -486,7 +543,9 @@ async fn content(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>, Query
 async fn thumbnail(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>) -> Result<Response> {
     let a = account(&s, &h).await?;
     role(&s, &a, id, false, false).await?;
-    let v: Option<Vec<u8>> = scalar("SELECT thumbnail FROM photocraft.projects WHERE id=$1").bind(id).fetch_one(db(&s)?).await?;
+    let mut tx = db(&s)?.begin().await?;
+    let v: Option<Vec<u8>> = scalar("SELECT thumbnail FROM photocraft.projects WHERE id=$1").bind(id).fetch_one(&mut *tx).await?;
+    tx.commit().await?;
     Ok(([(header::CONTENT_TYPE, "image/png")], v.ok_or_else(forbidden)?).into_response())
 }
 async fn put_thumbnail(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>, b: Bytes) -> Result<Json<Value>> {
@@ -500,7 +559,9 @@ async fn put_thumbnail(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>,
     {
         return Err(bad("Invalid PNG preview"));
     }
-    query("UPDATE photocraft.projects SET thumbnail=$2 WHERE id=$1").bind(id).bind(b.to_vec()).execute(db(&s)?).await?;
+    let mut tx = db(&s)?.begin().await?;
+    query("UPDATE photocraft.projects SET thumbnail=$2 WHERE id=$1").bind(id).bind(b.to_vec()).execute(&mut *tx).await?;
+    tx.commit().await?;
     Ok(Json(json!({"ok":true})))
 }
 async fn duplicate(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>) -> Result<Json<Value>> {
@@ -588,24 +649,29 @@ async fn begin_upload(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>, 
 }
 async fn upload_chunk(State(s): State<App>, h: HeaderMap, Path((id, part)): Path<(Uuid, i32)>, b: Bytes) -> Result<Json<Value>> {
     let a = account(&s, &h).await?;
+    let mut tx = db(&s)?.begin().await?;
     let r = query("SELECT project_id,parts,bytes FROM photocraft.uploads WHERE id=$1 AND author_id=$2 AND created_at>now()-interval '1 hour'")
         .bind(id)
         .bind(a.id)
-        .fetch_optional(db(&s)?)
+        .fetch_optional(&mut *tx)
         .await?
         .ok_or_else(forbidden)?;
+    // Release this connection before role() acquires its own short transaction.
+    tx.commit().await?;
     role(&s, &a, r.get("project_id"), true, false).await?;
     let parts: i32 = r.get("parts");
     let size: i64 = r.get("bytes");
     if part < 0 || part >= parts || b.len() != if part == parts - 1 { size as usize - (part as usize) * CHUNK } else { CHUNK } {
         return Err(bad("Chunk does not match the declared upload"));
     }
+    let mut tx = db(&s)?.begin().await?;
     query("INSERT INTO photocraft.chunks(upload_id,part,data) VALUES($1,$2,$3) ON CONFLICT(upload_id,part) DO UPDATE SET data=EXCLUDED.data")
         .bind(id)
         .bind(part)
         .bind(b.to_vec())
-        .execute(db(&s)?)
+        .execute(&mut *tx)
         .await?;
+    tx.commit().await?;
     Ok(Json(json!({"ok":true})))
 }
 async fn commit_upload(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>) -> Result<Json<Value>> {
@@ -694,7 +760,9 @@ async fn commit_upload(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>)
 }
 async fn cancel_upload(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>) -> Result<Json<Value>> {
     let a = account(&s, &h).await?;
-    let deleted = query("DELETE FROM photocraft.uploads WHERE id=$1 AND author_id=$2").bind(id).bind(a.id).execute(db(&s)?).await?.rows_affected();
+    let mut tx = db(&s)?.begin().await?;
+    let deleted = query("DELETE FROM photocraft.uploads WHERE id=$1 AND author_id=$2").bind(id).bind(a.id).execute(&mut *tx).await?.rows_affected();
+    tx.commit().await?;
     if deleted == 0 {
         return Err(forbidden());
     }
@@ -703,7 +771,9 @@ async fn cancel_upload(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>)
 async fn members(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>) -> Result<Json<Value>> {
     let a = account(&s, &h).await?;
     role(&s, &a, id, false, true).await?;
-    let rows = query("SELECT m.email,m.role,EXISTS(SELECT 1 FROM photocraft.accounts a WHERE a.email=m.email) AS joined,(SELECT status FROM photocraft.invitation_deliveries d WHERE d.project_id=m.project_id AND d.email=m.email ORDER BY created_at DESC LIMIT 1) AS delivery FROM photocraft.members m WHERE m.project_id=$1 ORDER BY m.email").bind(id).fetch_all(db(&s)?).await?;
+    let mut tx = db(&s)?.begin().await?;
+    let rows = query("SELECT m.email,m.role,EXISTS(SELECT 1 FROM photocraft.accounts a WHERE a.email=m.email) AS joined,(SELECT status FROM photocraft.invitation_deliveries d WHERE d.project_id=m.project_id AND d.email=m.email ORDER BY created_at DESC LIMIT 1) AS delivery FROM photocraft.members m WHERE m.project_id=$1 ORDER BY m.email").bind(id).fetch_all(&mut *tx).await?;
+    tx.commit().await?;
     Ok(Json(json!(rows.iter().map(|r| json!({"email":r.get::<String,_>("email"),"role":r.get::<String,_>("role"),"joined":r.get::<bool,_>("joined"),"delivery":r.get::<Option<String>,_>("delivery")})).collect::<Vec<_>>())))
 }
 #[derive(Deserialize)]
@@ -718,16 +788,18 @@ async fn set_member(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>, Js
     if !email.contains('@') || email.contains(char::is_whitespace) || !matches!(v.role.as_str(), "view" | "edit" | "remove") {
         return Err(bad("Enter a valid email and access role"));
     }
+    let mut tx = db(&s)?.begin().await?;
     if v.role == "remove" {
-        query("DELETE FROM photocraft.members WHERE project_id=$1 AND email=$2").bind(id).bind(email).execute(db(&s)?).await?;
+        query("DELETE FROM photocraft.members WHERE project_id=$1 AND email=$2").bind(id).bind(email).execute(&mut *tx).await?;
     } else {
         query("INSERT INTO photocraft.members(project_id,email,role) VALUES($1,$2,$3) ON CONFLICT(project_id,email) DO UPDATE SET role=EXCLUDED.role")
             .bind(id)
             .bind(email)
             .bind(v.role)
-            .execute(db(&s)?)
+            .execute(&mut *tx)
             .await?;
     }
+    tx.commit().await?;
     Ok(Json(json!({"ok":true})))
 }
 async fn create_share(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>) -> Result<Json<Value>> {
@@ -743,22 +815,28 @@ async fn create_share(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>) 
 async fn revoke_shares(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>) -> Result<Json<Value>> {
     let a = account(&s, &h).await?;
     role(&s, &a, id, true, true).await?;
-    query("DELETE FROM photocraft.shares WHERE project_id=$1").bind(id).execute(db(&s)?).await?;
+    let mut tx = db(&s)?.begin().await?;
+    query("DELETE FROM photocraft.shares WHERE project_id=$1").bind(id).execute(&mut *tx).await?;
+    tx.commit().await?;
     Ok(Json(json!({"ok":true})))
 }
 async fn shared_id(s: &App, key: &str) -> Result<Uuid> {
     if key.len() != 64 {
         return Err(forbidden());
     }
-    scalar("SELECT p.id FROM photocraft.shares s JOIN photocraft.projects p ON p.id=s.project_id WHERE s.hash=$1 AND NOT p.trashed")
+    let mut tx = ready_db(s).await?.begin().await?;
+    let id = scalar("SELECT p.id FROM photocraft.shares s JOIN photocraft.projects p ON p.id=s.project_id WHERE s.hash=$1 AND NOT p.trashed")
         .bind(hash(key))
-        .fetch_optional(ready_db(s).await?)
-        .await?
-        .ok_or_else(forbidden)
+        .fetch_optional(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    id.ok_or_else(forbidden)
 }
 async fn shared_project(State(s): State<App>, Path(key): Path<String>) -> Result<Json<Value>> {
     let id = shared_id(&s, &key).await?;
-    let r = query("SELECT title,revision,width,height FROM photocraft.projects WHERE id=$1").bind(id).fetch_one(db(&s)?).await?;
+    let mut tx = db(&s)?.begin().await?;
+    let r = query("SELECT title,revision,width,height FROM photocraft.projects WHERE id=$1").bind(id).fetch_one(&mut *tx).await?;
+    tx.commit().await?;
     let revision: i64 = r.get("revision");
     Ok(Json(
         json!({"id":id,"title":r.get::<String,_>("title"),"revision":revision,"width":r.get::<i32,_>("width"),"height":r.get::<i32,_>("height"),"role":"view","content":version_meta(db(&s)?,id,revision).await?}),
@@ -772,7 +850,9 @@ async fn shared_content(State(s): State<App>, Path(key): Path<String>, Query(mut
 async fn comments(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>) -> Result<Json<Value>> {
     let a = account(&s, &h).await?;
     role(&s, &a, id, false, false).await?;
-    let rows=query("SELECT json_build_object('id',c.id,'body',c.body,'resolved',c.resolved,'author',a.name,'createdAt',c.created_at) AS v FROM photocraft.comments c JOIN photocraft.accounts a ON a.id=c.author_id WHERE project_id=$1 ORDER BY c.created_at DESC LIMIT 200").bind(id).fetch_all(db(&s)?).await?;
+    let mut tx = db(&s)?.begin().await?;
+    let rows=query("SELECT json_build_object('id',c.id,'body',c.body,'resolved',c.resolved,'author',a.name,'createdAt',c.created_at) AS v FROM photocraft.comments c JOIN photocraft.accounts a ON a.id=c.author_id WHERE project_id=$1 ORDER BY c.created_at DESC LIMIT 200").bind(id).fetch_all(&mut *tx).await?;
+    tx.commit().await?;
     Ok(Json(json!(rows.iter().map(|r| r.get::<Value, _>("v")).collect::<Vec<_>>())))
 }
 #[derive(Deserialize)]
@@ -783,7 +863,8 @@ async fn add_comment(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>, J
     let a = account(&s, &h).await?;
     role(&s, &a, id, false, false).await?;
     let body = text(&v.body, 4000)?;
-    let n: i64 = scalar("SELECT count(*) FROM photocraft.comments WHERE project_id=$1").bind(id).fetch_one(db(&s)?).await?;
+    let mut tx = db(&s)?.begin().await?;
+    let n: i64 = scalar("SELECT count(*) FROM photocraft.comments WHERE project_id=$1").bind(id).fetch_one(&mut *tx).await?;
     if n >= 1000 {
         return Err(bad("This project has reached 1,000 comments"));
     }
@@ -793,8 +874,9 @@ async fn add_comment(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>, J
         .bind(id)
         .bind(a.id)
         .bind(body)
-        .execute(db(&s)?)
+        .execute(&mut *tx)
         .await?;
+    tx.commit().await?;
     Ok(Json(json!({"id":cid})))
 }
 #[derive(Deserialize)]
@@ -804,13 +886,15 @@ struct Resolve {
 async fn resolve_comment(State(s): State<App>, h: HeaderMap, Path((id, cid)): Path<(Uuid, Uuid)>, Json(v): Json<Resolve>) -> Result<Json<Value>> {
     let a = account(&s, &h).await?;
     role(&s, &a, id, true, false).await?;
+    let mut tx = db(&s)?.begin().await?;
     let n = query("UPDATE photocraft.comments SET resolved=$3 WHERE project_id=$1 AND id=$2")
         .bind(id)
         .bind(cid)
         .bind(v.resolved)
-        .execute(db(&s)?)
+        .execute(&mut *tx)
         .await?
         .rows_affected();
+    tx.commit().await?;
     if n != 1 {
         return Err(forbidden());
     }
@@ -819,19 +903,44 @@ async fn resolve_comment(State(s): State<App>, h: HeaderMap, Path((id, cid)): Pa
 async fn presence(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>) -> Result<Json<Value>> {
     let a = account(&s, &h).await?;
     let access = role(&s, &a, id, false, false).await?;
+    let mut tx = db(&s)?.begin().await?;
     query("INSERT INTO photocraft.presence(project_id,account_id) VALUES($1,$2) ON CONFLICT(project_id,account_id) DO UPDATE SET seen_at=now()")
         .bind(id)
         .bind(a.id)
-        .execute(db(&s)?)
+        .execute(&mut *tx)
         .await?;
-    let rows=query("SELECT a.name FROM photocraft.presence p JOIN photocraft.accounts a ON a.id=p.account_id WHERE p.project_id=$1 AND p.seen_at>now()-interval '30 seconds' ORDER BY a.name LIMIT 50").bind(id).fetch_all(db(&s)?).await?;
-    let revision: i64 = scalar("SELECT revision FROM photocraft.projects WHERE id=$1").bind(id).fetch_one(db(&s)?).await?;
+    let rows=query("SELECT a.name FROM photocraft.presence p JOIN photocraft.accounts a ON a.id=p.account_id WHERE p.project_id=$1 AND p.seen_at>now()-interval '30 seconds' ORDER BY a.name LIMIT 50").bind(id).fetch_all(&mut *tx).await?;
+    let revision: i64 = scalar("SELECT revision FROM photocraft.projects WHERE id=$1").bind(id).fetch_one(&mut *tx).await?;
+    tx.commit().await?;
     Ok(Json(json!({"people":rows.iter().map(|r|r.get::<String,_>("name")).collect::<Vec<_>>(),"revision":revision,"role":access})))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn sql_diagnostics_never_format_error_details() {
+        let secret = "postgresql://user:private-token@host/db; SELECT private_email";
+        let errors = [
+            (sqlx::Error::Protocol(secret.into()), "protocol"),
+            (sqlx::Error::Io(std::io::Error::other(secret)), "connection_unavailable"),
+            (sqlx::Error::Configuration(Box::new(std::io::Error::other(secret))), "configuration"),
+            (sqlx::Error::ColumnDecode { index: secret.into(), source: Box::new(std::io::Error::other(secret)) }, "decode"),
+        ];
+        for (error, category) in errors {
+            assert_eq!(sql_error_diagnostic(&error), format!("category={category} sqlstate=none"));
+            let response = ApiError::from(error);
+            assert_eq!(response.0, StatusCode::SERVICE_UNAVAILABLE);
+            assert_eq!(response.1, "Cloud storage is temporarily unavailable. Your local document is unchanged.");
+        }
+        for code in ["26000", "42P05", "53300", "08006"] {
+            assert_eq!(safe_sqlstate(Some(code)), Some(code));
+        }
+        for code in ["", "26000\nprivate-token", "ABCDE:private-token", "42p05", "Ａ2345", "1234", "123456"] {
+            assert_eq!(safe_sqlstate(Some(code)), None);
+        }
+        assert_eq!(safe_sqlstate(None), None);
+    }
     #[test]
     fn bounds_and_unicode() {
         assert_eq!(text("  Café  ", 5).ok().as_deref(), Some("Café"));

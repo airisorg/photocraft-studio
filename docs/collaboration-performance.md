@@ -142,3 +142,82 @@ current 3.5-second autosave delay followed by 1.5-second revision polling. They 
 tiny-document, two-account, contended local run. They are not hosted latency, a maximum
 collaborator count, evidence of remote paint timing, or a promise for larger files. The ten
 samples' p95/p99 are their maximum. No transport or runtime optimization was applied.
+
+## Transaction compatibility fix: matched workload — 2026-10-07
+
+The service now wraps formerly unprotected SQL query groups in short explicit transactions.
+This keeps SQLx's separate unnamed Parse/Sync and Bind/Execute exchanges on one PostgreSQL
+backend when the connection passes through a transaction pool. Parameters remain bound,
+existing atomic writes retain their transaction boundaries, and every successful mutation
+awaits commit. None of the added transactions spans invitation delivery or another external
+HTTP request; the preexisting sign-in verification transaction retains its original scope.
+This is a correctness fix, not an optimization or a confirmed explanation of the hosted 503.
+
+Correctness and timing used separate paths. The local wire fixture
+`tests/web/probe_transaction_pool.py` forces a fresh backend after each completed idle
+protocol batch. The frozen previous binary returned HTTP 503 and SQLSTATE `26000` for both
+`/api/me` and `/api/projects`. The fixed binary passed all 38 API tests through 2,262 backend
+swaps, with zero idle Parse gaps, named statements, or SQLSTATE errors. This covers normal
+create, native upload/commit/reopen, Trash/Restore, sharing, authorization, and failure cases;
+it is a protocol regression fixture, not a Supavisor emulator or hosted failure diagnosis.
+Its timings are excluded from the tables below.
+
+The normal-loopback HTTP harness ran the same bounded workload sequentially against frozen
+before/after debug binaries, without that proxy. Both used the same macOS 26.5.1 ARM64 host,
+12 logical CPUs, Python 3.14.3, PostgreSQL instance, fixtures, warmups, and 10 measured rounds.
+The before run was 22:22:33–22:23:24 UTC; the after run was 22:23:24–22:24:15 UTC.
+Browser diagnostics had closed, but frontend build work and other shared-host activity could
+contend. Load averages show **strong, changing host contention**:
+
+| Run boundary | 1-minute load | 5-minute load | 15-minute load |
+|---|---:|---:|---:|
+| Before start | 44.69 | 31.26 | 25.97 |
+| Before end / after start | 31.23 | 29.56 | 25.64 |
+| After end | 21.28 | 27.16 | 24.98 |
+
+These are matched workload observations, not a controlled estimate of causal overhead.
+Some measurements improved and others worsened while load changed; neither direction
+establishes a performance effect of the code change. There is no capacity or SLO claim.
+
+| Presence clients | Samples per run | Before p50 / p95 / p99 | After p50 / p95 / p99 |
+|---|---:|---:|---:|
+| 1 | 10 | 2.544 / 3.597 / 3.597 ms | 3.093 / 6.542 / 6.542 ms |
+| 5 | 50 | 11.453 / 47.389 / 54.000 ms | 4.423 / 9.270 / 10.747 ms |
+| 20 | 200 | 11.556 / 90.231 / 139.464 ms | 12.448 / 117.202 / 125.737 ms |
+
+Both document cases used one chunk and 10 measured saves/opens per run. The native fixture
+remained 64×48 and 1,586 bytes; “Make some noise” remained 1080×1350 and 245,446 bytes.
+Each reopened native file matched the original bytes. With 10 samples, each p95 below also
+equals p99 and the maximum; this does not estimate a long-running tail.
+
+| Document / operation | Before p50 / p95 | After p50 / p95 |
+|---|---:|---:|
+| Native fixture — upload creation | 4.212 / 5.854 ms | 3.345 / 7.441 ms |
+| Native fixture — chunk transfer | 3.292 / 5.414 ms | 4.367 / 12.832 ms |
+| Native fixture — commit | 5.620 / 8.956 ms | 4.235 / 10.691 ms |
+| Native fixture — total save | 13.210 / 18.452 ms | 12.239 / 29.106 ms |
+| Native fixture — peer HTTP open | 6.193 / 8.036 ms | 5.393 / 15.250 ms |
+| Make some noise — upload creation | 5.236 / 13.511 ms | 2.521 / 9.161 ms |
+| Make some noise — chunk transfer | 7.551 / 10.981 ms | 6.819 / 8.338 ms |
+| Make some noise — commit | 11.825 / 38.606 ms | 10.291 / 17.588 ms |
+| Make some noise — total save | 26.498 / 51.690 ms | 20.651 / 31.491 ms |
+| Make some noise — peer HTTP open | 11.424 / 20.679 ms | 9.689 / 16.313 ms |
+
+Structurally, each added transaction contributes one awaited `BEGIN` and one awaited
+`COMMIT` database round trip. Grouping related statements shares that cost: presence uses
+three short transactions (account lookup, project authorization, and its three presence
+queries), adding six database round trips to that request path. Remote database latency may
+therefore matter more than loopback timing. No provider pool mode or prepared-statement
+configuration was changed to avoid that cost, and no commit runs after an HTTP success.
+
+Each run completed all 452 HTTP requests, including setup and warmups: 904 combined. Each
+removed its own 20 synthetic accounts and owned data, with zero remaining; no production
+requests or real email were sent. Reports retain all raw samples, cleanup, and binary hashes:
+
+- `outputs/verification/2026-10-07-spacing/transaction-overhead-before.json`
+- `outputs/verification/2026-10-07-spacing/transaction-overhead-after.json`
+- Separate correctness evidence: `transaction-pool-before.json`, `transaction-pool-after.json`,
+  and `transaction-pool-after.api.log` in the same artifact directory.
+
+Before binary SHA-256: `70cb5758027ae1de95a37c8f2beac8ae3d5213a4817fda4a08ec8553c54bfde6`.
+Fixed/current backend SHA-256: `7ab7cd6b407a0d5098c2181926b80bc590081e8f9f83eec7086f584737d551ea`.
