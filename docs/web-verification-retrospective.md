@@ -22,6 +22,11 @@ it through the UI, persisted state, runtime, and deployment.
 | Empty project after failed first save; cold-worker Open/Trash fails | API fixtures warmed the same process through `/api/config`, then completed uploads | Any authenticated or public-share request can be the first request on a fresh hosting worker; metadata creation is not a saved document | Start a fresh process without configuration polling; restart between upload stages; inject initial-upload failure and exercise actual retry/trash controls |
 | Send invitation appears inert; granted access hidden after mail failure | Provider simulation checked status and database rows | The sharing window must show pending, accepted and failed outcomes, including partial success | Hold the actual Send request; prevent duplicate submission; fail delivery after granting access; require inline feedback, refreshed members and a retained retry address |
 | Previous project's members/link can appear in another sharing window | Dialogs tested one project at a time | Every asynchronous response belongs to its project and request generation | Delay/reorder project responses, switch projects, then prove old members, links and errors cannot replace the new project's state |
+| A loaded workspace retains a connection-error banner | Fast local boot and anonymous hosted smoke passed | Startup must have one complete configuration/session request in flight; a failed account lookup is not a guest session | Hold both stages across polling intervals, count requests, fail each stage, then verify automatic recovery and a settled guest 401 separately |
+| Retry reports a conflict after a save actually committed | A rejected chunk leaves an incomplete upload | A missing response cannot establish whether the server committed the save | Let commit succeed, discard its response, then retry unchanged and newly edited local snapshots; prove the original project and collaborator edits survive |
+| Recovered copy can inherit a closed document's cloud binding | Recovery after a page reload starts with empty adapter state | Same-session recovery must also create an independent local copy | Save, close without reloading, recover, edit, wait past autosave and prove the original cloud revision/bytes stay unchanged |
+| Delayed Open or project list can override a later action | Cards were opened and modified one at a time | The latest navigation/refresh owns its result; stale success and failure must be ignored | Hold and reorder real card requests, duplicate-click Open, and complete an old list after a Trash/Restore refresh |
+| Browser recovery accumulates old documents | Individual snapshots could be written and recovered | The requested policy is one latest-visited recovery copy, including real eviction | Visit clean A/B/A documents, reload, migrate old rows, preserve account isolation, reject stale writes and prevent multi-tab work loss on sign-in |
 
 The test for the saved CPU preference failed before the adapter fix: it observed GPU still
 active after restart. The original header failed the pixel geometry check. These are useful
@@ -97,20 +102,25 @@ blanket "100% supported" statement.
 
 Each row needs a UI journey and server authorization evidence; API coverage alone is not enough.
 
-| Capability | Current implementation | Remaining acceptance boundary |
-|---|---|---|
-| Google identity and sessions | Tofu-managed sign-in; server-verified identity; account avatar; logout | Real hosted callback and session lifecycle must be recorded, separately from simulated provider tests |
-| Initial save and autosave | Original `.pcraft`, chunked uploads, checksums, revision checks and autosave after initial save | Hosted save/reload, interrupted writes, account change during requests |
-| Email invitation | Owner invites an email with view/edit access; delivery success/failure and throttling | Real delivery and acceptance by an exact approved recipient; do not guess an address |
-| Membership | Owner changes view/edit access and removes membership | Actual dropdown journey, immediate server denial after revoke, stale tab behavior |
-| Shared projects | Signed-in matching email sees authorized projects | Existing/new invitee, wrong account, expired sign-in, removed member |
-| Public view link | Anonymous view/download; rotation and revocation | Separate browser, read-only enforcement, no stale access after revoke; downloaded copies cannot be recalled |
-| Comments | Authorized comments and permissions | Two-user receipt, ordering, error/retry, revoked access, long content |
-| Presence and sync | Presence and committed-revision polling | Independent accounts, reconnect, stale presence, no cross-project/account leakage |
-| Concurrent changes | Conservative independent-manifest merge; conflicts preserve a copy | Two authors on same/different properties, deletion vs edit, stale base, interruption and recovery |
-| Version history | Saved revisions and restore through the original file format | Permissions, actual pixels/layers after restore, undo contract and stale collaborator |
-| Sign-out and local work | Recovery/download options before sign-out | Every choice, unsaved documents, pending upload and next account isolation |
-| Live cursors / simultaneous stroke merging | Not implemented | Explicit product gap; committed-revision sync must not be described as a CRDT or real-time stroke editor |
+| Capability | Current implementation | Local regression entry points | Remaining acceptance boundary |
+|---|---|---|---|
+| Google identity and sessions | Tofu-managed sign-in, verified identity, avatar, logout | Browser 17/18/39/44; simulated-provider auth suite | Real hosted callback, expiration and safe reauthentication |
+| Initial save and autosave | Native `.pcraft`, checksums, revision checks, chunked saves | Browser 7/35/40/46/47; API 8–14/35; cold-worker suite | Hosted save/reload and account changes during requests |
+| Email invitation | Owner grants view/edit access and requests a sign-in email | Browser 36/38; simulated-provider invitation tests | Exact approved recipient, inbox receipt and actual acceptance |
+| Membership | Owner changes roles and removes access | Browser 25/28/37; API 6/7/27/34 | Real second-user stale-tab and reconnect behavior after removal |
+| Shared projects | Matching signed-in email sees authorized projects | Browser 16; API 6/7 | New invitee, wrong real account, expired session and removed member |
+| Public view link | Anonymous view/download, rotation, revocation | Browser 8/22/45; API 15/22 | Hosted separate-browser flow; downloaded copies cannot be recalled |
+| Comments | Authorized comments and resolution | Browser 22/37; API 18 | Duplicate pending submission, partial-success feedback and two-user UI receipt |
+| Presence and sync | Names and committed-revision polling | Browser 16/47; API 19 | Hosted independent accounts, reconnect, stale presence and remote-paint latency |
+| Concurrent changes | Conservative manifest merge; conflicts preserve a copy | Browser 13/16/40; API 13/14/32/33 | Complete delete/edit matrix, hosted interruption and recovery |
+| Version history | Saved native revisions and opening earlier versions | Browser 22 opens history; API 8 checks versions | Actual restore UI, resulting pixels/layers, undo contract and stale collaborator |
+| Sign-out and local work | Download/recovery protection and account-scoped eviction | Browser 6/17/41/44/46/47; API logout | Every hosted sign-out choice and account transition with pending writes |
+| Live cursors / simultaneous stroke merging | Not implemented | No implementation acceptance test | Explicit product gap; committed-revision sync is not operation streaming or a CRDT |
+
+Numbers refer to `tests/web/test_browser.py` and `tests/web/test_api.py`. The table maps
+contracts to tests; only an exact-artifact passing run establishes the corresponding local
+evidence. Synthetic accounts and provider fixtures do not establish real two-person or
+inbox delivery, and one successful interaction does not cover all states in its row.
 
 ## Ordered execution plan
 
@@ -180,6 +190,13 @@ Each row needs a UI journey and server authorization evidence; API coverage alon
 - Full native behavior parity, live cursors, simultaneous-stroke collaboration, accessible
   DOM controls, physical-device acceptance and worker offload are open work, not hidden
   behind this UI patch.
+- The candidate separates recovery warnings/retry timing from cloud-save eligibility.
+  Its quota-failure journey must prove that cloud revisions still advance automatically,
+  and that restoring local recovery cannot dismiss an unrelated cloud-save failure.
+- Expired sessions still need a safe, explicit reauthentication journey with open work
+  preserved. Retrying an expired cookie is not a complete sign-in experience.
+- Comment posting still needs a pending-submission guard and separate feedback for a
+  successful POST followed by a failed refresh, without inviting duplicate submissions.
 
 ## Earlier release evidence on 2026-10-07
 
@@ -221,6 +238,81 @@ loopback provider fixture; they do not prove real inbox delivery. The separate b
 [collaboration measurements](collaboration-performance.md) are local observations, not
 hosted capacity or Figma/Canva parity. Hosted release evidence must identify the serving
 deployment and matching artifact after publication.
+
+That candidate was published as source `9a50d8840269c9daf2ad8595985a11fef55f6127`,
+Tofu deployment `dpl_D6UiLew2ewyLCu4qkRcRPdd6G7qg`. The scoped hosted guest journey
+matched the WASM hash above and passed desktop/mobile geometry, native four-layer editing,
+exact 960 × 640 export pixels and reimport, with no page errors and the actual WebGPU
+backend. A subsequent ordinary signed-in startup exposed duplicate config/session/project
+requests: one project-list request succeeded and another returned 503, leaving a warning
+over the loaded workspace. The guest smoke did not cover this authenticated path.
+
+Browser case 39 reproduced the startup race on that released artifact: holding the initial
+configuration response for 2.2 seconds caused three simultaneous configuration requests.
+The adapter now guards the entire configuration→session pipeline until its dedicated
+success/failure result, and treats only `/api/me` HTTP 401 as a guest response. Connection
+failure remains visible and retriable. Clearing a recovered connection warning must not
+erase a newer unrelated failure. The backend also logs only a fixed SQL error category and
+validated five-character SQLSTATE, never SQL, values, credentials or an error source chain.
+This enables diagnosis without widening exposure of request data.
+
+The duplicate request race explains the stale warning but does not establish the cause of
+the database 503. A separate local protocol fault fixture reproduces SQLSTATE 26000 when
+a transaction pool switches backends between SQLx's prepare and execute phases, even with
+statement caching disabled. The inspected released Supavisor implementation passes unnamed
+statements through and releases a backend when its transaction is idle. See its
+[unnamed-statement handling](https://github.com/supabase/supavisor/blob/v2.9.13/lib/supavisor/protocol/prepared_statements.ex#L79-L109)
+and [idle completion handling](https://github.com/supabase/supavisor/blob/v2.9.13/lib/supavisor/db_handler.ex#L380-L400).
+The adapter now pins each parameterized operation inside an explicit short transaction,
+with awaited commits and no transaction held across email delivery. All 38 API scenarios
+passed through the corrected rotating-backend fixture, recording 2,262 idle backend
+switches and no SQLSTATE errors. The fixture is a protocol fault model, not Supavisor
+itself; this confirms the repaired compatibility boundary without retrospectively proving
+the exact cause or pooler version behind the earlier hosted failure. This regression is
+now included in the acceptance workflow.
+
+The next adapter candidate adds explicit regressions for missing commit acknowledgments,
+same-session recovery/template identity, superseded project navigation and list responses,
+and the one-entry browser-recovery policy. Case 40 compares persisted native document bytes
+and exported pixels after Retry, including an independently committed collaborator change;
+request success alone is insufficient. A merged save legitimately completes through the
+document-sync path, so the test observes the saved document rather than requiring an
+unrelated project-list refresh. Cases 41–43 hold actual requests and assert that older
+responses cannot change the new document or undo a visible Trash/Restore action.
+
+Case 44 checks physical IndexedDB contents, not just the number of visible rows. Clean
+A/B/A visits leave only the last visited document, legacy rows are compacted, and unrelated
+account records remain isolated. An older debounced write cannot replace newer activity in
+another tab. Sign-in protects other unsaved tabs that one recovery slot cannot preserve;
+sign-out revokes existing write permits and grants a fresh permit for subsequent guest
+work. Recovery copies remain separate from cloud projects and version history.
+
+Final review also found that successful connection refreshes could replay the initial
+share/project URL. Startup navigation must dispatch once when its prerequisites are ready,
+while initial connection failures remain retriable. Case 45 records the document-open
+requests and native tabs across refreshes rather than merely checking that the first open
+worked. Release packaging now also treats untracked source as dirty: a ZIP that includes
+such a file cannot truthfully claim to represent an unchanged commit.
+
+Two follow-up failure journeys were reproduced before the candidate's final build. A
+drafts-only IndexedDB quota fault retried seven times while the cloud document remained at
+revision 1 despite preserved native edits. The fix separates both local warning state and
+retry timing from cloud autosave; changing only the error flag would leave the shared
+activity clock starving autosave. Case 46 also combines a local-storage failure with a
+cloud failure and checks that recovering one does not hide the other.
+Visual review also rejected the initial 17 px recovery action despite the warning being
+visible. It now uses a normal native button with a 28 px minimum height; case 46 measures
+the rendered action on desktop and phone. Visibility alone is not a sufficient control test.
+
+Actual File > Open and browser drag-and-drop reproduced the closed-document identity bug
+outside recovery/templates: editing an imported `.pcraft` advanced its old cloud project's
+revision and changed its checksum. The browser now routes its existing file inbox through
+the original `open_bytes`/`open_failed` functions and detaches cloud state only when a new
+document is admitted. Brush/preset imports retain their original behavior. Save/sync
+responses carry a document request identity, invalidated when that document closes or is
+replaced by a local import. The existing single-save pipeline remains serialized; an
+unrelated template result cannot release it. Case 47 holds creation, committed-save, sync
+and error responses across close/reopen and compares the original project and local copy.
 
 ## Continuous upstream updates
 
