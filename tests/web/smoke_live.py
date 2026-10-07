@@ -22,12 +22,25 @@ with sync_playwright() as p:
     context = browser.new_context(viewport={'width':1440,'height':960}, accept_downloads=True)
     page = context.new_page()
     errors=[]
+    configuration=[]
     page.on('pageerror',lambda error:errors.append(str(error)))
-    page.goto(url,wait_until='networkidle',timeout=120000)
+    page.on('response',lambda response: configuration.append({'status':response.status,'body':response.json()}) if urlparse(response.url).path=='/api/config' and response.status==200 else None)
+    response=page.goto(url,wait_until='networkidle',timeout=120000)
+    assert response.status==200,response.status
     page.wait_for_function('typeof window.photocraftCommand === "function"',timeout=90000)
     page.wait_for_selector('#photocraft_loading', state='detached', timeout=90000)
     page.wait_for_timeout(400)
     page.screenshot(path=str(out/'hosted-workspace.png'))
+    assert configuration and configuration[-1]['body'].get('cloud') and configuration[-1]['body'].get('signIn'),configuration
+    page.mouse.click(1400,32)
+    page.wait_for_timeout(150)
+    page.screenshot(path=str(out/'hosted-account-menu.png'))
+    page.keyboard.press('Escape')
+    page.set_viewport_size({'width':390,'height':844})
+    page.wait_for_timeout(250)
+    page.screenshot(path=str(out/'hosted-mobile.png'))
+    page.set_viewport_size({'width':1440,'height':960})
+    page.wait_for_timeout(250)
     def command(method,params=None):
         r=page.evaluate('async ([m,p])=>JSON.parse(await photocraftCommand(m,JSON.stringify(p)))',[method,params or {}])
         assert r['ok'], r
@@ -59,7 +72,7 @@ with sync_playwright() as p:
     resources=page.evaluate('performance.getEntriesByType("resource").filter(e=>e.name.endsWith(".wasm")).map(e=>({url:e.name,durationMs:e.duration,encodedBytes:e.encodedBodySize,decodedBytes:e.decodedBodySize}))')
     (out/'hosted-evidence.json').write_text(json.dumps({'url':url,'browser':browser.version,'renderer':before['perf']['timings']['gpuInfo'],
         'beforeLayers':len(before['document']['layers']),'exportSize':[960,640],'reimportSize':[after['document']['width'],after['document']['height']],
-        'pageErrors':errors,'wasmResources':resources},indent=2))
+        'pageErrors':errors,'wasmResources':resources,'configuration':configuration},indent=2))
     print('Hosted guest edit, PNG export and re-import passed.')
     context.close()
     browser.close()
