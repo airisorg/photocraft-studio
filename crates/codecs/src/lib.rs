@@ -72,9 +72,11 @@ pub fn decode_as_with(format: Format, bytes: &[u8], opts: &DecodeOptions) -> Res
         return Ok(img);
     }
     // Turn the pixels upright, like Photoshop: a TIFF records it in its own IFD0, the others
-    // in their EXIF block. The metadata is rewritten to Orientation = 1 on the way.
+    // in their EXIF block. The metadata is rewritten to Orientation = 1 on the way. HEIF keeps it
+    // in its container, and its decoder has already applied it.
     let o = match format {
         Format::Tiff => exif_orientation(bytes),
+        Format::Heif => 1,
         _ => img.meta.exif.as_deref().map_or(1, exif_orientation),
     };
     // Orientations 5–8 swap width and height: with asymmetric limits a stored landscape

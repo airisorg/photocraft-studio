@@ -2356,19 +2356,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "hashlink"
-version = "0.10.0"
+name = "heic-rs"
+version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7382cf6263419f2d8df38c55d7da83da5c18aef87fc7a7fc1fb1e344edfe14c1"
+checksum = "adf9dde634bb6d5b718bacd01bef80192f2334306b2f785519a0136cca7b9618"
 dependencies = [
- "hashbrown 0.15.5",
+ "rayon",
 ]
-
-[[package]]
-name = "heck"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
 name = "hermit-abi"
@@ -4237,6 +4231,13 @@ dependencies = [
  "pollster 1.0.1",
  "rayon",
  "wgpu",
+]
+
+[[package]]
+name = "photocraft-heif"
+version = "0.3.0"
+dependencies = [
+ "heic-rs",
 ]
 
 [[package]]

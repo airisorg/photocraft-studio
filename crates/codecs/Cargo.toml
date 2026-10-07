@@ -36,10 +36,6 @@ photocraft-heif = { path = "../heif", optional = true }
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rayon.workspace = true
 
-# Orientation is applied a band of rows per task on native; wasm stays single-threaded.
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-rayon.workspace = true
-
 [dev-dependencies]
 proptest.workspace = true
 # Oracle decoders for cross-checking in tests only.
