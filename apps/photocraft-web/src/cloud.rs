@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
     cell::{Cell, RefCell},
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     rc::Rc,
 };
 use wasm_bindgen::JsValue;
@@ -20,23 +20,25 @@ use wasm_bindgen::JsValue;
 const CHUNK: usize = 524_288;
 type Queue = Rc<RefCell<Vec<(u64, Message)>>>;
 enum Message {
-    Boot(Value, Option<Value>),
-    List(Value),
-    ProjectChanged(Value, u64, String),
-    RecoverySaved,
+    Connection(Result<(Value, Option<Value>), String>),
+    List(u64, Result<Value, String>, Option<(u64, String)>),
+    ProjectChanged(Result<(), String>, u64, String),
+    RecoverySaved(u64, (DocId, u64), Result<bool, String>),
     Invited { request: ProjectRequest, email: String, outcome: Result<(), String>, members: Result<Value, String> },
     ProjectData(ProjectRequest, Result<Value, String>),
-    Opened(Value, Vec<u8>),
-    Saved(DocId, u64, String, i64, bool),
-    Synced(DocId, u64, Value, Vec<u8>),
+    Opened(u64, Result<(Value, Vec<u8>), String>),
+    Saved(DocumentRequest, u64, String, i64, bool),
+    Synced(DocumentRequest, u64, Value, Vec<u8>),
     Presence(String, Value),
-    Created(DocId, String),
+    Created(DocumentRequest, String),
+    CommitAttempt(DocumentRequest, UncertainCommit),
+    CommitReconciled(DocumentRequest, String, u64, i64),
+    DocumentError(DocumentRequest, String),
     SignedOut,
-    SignInReady,
-    Config(Value),
+    SignInReady(u64, Option<(DocId, u64)>, Result<(), String>),
     Preview(String, Vec<u8>),
     Error(String),
-    Drafts(Vec<(String, Value)>),
+    Drafts(u64, String, Result<Vec<(String, Value)>, String>),
     Recovered(String, Vec<u8>),
     Template(String, Vec<u8>),
 }
@@ -56,6 +58,29 @@ impl ProjectRequest {
     }
 }
 #[derive(Clone)]
+struct UncertainCommit {
+    project: String,
+    base: i64,
+    local: u64,
+    sha256: String,
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct DocumentRequest {
+    document: DocId,
+    generation: u64,
+}
+struct RecoveryWrite {
+    generation: u64,
+    current: Rc<Cell<u64>>,
+    allowed: Rc<Cell<bool>>,
+    saved_at: f64,
+}
+impl RecoveryWrite {
+    fn is_current(&self) -> bool {
+        self.allowed.get() && self.generation == self.current.get()
+    }
+}
+#[derive(Clone)]
 struct Binding {
     id: String,
     revision: i64,
@@ -68,10 +93,19 @@ pub struct Cloud {
     pub home: bool,
     configured: bool,
     booted: bool,
+    initial_navigation_done: bool,
+    connection_pending: bool,
+    connection_error_sequence: Option<u64>,
     sign_in: bool,
     user: Option<Value>,
     projects: Vec<Value>,
+    list_generation: u64,
     bindings: HashMap<DocId, Binding>,
+    uncertain_commits: HashMap<DocId, Vec<UncertainCommit>>,
+    next_document_request: u64,
+    pending_document: Option<DocumentRequest>,
+    next_open_request: u64,
+    pending_open: Option<(u64, String, Option<i64>)>,
     textures: HashMap<String, TextureHandle>,
     search: String,
     filter: String,
@@ -84,6 +118,15 @@ pub struct Cloud {
     observed: Option<(DocId, u64)>,
     last_poll: f64,
     last_draft: Option<(DocId, u64)>,
+    draft_scope: String,
+    draft_generation: Rc<Cell<u64>>,
+    draft_pending: Option<u64>,
+    draft_visit: bool,
+    draft_activity: f64,
+    draft_list_generation: u64,
+    draft_retry_at: f64,
+    draft_write_warning: Option<String>,
+    draft_list_warning: Option<String>,
     drafts: Vec<(String, Value)>,
     show_share: bool,
     show_history: bool,
@@ -145,6 +188,21 @@ async fn api(method: &str, path: &str, body: Option<Value>) -> Result<Value, Str
     }
     Ok(json)
 }
+async fn current_user() -> Result<Option<Value>, String> {
+    let response = request("GET", "/api/me").send().await.map_err(|_| "Network unavailable. Retry when connected.".to_string())?;
+    // Only an explicit unauthorized response establishes a guest session.
+    if response.status() == 401 {
+        // Finish the Fetch stream even when the guest response has no JSON body.
+        let _ = response.binary().await;
+        return Ok(None);
+    }
+    let status = response.status();
+    let value = response.json::<Value>().await.map_err(|_| "The server returned an invalid response".to_string())?;
+    if !(200..300).contains(&status) {
+        return Err(value.get("error").and_then(Value::as_str).unwrap_or("Could not check your workspace session").to_string());
+    }
+    Ok(Some(value))
+}
 async fn binary(method: &str, path: &str, body: Option<&[u8]>) -> Result<Vec<u8>, String> {
     let req = request(method, path);
     let res = if let Some(b) = body {
@@ -168,7 +226,16 @@ fn task(q: &Queue, epoch: u64, ctx: &egui::Context, f: impl std::future::Future<
         ctx.request_repaint();
     });
 }
-async fn download_project(path: String, revision: Option<i64>) -> Result<Message, String> {
+fn document_task(
+    q: &Queue,
+    epoch: u64,
+    ctx: &egui::Context,
+    request: DocumentRequest,
+    f: impl std::future::Future<Output = Result<Message, String>> + 'static,
+) {
+    task(q, epoch, ctx, async move { Ok(f.await.unwrap_or_else(|error| Message::DocumentError(request, error))) });
+}
+async fn download_project(path: String, revision: Option<i64>) -> Result<(Value, Vec<u8>), String> {
     let mut meta = api("GET", &path, None).await?;
     let rev = revision.unwrap_or_else(|| meta.get("revision").and_then(Value::as_i64).unwrap_or(0));
     if let Some(r) = revision {
@@ -193,20 +260,29 @@ async fn download_project(path: String, revision: Option<i64>) -> Result<Message
     if bytes.len() != size || hex::encode(Sha256::digest(&bytes)) != meta.pointer("/content/sha256").and_then(Value::as_str).unwrap_or("") {
         return Err("Download checksum failed. No document was opened.".into());
     }
-    Ok(Message::Opened(meta, bytes))
+    Ok((meta, bytes))
 }
 impl Cloud {
     pub fn new(ctx: &egui::Context) -> Self {
-        let s = Self {
+        let mut s = Self {
             queue: Rc::default(),
             epoch: 0,
             home: true,
             configured: false,
             booted: false,
+            initial_navigation_done: false,
+            connection_pending: false,
+            connection_error_sequence: None,
             sign_in: false,
             user: None,
             projects: vec![],
+            list_generation: 0,
             bindings: HashMap::new(),
+            uncertain_commits: HashMap::new(),
+            next_document_request: 0,
+            pending_document: None,
+            next_open_request: 0,
+            pending_open: None,
             textures: HashMap::new(),
             search: String::new(),
             filter: "Home".into(),
@@ -219,6 +295,15 @@ impl Cloud {
             observed: None,
             last_poll: 0.,
             last_draft: None,
+            draft_scope: String::new(),
+            draft_generation: Rc::new(Cell::new(0)),
+            draft_pending: None,
+            draft_visit: false,
+            draft_activity: now(),
+            draft_list_generation: 0,
+            draft_retry_at: 0.,
+            draft_write_warning: None,
+            draft_list_warning: None,
             drafts: vec![],
             show_share: false,
             show_history: false,
@@ -248,11 +333,7 @@ impl Cloud {
             draft_allowed: Rc::new(Cell::new(true)),
             compact_panels: false,
         };
-        task(&s.queue, 0, ctx, async {
-            let c = api("GET", "/api/config", None).await?;
-            let u = api("GET", "/api/me", None).await.ok();
-            Ok(Message::Boot(c, u))
-        });
+        s.refresh_config(ctx);
         for starter in &home::STARTERS {
             let slug = starter.slug;
             task(
@@ -264,11 +345,29 @@ impl Cloud {
         }
         s
     }
-    fn list(&self, ctx: &egui::Context) {
-        task(&self.queue, self.epoch, ctx, async { Ok(Message::List(api("GET", "/api/projects", None).await?)) });
+    fn list(&mut self, ctx: &egui::Context) {
+        self.refresh_projects(ctx, None);
     }
-    fn refresh_config(&self, ctx: &egui::Context) {
-        task(&self.queue, self.epoch, ctx, async move { Ok(Message::Config(api("GET", "/api/config", None).await?)) });
+    fn refresh_projects(&mut self, ctx: &egui::Context, mutation: Option<(u64, String)>) {
+        self.list_generation = self.list_generation.wrapping_add(1);
+        let generation = self.list_generation;
+        task(&self.queue, self.epoch, ctx, async move { Ok(Message::List(generation, api("GET", "/api/projects", None).await, mutation)) });
+    }
+    fn refresh_config(&mut self, ctx: &egui::Context) {
+        if self.connection_pending {
+            return;
+        }
+        self.connection_pending = true;
+        task(&self.queue, self.epoch, ctx, async move {
+            let result = async {
+                let config = api("GET", "/api/config", None).await?;
+                let user = current_user().await?;
+                Ok((config, user))
+            }
+            .await;
+            // A dedicated result releases the connection guard on both success and failure.
+            Ok(Message::Connection(result))
+        });
     }
     fn project_request(&mut self, project: &str, kind: &'static str) -> ProjectRequest {
         self.next_project_request = self.next_project_request.wrapping_add(1);
@@ -332,8 +431,7 @@ impl Cloud {
         let error_sequence = self.error_sequence;
         let previous_status = self.status.clone();
         task(&self.queue, self.epoch, ctx, async move {
-            api(&method, &path, Some(v)).await?;
-            Ok(Message::ProjectChanged(api("GET", "/api/projects", None).await?, error_sequence, previous_status))
+            Ok(Message::ProjectChanged(api(&method, &path, Some(v)).await.map(|_| ()), error_sequence, previous_status))
         });
     }
     fn receive_projects(&mut self, ctx: &egui::Context, v: Value) {
@@ -351,17 +449,54 @@ impl Cloud {
         }
     }
     fn open(&mut self, ctx: &egui::Context, id: String, revision: Option<i64>) {
-        self.busy = true;
+        self.open_path(ctx, format!("/api/projects/{id}"), revision);
+    }
+    fn open_path(&mut self, ctx: &egui::Context, path: String, revision: Option<i64>) {
+        if self.pending_open.as_ref().is_some_and(|(_, pending, version)| pending == &path && *version == revision) {
+            return;
+        }
+        self.next_open_request = self.next_open_request.wrapping_add(1);
+        let request = self.next_open_request;
+        self.pending_open = Some((request, path.clone(), revision));
         self.status = "Opening your document…".into();
-        task(&self.queue, self.epoch, ctx, download_project(format!("/api/projects/{id}"), revision));
+        task(&self.queue, self.epoch, ctx, async move { Ok(Message::Opened(request, download_project(path, revision).await)) });
+    }
+    fn cancel_open(&mut self) {
+        if self.pending_open.take().is_some() && self.status == "Opening your document…" {
+            self.status = "Cloud open canceled".into();
+        }
     }
     fn binding(&self, app: &PhotocraftApp) -> Option<Binding> {
         app.session.active().and_then(|d| self.bindings.get(&d.doc.id)).cloned()
+    }
+    fn document_request(&mut self, document: DocId) -> DocumentRequest {
+        self.next_document_request = self.next_document_request.wrapping_add(1);
+        let request = DocumentRequest { document, generation: self.next_document_request };
+        self.pending_document = Some(request);
+        request
+    }
+    fn accepts_document_response(&self, app: &PhotocraftApp, request: DocumentRequest) -> bool {
+        self.pending_document == Some(request) && app.session.documents().iter().any(|document| document.doc.id == request.document)
+    }
+    fn finish_document_request(&mut self, request: DocumentRequest) {
+        if self.pending_document == Some(request) {
+            self.pending_document = None;
+            self.busy = false;
+        }
+    }
+    fn prune_closed_documents(&mut self, app: &PhotocraftApp) {
+        let open = app.session.documents().iter().map(|document| document.doc.id).collect::<HashSet<_>>();
+        self.bindings.retain(|id, _| open.contains(id));
+        self.uncertain_commits.retain(|id, _| open.contains(id));
+        if let Some(request) = self.pending_document.filter(|request| !open.contains(&request.document)) {
+            self.finish_document_request(request);
+        }
     }
     fn is_trashed(&self, id: &str) -> bool {
         self.projects.iter().any(|p| field(p, "id") == id && p.get("trashed").and_then(Value::as_bool) == Some(true))
     }
     pub fn update(&mut self, app: &mut PhotocraftApp, ctx: &egui::Context) {
+        self.prune_closed_documents(app);
         self.sync_dialog_project(app);
         let messages = std::mem::take(&mut *self.queue.borrow_mut());
         for (epoch, m) in messages {
@@ -369,49 +504,128 @@ impl Cloud {
             if epoch != self.epoch {
                 continue;
             }
+            let document_request = match &m {
+                Message::Created(request, _)
+                | Message::CommitAttempt(request, _)
+                | Message::CommitReconciled(request, ..)
+                | Message::Saved(request, ..)
+                | Message::Synced(request, ..)
+                | Message::DocumentError(request, _) => Some(*request),
+                _ => None,
+            };
+            if document_request.is_some_and(|request| !self.accepts_document_response(app, request)) {
+                continue;
+            }
             match m {
-                Message::Boot(c, u) => {
+                Message::Connection(result) => {
+                    self.connection_pending = false;
+                    self.last_poll = now();
                     self.booted = true;
+                    let (c, u) = match result {
+                        Ok(connected) => connected,
+                        Err(error) => {
+                            self.error_sequence = self.error_sequence.wrapping_add(1);
+                            self.connection_error_sequence = Some(self.error_sequence);
+                            self.error = true;
+                            self.status = format!("Could not connect to your workspace: {error}");
+                            continue;
+                        }
+                    };
                     self.configured = c.get("cloud").and_then(Value::as_bool) == Some(true);
                     self.sign_in = c.get("signIn").and_then(Value::as_bool) == Some(true);
                     self.user = u;
-                    self.status = if self.user.is_some() {
-                        "Your workspace is ready"
-                    } else if self.configured {
-                        "Sign in to save and share. Local editing is always available."
-                    } else {
-                        "Local editing is ready. Cloud storage is awaiting setup."
+                    if self.connection_error_sequence.take() == Some(self.error_sequence) {
+                        self.error = false;
                     }
-                    .into();
+                    if !self.error && !self.busy {
+                        self.status = if self.user.is_some() {
+                            "Your workspace is ready"
+                        } else if self.configured {
+                            "Sign in to save and share. Local editing is always available."
+                        } else {
+                            "Local editing is ready. Cloud storage is awaiting setup."
+                        }
+                        .into();
+                    }
                     if self.user.is_some() {
                         self.list(ctx);
-                        if let Some(id) = url_param("project").filter(|v| v.len() == 36) {
+                    }
+                    self.refresh_drafts(ctx);
+                    // Retry setup/auth until this URL is eligible, then dispatch it only once.
+                    if !self.initial_navigation_done {
+                        if self.configured
+                            && let Some(key) = url_param("share").filter(|s| s.len() == 64)
+                        {
+                            self.initial_navigation_done = true;
+                            self.open_path(ctx, format!("/api/share/{key}"), None);
+                        } else if self.user.is_some()
+                            && let Some(id) = url_param("project").filter(|v| v.len() == 36)
+                        {
+                            self.initial_navigation_done = true;
                             self.open(ctx, id, None);
                         }
                     }
-                    let scope = self.scope();
-                    task(&self.queue, self.epoch, ctx, async move { Ok(Message::Drafts(draft_list(&scope).await?)) });
-                    if let Some(key) = url_param("share").filter(|s| s.len() == 64) {
-                        self.busy = true;
-                        task(&self.queue, self.epoch, ctx, download_project(format!("/api/share/{key}"), None));
+                }
+                Message::List(generation, result, mutation) => {
+                    if generation != self.list_generation {
+                        continue;
+                    }
+                    match result {
+                        Ok(projects) => {
+                            self.receive_projects(ctx, projects);
+                            // A card action may dismiss its old error, never a newer save failure.
+                            if let Some((error_sequence, previous_status)) = mutation
+                                && !self.busy
+                                && self.error_sequence == error_sequence
+                                && self.status == previous_status
+                            {
+                                self.status = "Workspace updated".into();
+                                self.error = false;
+                            }
+                        }
+                        Err(error) => {
+                            self.error_sequence = self.error_sequence.wrapping_add(1);
+                            self.status = error;
+                            self.error = true;
+                        }
                     }
                 }
-                Message::List(v) => self.receive_projects(ctx, v),
-                Message::ProjectChanged(v, error_sequence, previous_status) => {
-                    self.receive_projects(ctx, v);
-                    // A completed card action may dismiss its old error, never a newer save failure.
-                    if !self.busy && self.error_sequence == error_sequence && self.status == previous_status {
-                        self.status = "Workspace updated".into();
-                        self.error = false;
+                Message::ProjectChanged(result, error_sequence, previous_status) => match result {
+                    // Assign the read generation after the write finishes, so a slower write
+                    // still gets a fresh list that includes every earlier completed mutation.
+                    Ok(()) => self.refresh_projects(ctx, Some((error_sequence, previous_status))),
+                    Err(error) => {
+                        self.error_sequence = self.error_sequence.wrapping_add(1);
+                        self.status = error;
+                        self.error = true;
                     }
-                }
-                Message::RecoverySaved => {
-                    // Browser recovery does not mean the cloud upload succeeded.
-                    if !self.error && !self.busy {
-                        self.status = "Recovery copy saved in this browser".into();
+                },
+                Message::RecoverySaved(generation, document, result) => {
+                    if self.draft_pending == Some(generation) {
+                        self.draft_pending = None;
                     }
-                    let scope = self.scope();
-                    task(&self.queue, self.epoch, ctx, async move { Ok(Message::Drafts(draft_list(&scope).await?)) });
+                    if generation != self.draft_generation.get() {
+                        continue;
+                    }
+                    match result {
+                        Ok(written) => {
+                            self.last_draft = Some(document);
+                            self.draft_visit = false;
+                            if written {
+                                self.draft_write_warning = None;
+                            }
+                            // Browser recovery does not mean the cloud upload succeeded.
+                            if written && !self.error && !self.busy {
+                                self.status = "Recovery copy saved in this browser".into();
+                            }
+                            self.refresh_drafts(ctx);
+                        }
+                        Err(error) => {
+                            self.draft_retry_at = now() + 1800.;
+                            self.draft_visit = false;
+                            self.draft_write_warning = Some(format!("Could not save browser recovery: {error}"));
+                        }
+                    }
                 }
                 Message::Preview(id, b) => {
                     if let Ok(img) = photocraft_codecs::decode(&b)
@@ -428,8 +642,20 @@ impl Cloud {
                         );
                     }
                 }
-                Message::Opened(meta, bytes) => {
-                    self.busy = false;
+                Message::Opened(request, result) => {
+                    if self.pending_open.as_ref().map(|(pending, _, _)| *pending) != Some(request) {
+                        continue;
+                    }
+                    self.pending_open = None;
+                    let (meta, bytes) = match result {
+                        Ok(document) => document,
+                        Err(error) => {
+                            self.error_sequence = self.error_sequence.wrapping_add(1);
+                            self.status = error;
+                            self.error = true;
+                            continue;
+                        }
+                    };
                     let name = format!("{}.pcraft", field(&meta, "title"));
                     match app.open_bytes(&name, &bytes) {
                         Ok(_) => {
@@ -455,15 +681,46 @@ impl Cloud {
                         }
                     }
                 }
-                Message::Created(id, pid) => {
-                    self.bindings.insert(id, Binding { id: pid, revision: 0, saved_local: 0, role: "owner".into() });
+                Message::Created(request, pid) => {
+                    self.bindings.insert(request.document, Binding { id: pid, revision: 0, saved_local: 0, role: "owner".into() });
+                }
+                Message::CommitAttempt(request, attempt) => {
+                    let attempts = self.uncertain_commits.entry(request.document).or_default();
+                    if !attempts.iter().any(|previous| {
+                        previous.project == attempt.project
+                            && previous.base == attempt.base
+                            && previous.local == attempt.local
+                            && previous.sha256 == attempt.sha256
+                    }) {
+                        attempts.push(attempt);
+                    }
+                }
+                Message::CommitReconciled(request, project, local, revision) => {
+                    if let Some(binding) = self.bindings.get_mut(&request.document).filter(|binding| binding.id == project && binding.revision <= revision) {
+                        binding.revision = revision;
+                        binding.saved_local = local;
+                    }
                 }
                 Message::SignedOut => {
                     self.epoch += 1;
+                    self.pending_open = None;
+                    self.connection_pending = false;
+                    self.connection_error_sequence = None;
                     self.bindings.clear();
+                    self.uncertain_commits.clear();
+                    self.pending_document = None;
                     self.projects.clear();
                     self.textures.retain(|key, _| key.starts_with("starter/"));
                     self.drafts.clear();
+                    // Old async writers keep their revoked permit; new guest work gets a fresh one.
+                    self.draft_allowed.set(false);
+                    self.draft_generation.set(self.draft_generation.get().wrapping_add(1));
+                    self.draft_allowed = Rc::new(Cell::new(true));
+                    self.draft_generation = Rc::new(Cell::new(0));
+                    self.draft_pending = None;
+                    self.last_draft = None;
+                    self.draft_write_warning = None;
+                    self.draft_list_warning = None;
                     self.user = None;
                     self.home = true;
                     self.filter = "Home".into();
@@ -475,15 +732,34 @@ impl Cloud {
                     self.status = "Signed out. Private browser recovery data cleared.".into();
                     self.busy = false;
                 }
-                Message::SignInReady => {
+                Message::SignInReady(generation, document, result) => {
+                    if self.draft_pending == Some(generation) {
+                        self.draft_pending = None;
+                    }
+                    if let Err(error) = result {
+                        self.busy = false;
+                        self.error = true;
+                        self.status = error;
+                        continue;
+                    }
+                    if generation != self.draft_generation.get()
+                        || document != app.session.active().map(|d| (d.doc.id, d.revision))
+                        || self.has_other_unsaved_documents(app)
+                    {
+                        self.busy = false;
+                        self.error = true;
+                        self.status = "Your document changed before sign-in. Try signing in again.".into();
+                        continue;
+                    }
                     super::web::set_unsaved(false);
                     if let Some(w) = web_sys::window() {
                         let _ = w.location().set_href("/auth/login");
                     }
                     return;
                 }
-                Message::Synced(id, expected, meta, bytes) => {
-                    self.busy = false;
+                Message::Synced(request, expected, meta, bytes) => {
+                    self.finish_document_request(request);
+                    let id = request.document;
                     // Never replace an edited tab, a switched document, or an active gesture.
                     if app.session.active().is_some_and(|d| d.doc.id == id && d.revision == expected)
                         && !ctx.input(|i| i.pointer.any_down())
@@ -547,7 +823,10 @@ impl Cloud {
                         }
                     }
                 }
-                Message::Saved(id, local, pid, revision, merged) => {
+                Message::Saved(request, local, pid, revision, merged) => {
+                    self.finish_document_request(request);
+                    let id = request.document;
+                    self.uncertain_commits.remove(&id);
                     if merged {
                         self.sync(ctx, id, local, pid);
                         continue;
@@ -562,24 +841,6 @@ impl Cloud {
                     let role = self.bindings.get(&id).map(|b| b.role.clone()).unwrap_or_else(|| "owner".into());
                     self.bindings.insert(id, Binding { id: pid, revision, saved_local: local, role });
                     self.list(ctx);
-                }
-                Message::Config(v) => {
-                    let was_configured = self.configured;
-                    self.booted = true;
-                    self.configured = v.get("cloud").and_then(Value::as_bool) == Some(true);
-                    self.sign_in = v.get("signIn").and_then(Value::as_bool) == Some(true);
-                    self.status = if self.sign_in {
-                        "Sign in to save your designs and collaborate."
-                    } else {
-                        "Cloud connection is unavailable. You can still edit and download your designs."
-                    }
-                    .into();
-                    if !was_configured && self.configured {
-                        task(&self.queue, self.epoch, ctx, async move {
-                            let user = api("GET", "/api/me", None).await.ok();
-                            Ok(Message::Boot(v, user))
-                        });
-                    }
                 }
                 Message::ProjectData(request, result) => {
                     self.finish_member_write(app, ctx, &request);
@@ -651,11 +912,29 @@ impl Cloud {
                     self.error = true;
                     self.draft_allowed.set(true);
                 }
-                Message::Drafts(v) => self.drafts = v,
+                Message::DocumentError(request, error) => {
+                    self.finish_document_request(request);
+                    self.error_sequence = self.error_sequence.wrapping_add(1);
+                    self.status = error;
+                    self.error = true;
+                }
+                Message::Drafts(generation, scope, result) => {
+                    if generation != self.draft_list_generation || scope != self.scope() {
+                        continue;
+                    }
+                    match result {
+                        Ok(drafts) => {
+                            self.drafts = drafts;
+                            self.draft_list_warning = None;
+                        }
+                        Err(error) => self.draft_list_warning = Some(format!("Could not load browser recovery: {error}")),
+                    }
+                }
                 Message::Template(name, bytes) => {
                     self.busy = false;
                     match app.open_bytes(&name, &bytes) {
                         Ok(_) => {
+                            self.detach_local_copy(app);
                             self.home = false;
                             self.error = false;
                             self.status = "Your own copy. Every layer is ready to edit.".into();
@@ -668,6 +947,7 @@ impl Cloud {
                 }
                 Message::Recovered(name, bytes) => match app.open_bytes(&name, &bytes) {
                     Ok(_) => {
+                        self.detach_local_copy(app);
                         self.home = false;
                         self.status = "Recovered as a separate local document. Save a new cloud copy when ready.".into();
                     }
@@ -678,6 +958,9 @@ impl Cloud {
                 },
             }
         }
+        // Template and unrelated request results also use the workspace busy flag.
+        // A document operation remains exclusive until its own response or invalidation.
+        self.busy |= self.pending_document.is_some();
         self.sync_dialog_project(app);
         super::web::set_unsaved(
             app.session
@@ -686,31 +969,51 @@ impl Cloud {
                 .any(|d| self.bindings.get(&d.doc.id).map(|b| b.revision == 0 || b.saved_local != d.revision).unwrap_or(d.is_dirty())),
         );
         let current = app.session.active().map(|d| (d.doc.id, d.revision));
-        if current != self.observed {
+        let scope = self.scope();
+        if current != self.observed || scope != self.draft_scope {
+            if scope != self.draft_scope {
+                self.draft_write_warning = None;
+                self.draft_list_warning = None;
+            }
+            self.draft_retry_at = 0.;
+            self.draft_visit |= current.map(|d| d.0) != self.observed.map(|d| d.0) || scope != self.draft_scope;
+            self.draft_generation.set(self.draft_generation.get().wrapping_add(1));
+            self.last_draft = None;
+            self.draft_scope = scope;
             self.observed = current;
-            self.last_change = now();
+            self.draft_activity = now();
+            self.last_change = self.draft_activity;
             if current.is_some() {
                 self.home = false;
             }
         }
         if let Some(d) = app.session.active() {
             let changed = self.binding(app).map(|b| b.revision == 0 || b.saved_local != d.revision).unwrap_or(d.is_dirty());
-            if changed && now() - self.last_change > 1800. && self.last_draft != current {
-                self.last_draft = current;
+            if self.booted
+                && self.connection_error_sequence.is_none()
+                && self.draft_allowed.get()
+                && self.draft_pending.is_none()
+                && now() >= self.draft_retry_at
+                && (self.draft_visit || now() - self.last_change > 1800.)
+                && self.last_draft != current
+            {
                 let name = d.doc.name.clone();
                 let scope = self.scope();
                 let key = format!("{scope}:{}", d.doc.id.0);
-                let permit = self.draft_allowed.clone();
+                let generation = self.draft_generation.get();
+                let document = (d.doc.id, d.revision);
+                let write = self.recovery_write(self.draft_activity);
                 match photocraft_format::save_to_bytes(&d.doc, &Default::default()) {
                     Ok(bytes) => {
+                        self.draft_pending = Some(generation);
                         task(&self.queue, self.epoch, ctx, async move {
-                            draft_put(&key, &name, &bytes, permit).await?;
-                            Ok(Message::RecoverySaved)
+                            Ok(Message::RecoverySaved(generation, document, draft_put(&scope, &key, &name, &bytes, write).await))
                         });
                     }
                     Err(e) => {
-                        self.error = true;
-                        self.status = format!("Could not create recovery copy: {e}");
+                        self.draft_retry_at = now() + 1800.;
+                        self.draft_visit = false;
+                        self.draft_write_warning = Some(format!("Could not create recovery copy: {e}"));
                     }
                 }
             }
@@ -747,41 +1050,113 @@ impl Cloud {
         ctx.request_repaint_after(std::time::Duration::from_millis(500));
     }
     fn sync(&mut self, ctx: &egui::Context, id: DocId, revision: u64, pid: String) {
+        if self.pending_document.is_some() {
+            return;
+        }
         self.busy = true;
         self.status = "Bringing in your collaborators’ changes…".into();
-        task(&self.queue, self.epoch, ctx, async move {
-            match download_project(format!("/api/projects/{pid}"), None).await? {
-                Message::Opened(meta, bytes) => Ok(Message::Synced(id, revision, meta, bytes)),
-                _ => Err("Could not read the shared update".into()),
-            }
+        let request = self.document_request(id);
+        document_task(&self.queue, self.epoch, ctx, request, async move {
+            let (meta, bytes) = download_project(format!("/api/projects/{pid}"), None).await?;
+            Ok(Message::Synced(request, revision, meta, bytes))
         });
+    }
+    pub(crate) fn open_local(&mut self, app: &mut PhotocraftApp, name: &str, bytes: &[u8]) {
+        let documents = app.session.documents().len();
+        match app.open_bytes(name, bytes) {
+            Ok(_) if app.session.documents().len() > documents => {
+                self.cancel_open();
+                self.detach_local_copy(app);
+                self.home = false;
+                self.error = false;
+                self.status = app.ui.status.clone();
+            }
+            Ok(_) => {} // Preset imports do not create a document or detach the active one.
+            Err(error) => app.open_failed(name, &error),
+        }
+    }
+    fn detach_local_copy(&mut self, app: &PhotocraftApp) {
+        if let Some(document) = app.session.active() {
+            // The original engine preserves imported IDs when the old tab is closed.
+            // A recovery/template copy must never inherit that tab's cloud destination.
+            self.bindings.remove(&document.doc.id);
+            self.uncertain_commits.remove(&document.doc.id);
+            if let Some(request) = self.pending_document.filter(|request| request.document == document.doc.id) {
+                self.finish_document_request(request);
+            }
+            // A close/reopen can admit the same native ID and revision between frames.
+            // Treat admission as a fresh visit and revoke a pending snapshot of the old tab.
+            self.draft_generation.set(self.draft_generation.get().wrapping_add(1));
+            self.observed = None;
+            self.last_draft = None;
+        }
     }
     fn scope(&self) -> String {
         self.user.as_ref().map(|u| field(u, "id").into()).unwrap_or_else(|| "guest".into())
     }
+    fn refresh_drafts(&mut self, ctx: &egui::Context) {
+        self.draft_list_generation = self.draft_list_generation.wrapping_add(1);
+        let generation = self.draft_list_generation;
+        let scope = self.scope();
+        task(&self.queue, self.epoch, ctx, async move {
+            let drafts = draft_list(&scope).await;
+            Ok(Message::Drafts(generation, scope, drafts))
+        });
+    }
+    fn recovery_write(&self, activity: f64) -> RecoveryWrite {
+        RecoveryWrite {
+            generation: self.draft_generation.get(),
+            current: self.draft_generation.clone(),
+            allowed: self.draft_allowed.clone(),
+            saved_at: activity,
+        }
+    }
+    fn has_other_unsaved_documents(&self, app: &PhotocraftApp) -> bool {
+        let active = app.session.active().map(|d| d.doc.id);
+        app.session
+            .documents()
+            .iter()
+            .any(|d| Some(d.doc.id) != active && self.bindings.get(&d.doc.id).map(|b| b.revision == 0 || b.saved_local != d.revision).unwrap_or(d.is_dirty()))
+    }
     fn begin_sign_in(&mut self, app: &PhotocraftApp, ctx: &egui::Context) {
-        let mut drafts = Vec::new();
-        for d in app.session.documents() {
+        if self.has_other_unsaved_documents(app) {
+            self.error = true;
+            self.status = "Download your other unsaved documents before signing in. Browser recovery keeps only the last visited document.".into();
+            return;
+        }
+        let draft = if let Some(d) = app.session.active() {
             match photocraft_format::save_to_bytes(&d.doc, &Default::default()) {
-                Ok(bytes) => drafts.push((format!("guest:{}", d.doc.id.0), d.doc.name.clone(), bytes)),
+                Ok(bytes) => Some((format!("guest:{}", d.doc.id.0), d.doc.name.clone(), bytes)),
                 Err(e) => {
                     self.error = true;
                     self.status = format!("Could not preserve your work before sign-in: {e}. Download your document first.");
                     return;
                 }
             }
-        }
+        } else {
+            None
+        };
         self.busy = true;
-        let permit = self.draft_allowed.clone();
+        let document = app.session.active().map(|d| (d.doc.id, d.revision));
+        self.draft_generation.set(self.draft_generation.get().wrapping_add(1));
+        let write = self.recovery_write(now());
+        let generation = write.generation;
+        self.draft_pending = Some(generation);
         task(&self.queue, self.epoch, ctx, async move {
-            for (key, name, bytes) in drafts {
-                draft_put(&key, &name, &bytes, permit.clone()).await?;
+            let result = async {
+                if let Some((key, name, bytes)) = draft
+                    && !draft_put("guest", &key, &name, &bytes, write).await?
+                {
+                    return Err("Your browser recovery changed before sign-in. Try signing in again.".into());
+                }
+                Ok(())
             }
-            Ok(Message::SignInReady)
+            .await;
+            Ok(Message::SignInReady(generation, document, result))
         });
     }
     fn save(&mut self, app: &PhotocraftApp, ctx: &egui::Context, copy: bool) {
-        if self.busy {
+        if self.busy || self.pending_document.is_some() {
             return;
         }
         let Some(d) = app.session.active() else {
@@ -831,21 +1206,50 @@ impl Cloud {
         self.status = "Saving a complete version…".into();
         let queue = self.queue.clone();
         let epoch = self.epoch;
-        task(&self.queue, self.epoch, ctx, async move {
-            let (pid, base) = if let Some(b) = binding {
+        let uncertain = self.uncertain_commits.get(&docid).cloned().unwrap_or_default();
+        let request = self.document_request(docid);
+        document_task(&self.queue, self.epoch, ctx, request, async move {
+            let (pid, mut base) = if let Some(b) = binding {
                 (b.id, b.revision)
             } else {
                 let p = api("POST", "/api/projects", Some(json!({"title":name}))).await?;
                 let pid = field(&p, "id").to_string();
-                queue.borrow_mut().push((epoch, Message::Created(docid, pid.clone())));
+                queue.borrow_mut().push((epoch, Message::Created(request, pid.clone())));
                 (pid, 0)
             };
-            let init=api("POST",&format!("/api/projects/{pid}/uploads"),Some(json!({"base_revision":base,"bytes":bytes.len(),"parts":bytes.len().div_ceil(CHUNK),"sha256":hex::encode(Sha256::digest(&bytes)),"title":"Saved from editor","width":width,"height":height}))).await?;
+            // A lost response does not prove that the preceding commit failed. Only the
+            // exact uploaded snapshot can advance our base; the latest revision cannot.
+            let mut acknowledged = None;
+            for attempt in uncertain.iter().filter(|attempt| attempt.project == pid) {
+                let versions = api("GET", &format!("/api/projects/{pid}/versions?sha256={}&after_revision={}", attempt.sha256, attempt.base), None).await?;
+                if let Some(revision) = versions.as_array().and_then(|versions| {
+                    versions
+                        .iter()
+                        .filter(|version| field(version, "sha256") == attempt.sha256)
+                        .filter_map(|version| version.get("revision").and_then(Value::as_i64))
+                        .filter(|revision| *revision > attempt.base)
+                        .max()
+                }) && revision >= base
+                    && acknowledged.as_ref().is_none_or(|(_, previous)| revision > *previous)
+                {
+                    acknowledged = Some((attempt.local, revision));
+                }
+            }
+            if let Some((saved_local, revision)) = acknowledged {
+                base = revision;
+                queue.borrow_mut().push((epoch, Message::CommitReconciled(request, pid.clone(), saved_local, revision)));
+                if saved_local == local {
+                    return Ok(Message::Saved(request, local, pid, revision, false));
+                }
+            }
+            let sha256 = hex::encode(Sha256::digest(&bytes));
+            let init=api("POST",&format!("/api/projects/{pid}/uploads"),Some(json!({"base_revision":base,"bytes":bytes.len(),"parts":bytes.len().div_ceil(CHUNK),"sha256":sha256,"title":"Saved from editor","width":width,"height":height}))).await?;
             let uid = field(&init, "id");
             let uploaded = async {
                 for (i, b) in bytes.chunks(CHUNK).enumerate() {
                     binary("PUT", &format!("/api/uploads/{uid}/{i}"), Some(b)).await?;
                 }
+                queue.borrow_mut().push((epoch, Message::CommitAttempt(request, UncertainCommit { project: pid.clone(), base, local, sha256 })));
                 api("POST", &format!("/api/uploads/{uid}/commit"), Some(json!({}))).await
             }
             .await;
@@ -860,7 +1264,7 @@ impl Cloud {
                 let _ = binary("PUT", &format!("/api/projects/{pid}/thumbnail"), Some(&png)).await;
             }
             Ok(Message::Saved(
-                docid,
+                request,
                 local,
                 pid,
                 done.get("revision").and_then(Value::as_i64).unwrap_or(base + 1),
@@ -903,6 +1307,7 @@ impl Cloud {
             ui.style_mut().text_styles.insert(egui::TextStyle::Button, egui::FontId::proportional(14.));
             ui.horizontal_centered(|ui| {
                 if ui.add(egui::Button::new(RichText::new("PhotoCraft").size(18.).strong()).frame(false)).on_hover_text("Open your workspace").clicked() {
+                    self.cancel_open();
                     self.home = !self.home;
                     if self.home && self.user.is_some() {
                         self.list(&ctx);
@@ -914,6 +1319,7 @@ impl Cloud {
                 ui.separator();
                 if !self.home {
                     if !compact && ui.button("Projects").clicked() {
+                        self.cancel_open();
                         self.home = true;
                         self.list(&ctx);
                     }
@@ -1113,6 +1519,23 @@ impl Cloud {
                 }
             });
         });
+        if let Some(warning) = self.draft_write_warning.as_ref().or(self.draft_list_warning.as_ref()).cloned() {
+            egui::Panel::bottom("recovery_warning").frame(egui::Frame::NONE.fill(t.card).inner_margin(egui::Margin::symmetric(16, 6))).show(ui, |ui| {
+                ui.spacing_mut().interact_size.y = 28.;
+                ui.spacing_mut().button_padding = Vec2::new(6., 2.);
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(RichText::new("Browser recovery unavailable. Keep this tab open or download your work.").small().color(t.warning))
+                        .on_hover_text(&warning);
+                    if ui.add(egui::Button::new("Retry recovery").min_size(Vec2::new(0., 28.))).clicked() {
+                        self.last_draft = None;
+                        self.draft_retry_at = 0.;
+                        self.draft_activity = now();
+                        self.draft_visit = true;
+                        self.refresh_drafts(&ctx);
+                    }
+                });
+            });
+        }
         if self.home {
             self.home_ui(app, ui);
         } else {
@@ -1138,6 +1561,7 @@ impl Cloud {
         self.dialogs(app, &ctx);
     }
     fn home_action(&mut self, app: &mut PhotocraftApp, ctx: &egui::Context, action: home::Action) {
+        self.cancel_open();
         match action {
             home::Action::New(w, h) => {
                 new_document(app, w, h, "Untitled canvas");
@@ -1174,6 +1598,7 @@ impl Cloud {
                     home::vertical_gap(ui, home::ROW_GAP);
                     for (index, (_, name)) in nav.iter().enumerate() {
                         if home::nav_button(ui, name, self.filter == *name, index).clicked() {
+                            self.cancel_open();
                             self.filter = (*name).into();
                             self.search.clear();
                         }
@@ -1189,6 +1614,7 @@ impl Cloud {
                     if app.session.active().is_some() {
                         home::vertical_gap(ui, home::SECTION_GAP);
                         if ui.add_sized([178., home::CONTROL_HEIGHT], home::primary("Return to editor →")).clicked() {
+                            self.cancel_open();
                             self.home = false;
                         }
                     }
@@ -1202,6 +1628,7 @@ impl Cloud {
                     ui.horizontal_wrapped(|ui| {
                         for (_, name) in nav {
                             if home::compact_nav(ui, name, self.filter == name).clicked() {
+                                self.cancel_open();
                                 self.filter = name.into();
                                 self.search.clear();
                             }
@@ -1220,10 +1647,12 @@ impl Cloud {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.spacing_mut().item_spacing.x = home::RELATED_GAP;
                         if ui.add_sized([132., home::CONTROL_HEIGHT], home::primary("Create a design")).clicked() {
+                            self.cancel_open();
                             let _ = photocraft_ui_egui::menus::invoke(app, &ctx, "file.new", json!({}));
                             self.home = false;
                         }
                         if ui.add_sized([88., home::CONTROL_HEIGHT], home::secondary("Open file")).clicked() {
+                            self.cancel_open();
                             app.open_dialog_file();
                         }
                     });
@@ -1269,6 +1698,7 @@ impl Cloud {
                         ui.horizontal(|ui| {
                             ui.label(RichText::new("Recent projects").size(20.).strong().color(home::INK));
                             if ui.button("All projects →").clicked() {
+                                self.cancel_open();
                                 self.filter = "All projects".into();
                             }
                         });
@@ -1301,12 +1731,13 @@ impl Cloud {
                     if !self.drafts.is_empty() && matches!(self.filter.as_str(), "Home" | "All projects") {
                         home::vertical_gap(ui, home::SECTION_GAP);
                         ui.label(RichText::new("Browser recovery").size(18.).strong());
-                        ui.label("Local recovery copies stay on this browser. Open one as a separate document.");
+                        ui.label("Your most recently visited document is kept here. Visiting another replaces this copy.");
                         home::vertical_gap(ui, home::RELATED_GAP);
                         for (key, v) in self.drafts.clone() {
                             ui.horizontal(|ui| {
                                 ui.label(field(&v, "name"));
                                 if ui.button("Recover").clicked() {
+                                    self.cancel_open();
                                     let key = key.clone();
                                     task(&self.queue, self.epoch, &ctx, async move {
                                         let (name, b) = draft_get(&key).await?;
@@ -1433,6 +1864,7 @@ impl Cloud {
                         ui.label("Your document is still open in this browser.");
                     });
                     if ui.add_enabled(!self.busy && !trashed, home::primary("Retry save")).clicked() && app.session.set_active(index) {
+                        self.cancel_open();
                         app.sync_views();
                         self.home = false;
                         self.save(app, ctx, false);
@@ -1491,6 +1923,7 @@ impl Cloud {
                 if ui.add_enabled(!self.busy, egui::Button::new("Sign out and clear this browser")).clicked() {
                     self.busy = true;
                     self.draft_allowed.set(false);
+                    self.draft_generation.set(self.draft_generation.get().wrapping_add(1));
                     task(&self.queue, self.epoch, ctx, async {
                         api("POST", "/api/logout", Some(json!({}))).await?;
                         clear_drafts().await?;
@@ -1836,41 +2269,109 @@ fn new_document(app: &mut PhotocraftApp, w: u32, h: u32, name: &str) {
 async fn recovery_db() -> Result<rexie::Rexie, String> {
     rexie::Rexie::builder("photocraft-studio-recovery").version(1).add_object_store(rexie::ObjectStore::new("drafts")).build().await.map_err(js_error)
 }
-async fn draft_put(key: &str, name: &str, bytes: &[u8], permit: Rc<Cell<bool>>) -> Result<(), String> {
+fn recovery_time(value: &JsValue) -> f64 {
+    js_sys::Reflect::get(value, &JsValue::from_str("savedAt")).ok().and_then(|v| v.as_f64()).filter(|v| v.is_finite()).unwrap_or(0.)
+}
+async fn recovery_rows(store: &rexie::Store, scope: &str) -> Result<Vec<(String, f64)>, String> {
+    let keys = store.get_all_keys(None, None).await.map_err(js_error)?;
+    let mut rows = Vec::new();
+    let prefix = format!("{scope}:");
+    for key in keys {
+        if let Some(k) = key.as_string().filter(|k| k.starts_with(&prefix) || k.starts_with("guest:"))
+            && let Some(value) = store.get(key).await.map_err(js_error)?
+        {
+            // Legacy stores may contain many large native files. Do not retain their byte arrays.
+            rows.push((k, recovery_time(&value)));
+        }
+    }
+    Ok(rows)
+}
+async fn draft_put(scope: &str, key: &str, name: &str, bytes: &[u8], write: RecoveryWrite) -> Result<bool, String> {
     let db = recovery_db().await?;
-    if !permit.get() {
-        return Ok(());
+    if !write.is_current() {
+        return Ok(false);
+    }
+    let obj = js_sys::Object::new();
+    for (k, v) in [("name", JsValue::from_str(name)), ("data", js_sys::Uint8Array::from(bytes).into()), ("savedAt", JsValue::from_f64(write.saved_at))] {
+        js_sys::Reflect::set(&obj, &JsValue::from_str(k), &v).map_err(|_| "Recovery data could not be encoded")?;
     }
     let tx = db.transaction(&["drafts"], rexie::TransactionMode::ReadWrite).map_err(js_error)?;
     let store = tx.store("drafts").map_err(js_error)?;
-    let obj = js_sys::Object::new();
-    for (k, v) in [("name", JsValue::from_str(name)), ("data", js_sys::Uint8Array::from(bytes).into()), ("savedAt", JsValue::from_f64(now()))] {
-        js_sys::Reflect::set(&obj, &JsValue::from_str(k), &v).map_err(|_| "Recovery data could not be encoded")?;
+    let result = async {
+        let rows = recovery_rows(&store, scope).await?;
+        // Transactions serialize tabs too. A delayed older snapshot cannot evict a newer one.
+        if !write.is_current() || rows.iter().any(|(_, saved_at)| *saved_at > write.saved_at) {
+            return Ok(false);
+        }
+        store.put(&obj, Some(&JsValue::from_str(key))).await.map_err(js_error)?;
+        for (old, _) in rows {
+            if old != key {
+                store.delete(JsValue::from_str(&old)).await.map_err(js_error)?;
+            }
+        }
+        Ok(true)
     }
-    store.put(&obj, Some(&JsValue::from_str(key))).await.map_err(js_error)?;
-    tx.done().await.map_err(js_error)?;
-    Ok(())
+    .await;
+    match result {
+        Ok(written) => {
+            if written && !write.is_current() {
+                tx.abort().await.map_err(js_error)?;
+                return Ok(false);
+            }
+            tx.done().await.map_err(js_error)?;
+            Ok(written)
+        }
+        Err(error) => {
+            let _ = tx.abort().await;
+            Err(error)
+        }
+    }
 }
 async fn draft_list(scope: &str) -> Result<Vec<(String, Value)>, String> {
     let db = recovery_db().await?;
-    let tx = db.transaction(&["drafts"], rexie::TransactionMode::ReadOnly).map_err(js_error)?;
+    let tx = db.transaction(&["drafts"], rexie::TransactionMode::ReadWrite).map_err(js_error)?;
     let store = tx.store("drafts").map_err(js_error)?;
-    let keys = store.get_all_keys(None, None).await.map_err(js_error)?;
-    let mut out = vec![];
-    for key in keys {
-        if let Some(k) = key.as_string().filter(|k| k.starts_with(&format!("{scope}:")) || k.starts_with("guest:"))
-            && let Some(v) = store.get(key).await.map_err(js_error)?
-        {
-            let name = js_sys::Reflect::get(&v, &JsValue::from_str("name")).ok().and_then(|v| v.as_string()).unwrap_or_else(|| "Recovered document".into());
-            out.push((k, json!({"name":name})));
+    let result = async {
+        let rows = recovery_rows(&store, scope).await?;
+        let Some((key, _)) = rows.iter().max_by(|a, b| a.1.total_cmp(&b.1).then_with(|| a.0.cmp(&b.0))) else {
+            return Ok(Vec::new());
+        };
+        let value = store.get(JsValue::from_str(key)).await.map_err(js_error)?.ok_or("Recovery copy is unavailable")?;
+        // Adopt the guest handoff into this account; other accounts remain isolated.
+        let retained = key.strip_prefix("guest:").map(|document| format!("{scope}:{document}")).unwrap_or_else(|| key.clone());
+        if retained != *key {
+            store.put(&value, Some(&JsValue::from_str(&retained))).await.map_err(js_error)?;
+        }
+        for (old, _) in &rows {
+            if *old != retained {
+                store.delete(JsValue::from_str(old)).await.map_err(js_error)?;
+            }
+        }
+        let name = js_sys::Reflect::get(&value, &JsValue::from_str("name")).ok().and_then(|v| v.as_string()).unwrap_or_else(|| "Recovered document".into());
+        Ok(vec![(retained, json!({"name":name}))])
+    }
+    .await;
+    match result {
+        Ok(drafts) => {
+            tx.done().await.map_err(js_error)?;
+            Ok(drafts)
+        }
+        Err(error) => {
+            let _ = tx.abort().await;
+            Err(error)
         }
     }
-    Ok(out)
 }
 async fn draft_get(key: &str) -> Result<(String, Vec<u8>), String> {
     let db = recovery_db().await?;
     let tx = db.transaction(&["drafts"], rexie::TransactionMode::ReadOnly).map_err(js_error)?;
-    let v = tx.store("drafts").map_err(js_error)?.get(JsValue::from_str(key)).await.map_err(js_error)?.ok_or("Recovery copy is unavailable")?;
+    let v = tx
+        .store("drafts")
+        .map_err(js_error)?
+        .get(JsValue::from_str(key))
+        .await
+        .map_err(js_error)?
+        .ok_or("This recovery copy was replaced by a more recently visited document. Reload the workspace to see the latest copy.")?;
     let name = js_sys::Reflect::get(&v, &JsValue::from_str("name")).ok().and_then(|v| v.as_string()).unwrap_or_else(|| "Recovered.pcraft".into());
     let data = js_sys::Reflect::get(&v, &JsValue::from_str("data")).map_err(|_| "Recovery copy is invalid")?;
     Ok((format!("{name}.pcraft"), js_sys::Uint8Array::new(&data).to_vec()))
