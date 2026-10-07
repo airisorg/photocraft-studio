@@ -3,6 +3,7 @@
 Creates a synthetic document only in this disposable browser, draws, exports PNG, imports
 that download and records pixels, renderer, resource timing and a screenshot.
 """
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -25,6 +26,8 @@ with sync_playwright() as p:
     page = context.new_page()
     errors=[]
     configuration=[]
+    wasm_responses=[]
+    page.on('response',lambda response:wasm_responses.append(response) if urlparse(response.url).path.endswith('.wasm') else None)
     page.on('pageerror',lambda error:errors.append(str(error)))
     page.on('response',lambda response: configuration.append({'status':response.status,'body':response.json()}) if urlparse(response.url).path=='/api/config' and response.status==200 else None)
     response=page.goto(url,wait_until='networkidle',timeout=120000)
@@ -82,9 +85,14 @@ with sync_playwright() as p:
     assert len(before['document']['layers'])==4
     assert not errors,errors
     resources=page.evaluate('performance.getEntriesByType("resource").filter(e=>e.name.endsWith(".wasm")).map(e=>({url:e.name,durationMs:e.duration,encodedBytes:e.encodedBodySize,decodedBytes:e.decodedBodySize}))')
+    assert len(wasm_responses)==1, len(wasm_responses)
+    wasm_sha256=hashlib.sha256(wasm_responses[0].body()).hexdigest()
+    expected=os.environ.get('PHOTOCRAFT_EXPECTED_WASM_SHA256')
+    if expected:
+        assert wasm_sha256==expected,(wasm_sha256,expected)
     (out/'hosted-evidence.json').write_text(json.dumps({'url':url,'browser':browser.version,'renderer':before['perf']['timings']['gpuInfo'],
         'beforeLayers':len(before['document']['layers']),'exportSize':[960,640],'reimportSize':[after['document']['width'],after['document']['height']],
-        'pageErrors':errors,'wasmResources':resources,'configuration':configuration,'headerRects':header_rects},indent=2))
+        'pageErrors':errors,'wasmSha256':wasm_sha256,'wasmResources':resources,'configuration':configuration,'headerRects':header_rects},indent=2))
     print('Hosted guest edit, PNG export and re-import passed.')
     context.close()
     browser.close()
