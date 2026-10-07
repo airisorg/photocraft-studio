@@ -328,6 +328,7 @@ pub(crate) fn freehand_tool(tool: Tool) -> bool {
             | Tool::Burn
             | Tool::Sponge
             | Tool::Lasso
+            | Tool::Patch
             | Tool::QuickSelection
     )
 }
@@ -487,6 +488,10 @@ fn display_doc(app: &mut PhotocraftApp, idx: usize) -> (std::sync::Arc<Document>
     if let Some(shown) = crate::move_ui::display_doc(app, idx) {
         return shown;
     }
+    // Patch Tool drag: the selection healed from where the pointer is.
+    if let Some(shown) = crate::patch_preview::display_doc(app, idx) {
+        return shown;
+    }
     let st = &app.session.documents()[idx];
     if let Some(l) = live_stroke(app, idx) {
         return (l.stroke.doc.clone(), l.display_key());
@@ -563,9 +568,9 @@ pub fn navigator_texture(app: &mut PhotocraftApp, ctx: &egui::Context, idx: usiz
     {
         return Some(t.id());
     }
-    // While a Move drag is under way the navigator keeps its image and catches up on release.
+    // While a Move or Patch drag is under way the navigator keeps its image and catches up on release.
     if let Some((_, _, t)) = &cached
-        && crate::move_ui::showing(app)
+        && (crate::move_ui::showing(app) || crate::patch_preview::showing(app))
     {
         return Some(t.id());
     }
@@ -676,6 +681,13 @@ fn damage_since(app: &PhotocraftApp, idx: usize, seen: (u64, u64), now: (u64, u6
     if (seen.0 == now.0 || (seen.0 + 1 == now.0 && last_damage.is_some_and(|r| r.is_empty())))
         && let Some(st) = app.session.documents().get(idx)
         && let Some(r) = crate::move_ui::damage(app, st.doc.id, now.0, seen.1 ^ display_key, now.1)
+    {
+        return Some(if r.is_empty() { r } else { r.inflate(effect_reach(&st.doc.layers)) });
+    }
+    // Between a Patch drag's previews: the areas they healed.
+    if seen.0 == now.0
+        && let Some(st) = app.session.documents().get(idx)
+        && let Some(r) = crate::patch_preview::damage(app, st.doc.id, now.0, seen.1 ^ display_key, now.1)
     {
         return Some(if r.is_empty() { r } else { r.inflate(effect_reach(&st.doc.layers)) });
     }
@@ -2227,7 +2239,16 @@ fn draw_drag_preview(app: &mut PhotocraftApp, painter: &egui::Painter, xf: &View
             };
             crate::tool_feedback::draw_ants(painter, &pts, true);
         }
-        Tool::Lasso => {
+        // Patch Tool dragging the patch: the selection outline follows the pointer.
+        Tool::Patch if crate::retouch_ui::patch_drags_selection(app, d.start, d.modifiers) => {
+            let start = d.start;
+            let [dx, dy] = crate::retouch_ui::patch_offset(app, start, last);
+            if let Some((_, _, segs)) = &app.outline_cache {
+                let moved: Vec<crate::outline::Segment> = segs.iter().map(|(a, b)| ([a[0] + dx, a[1] + dy], [b[0] + dx, b[1] + dy])).collect();
+                marching_ants_segments(painter, xf, &moved, painter.ctx().input(|i| i.time));
+            }
+        }
+        Tool::Lasso | Tool::Patch => {
             let pts: Vec<Pos2> = d.points.iter().map(|p| xf.to_screen(p[0] as f32, p[1] as f32)).collect();
             crate::tool_feedback::draw_ants(painter, &pts, false);
         }

@@ -1,6 +1,6 @@
-//! UI for the retouching tools (healing, clone, history brush, blur/sharpen/smudge, dodge/burn/
-//! sponge, Mixer Brush) and the smart selection tools (Quick Selection, Object Selection): gesture
-//! → engine command, options bars, and the clone-source marker.
+//! UI for the retouching tools (healing, patch, clone, history brush, blur/sharpen/smudge,
+//! dodge/burn/sponge, Mixer Brush) and the smart selection tools (Quick Selection, Object
+//! Selection): gesture → engine command, options bars, and the clone-source marker.
 
 use egui::{Color32, Stroke, vec2};
 use serde_json::{Value, json};
@@ -180,7 +180,7 @@ fn pct(ui: &mut egui::Ui, label: &str, v: &mut f32) {
 
 /// Options bar for the retouching and smart-selection tools. Returns false for other tools.
 pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool) -> bool {
-    if !tool.is_brushlike() && !matches!(tool, Tool::QuickSelection | Tool::ObjectSelection)
+    if !tool.is_brushlike() && !matches!(tool, Tool::QuickSelection | Tool::ObjectSelection | Tool::Patch)
         || matches!(tool, Tool::Brush | Tool::Pencil | Tool::MixerBrush | Tool::Eraser)
     {
         return false;
@@ -197,6 +197,17 @@ pub fn options_bar(app: &mut PhotocraftApp, ui: &mut egui::Ui, tool: Tool) -> bo
             }
             crate::widgets::vline(ui, 22.0);
             crate::widgets::checkbox(ui, &mut o.sample_all_layers, tl!("Sample All Layers"));
+        }
+        Tool::Patch => {
+            opt(ui, tl!("Patch:"));
+            for (k, l) in [("source", tl!("Source")), ("destination", tl!("Destination"))] {
+                let mut on = o.patch_mode == k;
+                if crate::widgets::checkbox(ui, &mut on, l).clicked() {
+                    o.patch_mode = k.into();
+                }
+            }
+            crate::widgets::vline(ui, 22.0);
+            opt(ui, tl!("Lasso around an area, then drag the selection"));
         }
         Tool::Healing | Tool::CloneStamp => {
             crate::widgets::checkbox(ui, &mut o.clone_aligned, tl!("Aligned"));
@@ -381,5 +392,34 @@ mod tests {
         assert_ne!(surface.rgba(50, 30), before[1], "the selected pixels are mixed");
         assert_eq!(surface.rgba(20, 30), before[0], "outside the selection is unchanged");
         assert_eq!(surface.rgba(80, 30), before[2], "the far side outside the selection is unchanged");
+    }
+
+    #[test]
+    fn patch_tool_lassoes_then_drags_the_patch() {
+        let mut app = app();
+        app.run("paint.pencil", json!({"points": [[68, 30], [74, 30]], "size": 6, "color": "#ff0000"})).unwrap();
+        let red = |app: &PhotocraftApp| active(app).surface().unwrap().rgba(71, 30)[1] < 0.5;
+        assert!(red(&app));
+        app.ui.tool = Tool::Patch;
+        let m = egui::Modifiers::NONE;
+        // Outside any selection the drag is a lasso.
+        tool_event(&mut app, ToolEvent::Down { x: 60.0, y: 20.0, pressure: 1.0 }, m);
+        for [x, y] in [[84.0, 20.0], [84.0, 40.0], [60.0, 40.0]] {
+            tool_event(&mut app, ToolEvent::Move { x, y, pressure: 1.0 }, m);
+        }
+        tool_event(&mut app, ToolEvent::Up { x: 60.0, y: 40.0 }, m);
+        assert!(app.session.active().unwrap().doc.selection.is_some(), "lasso made a selection");
+        assert!(red(&app), "the lasso alone changes no pixels");
+        // ⇧-drag inside the selection adds to it rather than patching.
+        assert!(!patch_drags_selection(&app, [70.0, 30.0], egui::Modifiers::SHIFT));
+        // Dragging inside it patches from where it is dropped; the offset is limited to the canvas.
+        assert!(patch_drags_selection(&app, [70.0, 30.0], m));
+        assert_eq!(patch_offset(&mut app, [70.0, 30.0], [-200.0, 30.0]), [-60, 0]);
+        tool_event(&mut app, ToolEvent::Down { x: 70.0, y: 30.0, pressure: 1.0 }, m);
+        tool_event(&mut app, ToolEvent::Move { x: 50.0, y: 31.0, pressure: 1.0 }, m);
+        tool_event(&mut app, ToolEvent::Up { x: 30.0, y: 30.0 }, m);
+        assert!(!app.ui.status_error, "{}", app.ui.status);
+        let px = active(&app).surface().unwrap().rgba(71, 30);
+        assert!(px[0] > 0.95 && px[1] > 0.95 && px[2] > 0.95, "blemish patched with the white background: {px:?}");
     }
 }
