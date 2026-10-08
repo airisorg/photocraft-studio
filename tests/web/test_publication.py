@@ -18,6 +18,60 @@ SPEC.loader.exec_module(publication)
 
 
 class PublicationHistory(unittest.TestCase):
+    def test_freebsd_disk_cleanup_removes_only_unused_host_sdks(self):
+        root = Path(__file__).resolve().parents[2]
+        source = (root/'.github/workflows/freebsd.yml').read_text()
+        step = source.split('      - name: Reserve disk for the FreeBSD VM\n', 1)[1].split('\n      - ', 1)[0]
+        block = textwrap.dedent(step.split('        run: |\n', 1)[1])
+        approved = ['/usr/local/lib/android', '/usr/share/dotnet', '/opt/ghc']
+        paths = re.search(r'for unused_sdk in ([^;]+); do', block).group(1).split()
+        self.assertEqual(paths, approved, 'Cleanup must retain the runner toolcache and VM/runtime directories')
+        with tempfile.TemporaryDirectory() as directory:
+            temp = Path(directory)
+            binaries = temp/'bin'
+            binaries.mkdir()
+            allowed = [temp/('sdk-'+str(i)) for i in range(len(approved))]
+            preserved = [temp/name for name in ['toolcache', 'actions', 'vm', 'workspace']]
+            for path in preserved:
+                path.mkdir()
+                (path/'keep').write_text('must survive')
+            for original, replacement in zip(approved, allowed):
+                block = block.replace(original, str(replacement))
+            # A bounded sudo fixture refuses any deletion outside the three
+            # synthetic SDKs; no privileged command or real SDK is touched.
+            programs = {
+                'sudo': '#!'+sys.executable+'\nimport os,sys,shutil\nfrom pathlib import Path\n'
+                        'args=sys.argv[1:]\n'
+                        'assert args[:-1] in (["du","-sh","--"],["rm","-rf","--"])\n'
+                        'assert args[-1] in '+repr([str(p) for p in allowed])+'\n'
+                        'with open(os.environ["FIXTURE_LOG"],"a") as log: log.write(" ".join(args)+"\\n")\n'
+                        'if args[0] == "rm": shutil.rmtree(args[-1])\n',
+                'df': '#!'+sys.executable+'\nimport os,sys\n'
+                      'assert sys.argv[1:] == ["-h","/",os.environ["GITHUB_WORKSPACE"]]\n'
+                      'with open(os.environ["FIXTURE_LOG"],"a") as log: log.write("disk checkpoint\\n")\n',
+            }
+            for name, content in programs.items():
+                path = binaries/name
+                path.write_text(content)
+                path.chmod(0o700)
+            log = temp/'commands'
+            environment = {**os.environ, 'PATH':str(binaries)+':/usr/bin:/bin',
+                           'GITHUB_WORKSPACE':str(preserved[-1]), 'FIXTURE_LOG':str(log)}
+            for count in [3, 1, 0]:
+                with self.subTest(present_sdks=count):
+                    for path in allowed[:count]:
+                        path.mkdir()
+                        (path/'payload').write_text('unused SDK')
+                    log.write_text('')
+                    result = subprocess.run(['/bin/bash', '-c', block], env=environment, capture_output=True)
+                    self.assertEqual(result.returncode, 0, result.stderr.decode())
+                    self.assertTrue(all(not p.exists() for p in allowed))
+                    self.assertTrue(all((p/'keep').read_text() == 'must survive' for p in preserved))
+                    commands = log.read_text().splitlines()
+                    self.assertEqual(commands[0], 'disk checkpoint')
+                    self.assertEqual(commands[-1], 'disk checkpoint')
+                    self.assertEqual(sum(c.startswith('rm ') for c in commands), count)
+
     def test_freebsd_bootstrap_pin_and_fail_closed_execution(self):
         root = Path(__file__).resolve().parents[2]
         pinned = '4d9fef2e40731489f3186c61a0f178d54d79864fe3d34791edf5b17f70074956'

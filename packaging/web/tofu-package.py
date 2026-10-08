@@ -45,7 +45,7 @@ with tempfile.TemporaryDirectory(prefix="photocraft-rust-notices-") as temporary
                 continue
             archive.write(path, name)
         for path in sorted(assets.rglob('*')):
-            if path.is_file() and path.suffix in {'.html', '.js', '.wasm', '.svg', '.png', '.pcraft'}:
+            if path.is_file() and path.suffix in {'.html', '.js', '.wasm', '.svg', '.png', '.pcraft', '.mp4'}:
                 archive.write(path, 'public/'+path.relative_to(assets).as_posix())
         archive.writestr('release-source.json', json.dumps(manifest, indent=2) + '\n')
         # The browser receives public/, not the source tree in the container. Ship

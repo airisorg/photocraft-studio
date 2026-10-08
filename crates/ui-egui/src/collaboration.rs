@@ -173,6 +173,11 @@ pub fn drain(app: &mut PhotocraftApp) -> Vec<LocalEvent> {
 pub fn clear_peer(app: &mut PhotocraftApp, peer: &str) {
     app.collaboration.cursors.remove(peer);
     app.collaboration.labels.remove(peer);
+    clear_preview(app, peer);
+}
+
+/// Retire a transient document view without hiding its separately authorized cursor.
+pub fn clear_preview(app: &mut PhotocraftApp, peer: &str) {
     if app.collaboration.remote.as_ref().is_some_and(|r| r.peer == peer) {
         retire(&mut app.collaboration);
     }
@@ -893,6 +898,35 @@ mod tests {
 
     fn pixels(doc: &Document) -> Vec<[f32; 4]> {
         photocraft_compose::render(doc, doc.bounds()).px
+    }
+
+    #[test]
+    fn retiring_only_preview_preserves_fresh_cursor_and_native_document() {
+        let (mut owner, mut peer) = pair(8, Tool::Pencil);
+        let original = peer.session.active().unwrap().doc.clone();
+        let revision = peer.session.active().unwrap().revision;
+        let id = original.id;
+        let mut events = Vec::new();
+        tool_event(&mut owner, ToolEvent::Down { x: 12., y: 20., pressure: 1. }, egui::Modifiers::NONE);
+        tool_event(&mut owner, ToolEvent::Move { x: 36., y: 20., pressure: 1. }, egui::Modifiers::NONE);
+        replay(&mut owner, &mut peer, &mut events);
+        receive(&mut peer, id, revision, "Peer", PreviewEvent { gesture: 0, sequence: 0, kind: PreviewKind::Cursor { position: Some([36., 20.]) } }, 0.)
+            .unwrap();
+        set_peer_label(&mut peer, "Peer", "Editor");
+        clear_preview(&mut peer, "Another peer");
+        assert!(display_doc(&peer, 0).is_some());
+        clear_preview(&mut peer, "Peer");
+        assert!(display_doc(&peer, 0).is_none());
+        assert_eq!(peer.collaboration.cursors["Peer"].position, [36., 20.]);
+        assert_eq!(peer.collaboration.labels["Peer"], "Editor");
+        replay(&mut owner, &mut peer, &mut events);
+        assert!(display_doc(&peer, 0).is_none(), "retired gesture cannot return on replay");
+        assert!(Arc::ptr_eq(&original, &peer.session.active().unwrap().doc));
+        assert_eq!(peer.session.active().unwrap().revision, revision);
+        assert_eq!(peer.session.active().unwrap().history.past_len(), 0);
+        clear_peer(&mut peer, "Peer");
+        assert!(!peer.collaboration.cursors.contains_key("Peer"));
+        assert!(!peer.collaboration.labels.contains_key("Peer"));
     }
 
     #[test]

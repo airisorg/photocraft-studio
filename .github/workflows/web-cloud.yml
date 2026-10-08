@@ -99,6 +99,7 @@ jobs:
           python tests/web/test_api.py
           python tests/web/test_live.py
           python tests/web/test_live_scale.py
+          python tests/web/test_live_handoff.py
           PHOTOCRAFT_CLOUD_BIN=target/debug/photocraft-cloud python tests/web/test_security_auth.py
           python tests/web/test_archive_security.py
           python tests/web/test_renderer_startup.py

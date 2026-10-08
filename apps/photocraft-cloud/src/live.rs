@@ -96,14 +96,28 @@ const PEERS: &str = r#"
   WHERE gate.status=200
    AND l.seen_at>(SELECT observed_at FROM live_clock)-interval '2 seconds'
    AND (p.owner_id=a.id OR m.role IN ('view','edit'))
-   AND (l.cursor IS NOT NULL OR (l.gesture IS NOT NULL AND l.base_revision=p.revision AND (p.owner_id=a.id OR m.role='edit')))
+   -- A completed old-base gesture is metadata only, but keeps an authorized
+   -- publisher present while the receiver installs the saved document.
+   AND (l.cursor IS NOT NULL OR (l.gesture IS NOT NULL AND (p.owner_id=a.id OR m.role='edit')
+        AND (l.base_revision=p.revision OR (l.base_revision<p.revision AND l.gesture->'events'-> -1->>'kind'='end'))))
    AND NOT(l.session_hash=$1 AND l.tab_id=$4)
  ) peers),'[]'::jsonb)
 "#;
 
 const WRITE: &str = r#"
 , previous AS MATERIALIZED (
- SELECT seq,project_id,seen_at,cursor,gesture FROM photocraft.live_previews WHERE session_hash=$1 AND tab_id=$4
+ SELECT seq,project_id,base_revision,seen_at,cursor,gesture FROM photocraft.live_previews WHERE session_hash=$1 AND tab_id=$4
+), handoff AS MATERIALIZED (
+ -- Pointer exit after a completed save must not erase the publisher's identity
+ -- before peers install its bytes. Retain only an already admitted End, with
+ -- its ORIGINAL lease and current editing authority; never admit empty rows.
+ SELECT previous.base_revision,previous.gesture,previous.seen_at
+ FROM previous CROSS JOIN access
+ WHERE $7::jsonb IS NULL AND $8::jsonb IS NULL
+  AND previous.project_id=$3 AND previous.base_revision<access.revision
+  AND previous.seen_at>(SELECT observed_at FROM live_clock)-interval '2 seconds'
+  AND previous.gesture->'events'-> -1->>'kind'='end'
+  AND access.role IN ('owner','edit')
 ), decision AS MATERIALIZED (
  SELECT CASE
  WHEN gate.status<>200 THEN gate.status
@@ -133,7 +147,9 @@ const WRITE: &str = r#"
  ELSE 200 END AS status FROM gate
 ), written AS (
  INSERT INTO photocraft.live_previews(session_hash,tab_id,project_id,seq,base_revision,cursor,gesture,seen_at)
- SELECT $1,$4,$3,$5,CASE WHEN $8::jsonb IS NULL THEN (SELECT revision FROM access) ELSE $6 END,$7,$8,clock_timestamp()
+ SELECT $1,$4,$3,$5,
+  COALESCE((SELECT base_revision FROM handoff),CASE WHEN $8::jsonb IS NULL THEN (SELECT revision FROM access) ELSE $6 END),
+  $7,COALESCE((SELECT gesture FROM handoff),$8),COALESCE((SELECT seen_at FROM handoff),clock_timestamp())
  FROM decision WHERE status=200
  ON CONFLICT(session_hash,tab_id) DO UPDATE SET
   project_id=EXCLUDED.project_id,seq=EXCLUDED.seq,base_revision=EXCLUDED.base_revision,

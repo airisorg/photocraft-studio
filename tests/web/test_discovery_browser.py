@@ -123,7 +123,8 @@ class DiscoveryBrowser(unittest.TestCase):
                 record['requests'].append(entry)
                 # Browser-initiated favicon lookup is also a public GET, never an account call.
                 allowed = (f'{parsed.scheme}://{parsed.netloc}' == BASE and request.method == 'GET'
-                           and not parsed.query and parsed.path in {'/about.html', '/media/editor.png', '/favicon.ico'}
+                           and not parsed.query and parsed.path in {'/about.html', '/media/editor.png',
+                                                                  '/media/collaboration-preview.png', '/favicon.ico'}
                            and request.resource_type in {'document', 'image', 'other'})
                 if allowed:
                     route.continue_()
@@ -145,6 +146,12 @@ class DiscoveryBrowser(unittest.TestCase):
             self.assertIn('PhotoCraft Studio', page.title())
             self.assertEqual(page.locator('script, canvas, iframe, form').count(), 0)
             self.assertEqual(page.evaluate('typeof window.photocraftCommand'), 'undefined')
+            videos = page.locator('video')
+            self.assertEqual(videos.count(), 2)
+            for i in range(videos.count()):
+                self.assertEqual(videos.nth(i).evaluate('v=>[v.paused,v.preload,v.autoplay,v.loop,v.controls]'),
+                                 [True, 'none', False, False, True])
+            self.assertIn('Local test workspace with disposable accounts', page.locator('main').inner_text())
             image = page.locator('main figure img')
             self.assertEqual(image.evaluate('el=>[el.complete, el.naturalWidth, el.naturalHeight]'), [True, 1440, 960])
             self.assertLessEqual(page.evaluate('Math.max(document.documentElement.scrollWidth, document.body.scrollWidth)'), width)
@@ -213,6 +220,80 @@ class DiscoveryBrowser(unittest.TestCase):
         for width in WIDTHS:
             with self.subTest(width=width):
                 self.journey(width, javascript=True)
+
+    def test_03_real_mp4_playback_starts_only_on_user_request(self):
+        record = {'origin': BASE, 'passed': False, 'requests': [], 'blocked': [], 'errors': [], 'videos': []}
+        context = self.browser.new_context(viewport={'width': 1440, 'height': 960}, service_workers='block')
+        allowed = {'/about.html', '/media/editor.png', '/media/collaboration-preview.png', '/favicon.ico',
+                   '/media/editing-walkthrough.mp4', '/media/collaboration-demo.mp4'}
+        page = None
+        try:
+            def guard(route):
+                request = route.request
+                parsed = urlsplit(request.url)
+                record['requests'].append({'path': parsed.path, 'method': request.method, 'type': request.resource_type})
+                if (f'{parsed.scheme}://{parsed.netloc}' == BASE and request.method == 'GET'
+                        and not parsed.query and parsed.path in allowed):
+                    route.continue_()
+                else:
+                    record['blocked'].append(parsed.path)
+                    route.abort()
+            context.route('**/*', guard)
+            page = context.new_page()
+            page.on('pageerror', lambda error: record['errors'].append(str(error)))
+            self.assertEqual(page.goto(BASE + '/about.html', wait_until='load').status, 200)
+            self.assertFalse([request for request in record['requests'] if request['path'].endswith('.mp4')],
+                             'Videos must not download on page load')
+            videos = page.locator('video')
+            self.assertEqual(videos.count(), 2)
+            for i in range(videos.count()):
+                video = videos.nth(i)
+                source = video.locator('source').get_attribute('src')
+                self.assertFalse([request for request in record['requests'] if request['path'] == source],
+                                 'Each video must stay unloaded until its own Play action')
+                video.scroll_into_view_if_needed()
+                box = video.bounding_box()
+                self.assertIsNotNone(box)
+                # Activate the browser's actual Play control with trusted input.
+                page.mouse.move(box['x'] + 24, box['y'] + box['height'] - 38)
+                page.mouse.click(box['x'] + 24, box['y'] + box['height'] - 38)
+                handle = video.element_handle()
+                page.wait_for_function('v=>!v.paused && v.readyState>=2 && v.currentTime>.15', arg=handle, timeout=20000)
+                first = video.evaluate('v=>v.currentTime')
+                page.wait_for_timeout(250)
+                measured = video.evaluate('v=>({time:v.currentTime,width:v.videoWidth,height:v.videoHeight,duration:v.duration,error:v.error&&v.error.code})')
+                self.assertGreater(measured['time'], first)
+                self.assertGreaterEqual(measured['width'], 1280)
+                self.assertGreaterEqual(measured['height'], 720)
+                self.assertGreater(measured['duration'], 15)
+                self.assertLess(measured['duration'], 90)
+                self.assertIsNone(measured['error'])
+                decoded_box = video.bounding_box()
+                self.assertIsNotNone(decoded_box)
+                for dimension in ('width', 'height'):
+                    self.assertLessEqual(abs(decoded_box[dimension] - box[dimension]), 1,
+                                         'Playback must not shift the reserved video layout')
+                measured['layout_before_play'] = box
+                measured['layout_after_decode'] = decoded_box
+                # Decode can change the intrinsic dimensions; use current geometry.
+                video.scroll_into_view_if_needed()
+                box = video.bounding_box()
+                self.assertIsNotNone(box)
+                page.mouse.move(box['x'] + 24, box['y'] + box['height'] - 38)
+                page.mouse.click(box['x'] + 24, box['y'] + box['height'] - 38)
+                page.wait_for_function('v=>v.paused', arg=handle, timeout=3000)
+                self.assertTrue(video.evaluate('v=>v.paused'))
+                record['videos'].append(measured)
+                page.screenshot(path=str(ARTIFACTS / f'discovery-playback-{i}.png'))
+            self.assertEqual(record['blocked'], [])
+            self.assertEqual(record['errors'], [])
+            record['passed'] = True
+        finally:
+            try:
+                context.close()
+                record['context_closed'] = True
+            finally:
+                (ARTIFACTS / 'discovery-video-playback.json').write_text(json.dumps(record, indent=2) + '\n')
 
 
 if __name__ == '__main__':

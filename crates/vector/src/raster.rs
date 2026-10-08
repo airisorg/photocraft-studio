@@ -99,7 +99,9 @@ impl Rasterizer {
             return None;
         }
         let (x0, y0, x1, y1) = self.bounds?;
-        let r = Rect::new(x0.floor() as i32, y0.floor() as i32, x1.ceil() as i32 + 1, y1.ceil() as i32 + 1);
+        // Fork modification (2026-10-08): extreme finite stroke miters can exceed
+        // i32 even when path coordinates are small. Keep bounds conversion non-panicking.
+        let r = Rect::new(x0.floor() as i32, y0.floor() as i32, (x1.ceil() as i32).saturating_add(1), (y1.ceil() as i32).saturating_add(1));
         (!r.is_empty()).then_some(r)
     }
 
@@ -381,6 +383,16 @@ mod tests {
 
     fn sum(v: &[f32]) -> f64 {
         v.iter().map(|x| f64::from(*x)).sum()
+    }
+
+    #[test]
+    fn extreme_finite_pixel_bounds_saturate_without_overflow() {
+        let mut r = Rasterizer::new(false);
+        r.add_component(&[square(-3e9, -3e9, 6e9)], PathOp::Combine, FillRule::NonZero);
+        assert_eq!(r.pixel_bounds(), Some(Rect::new(i32::MIN, i32::MIN, i32::MAX, i32::MAX)));
+        let mut ordinary = Rasterizer::new(false);
+        ordinary.add_component(&[square(2.25, 3.5, 4.0)], PathOp::Combine, FillRule::NonZero);
+        assert_eq!(ordinary.pixel_bounds(), Some(Rect::new(2, 3, 8, 9)));
     }
 
     #[test]
