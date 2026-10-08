@@ -9,6 +9,7 @@ import secrets
 import socket
 import subprocess
 import threading
+import tempfile
 import time
 import unittest
 from urllib.parse import parse_qs, urlencode, urlparse
@@ -107,13 +108,17 @@ class AuthContract(unittest.TestCase):
         Provider.mail = []
 
     @contextmanager
-    def cold_worker(self):
+    def cold_worker(self, same_origin=False):
         with socket.socket() as reserve:
             reserve.bind(('127.0.0.1', 0))
             port = reserve.getsockname()[1]
+        base = f'http://127.0.0.1:{port}'
+        public = tempfile.TemporaryDirectory()
+        Path(public.name, 'index.html').write_text('<title>PhotoCraft auth fixture</title><p>Signed in</p>')
         binary = Path(os.environ.get('PHOTOCRAFT_CLOUD_BIN', 'target/debug/photocraft-cloud')).resolve()
         process = subprocess.Popen([str(binary)], env={**os.environ, 'DATABASE_URL':DATABASE,
-            'CLOUD_LOCAL_DEV':'1','PORT':str(port),'APP_ORIGIN':ORIGIN,'SUPABASE_ANON_KEY':'public-test-key',
+            'CLOUD_LOCAL_DEV':'1','PORT':str(port),'APP_ORIGIN':base if same_origin else ORIGIN,
+            'SUPABASE_ANON_KEY':'public-test-key','PUBLIC_DIR':public.name,
             'SUPABASE_URL':f'http://127.0.0.1:{self.provider.server_port}'},
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         try:
@@ -127,10 +132,11 @@ class AuthContract(unittest.TestCase):
                     self.assertIsNone(process.poll(), 'Cold invitation worker exited')
                     self.assertLess(time.monotonic(), deadline, 'Cold invitation worker did not listen')
                     time.sleep(.02)
-            yield f'http://127.0.0.1:{port}'
+            yield base
         finally:
             process.terminate()
             process.wait(timeout=5)
+            public.cleanup()
 
     def callback(self, state=None, cookie=None, token=None, kind='email'):
         nonce = secrets.token_hex(32)
@@ -202,10 +208,88 @@ class AuthContract(unittest.TestCase):
         r=self.http.post(self.base+'/auth/confirm',data=params,headers={'Origin':ORIGIN},allow_redirects=False)
         self.assertEqual(r.status_code,400)
 
-    def test_email_confirmation_rejects_foreign_origin(self):
-        r=self.http.post(self.base+'/auth/confirm',data={'token_hash':'a'*64,'type':'email'},headers={'Origin':'https://evil.invalid'})
-        self.assertEqual(r.status_code,403)
-        self.assertEqual(Provider.calls,[])
+    def test_email_confirmation_rejects_missing_null_and_foreign_origins(self):
+        for origin in [None, 'null', 'https://evil.invalid']:
+            with self.subTest(origin=origin):
+                headers = {} if origin is None else {'Origin': origin}
+                r = self.http.post(self.base+'/auth/confirm',
+                    data={'token_hash':'a'*64,'type':'email'},headers=headers)
+                self.assertEqual(r.status_code,403)
+                self.assertEqual(Provider.calls,[])
+
+    def test_browser_email_confirmation_submits_real_same_origin_form(self):
+        from playwright.sync_api import sync_playwright
+
+        artifact_dir = os.environ.get('PHOTOCRAFT_TEST_ARTIFACTS')
+        artifacts = Path(artifact_dir) if artifact_dir else None
+        if artifacts:
+            artifacts.mkdir(parents=True, exist_ok=True)
+        observations = []
+        with sync_playwright() as playwright:
+            for engine in ['chromium', 'webkit']:
+                with self.subTest(engine=engine), self.cold_worker(same_origin=True) as base:
+                    Provider.calls = []
+                    options = {'headless':True}
+                    if engine == 'chromium' and os.environ.get('PHOTOCRAFT_CHROME'):
+                        options['executable_path'] = os.environ['PHOTOCRAFT_CHROME']
+                    browser = getattr(playwright, engine).launch(**options)
+                    try:
+                        context = browser.new_context()
+                        page = context.new_page()
+                        params = {'token_hash':secrets.token_hex(32),'type':'email'}
+                        url = base+'/auth/confirm?'+urlencode(params)
+                        response = page.goto(url, wait_until='domcontentloaded')
+                        self.assertEqual(response.status, 200)
+                        self.assertTrue(page.get_by_role('button', name='Continue to PhotoCraft').is_visible())
+                        self.assertEqual(page.reload(wait_until='domcontentloaded').status, 200)
+                        self.assertEqual(Provider.calls, [], 'Opening or reloading the email link consumed its token')
+                        if artifacts:
+                            page.screenshot(path=str(artifacts/f'confirmation-{engine}-before.png'))
+                        # Do not supply Origin or use an API POST: the browser must
+                        # apply the delivered page's referrer policy to its real form.
+                        with page.expect_response(lambda r:r.url==base+'/auth/confirm'
+                                                  and r.request.method=='POST') as submitted:
+                            page.get_by_role('button', name='Continue to PhotoCraft').click()
+                        response = submitted.value
+                        page.wait_for_load_state('domcontentloaded')
+                        headers = response.request.all_headers()
+                        referer = headers.get('referer', '')
+                        cookies = context.cookies(base)
+                        record = {'engine':engine,'origin':headers.get('origin'),
+                                  'expected_origin':base,'post_status':response.status,
+                                  'referer_has_token':params['token_hash'] in referer or 'token_hash' in referer,
+                                  'provider_calls':list(Provider.calls),
+                                  'browser_accepted_session':any(c['name']=='pc_session' for c in cookies)}
+                        observations.append(record)
+                        if artifacts:
+                            page.screenshot(path=str(artifacts/f'confirmation-{engine}-after.png'))
+                            (artifacts/'confirmation-browser-observations.json').write_text(json.dumps(observations,indent=2))
+                        self.assertEqual((response.status, headers.get('origin')), (303, base), record)
+                        self.assertNotIn(params['token_hash'], referer)
+                        self.assertNotIn('token_hash', referer)
+                        self.assertEqual(Provider.calls, ['/auth/v1/verify','/auth/v1/user'])
+                        session = next((c for c in cookies if c['name']=='pc_session'), None)
+                        self.assertIsNotNone(session, 'The browser did not accept the session cookie')
+                        self.assertTrue(session['httpOnly'])
+                        self.assertEqual(session['sameSite'], 'Lax')
+                        identity = context.request.get(base+'/api/me')
+                        self.assertEqual(identity.status, 200)
+                        self.assertEqual(identity.json()['id'], Provider.ident)
+                        self.assertEqual(page.url, base+'/')
+                        # Reopening remains scanner-safe; a second actual form
+                        # submission must fail because the provider token was used.
+                        self.assertEqual(page.goto(url, wait_until='domcontentloaded').status, 200)
+                        self.assertEqual(Provider.calls, ['/auth/v1/verify','/auth/v1/user'])
+                        with page.expect_response(lambda r:r.url==base+'/auth/confirm'
+                                                  and r.request.method=='POST') as replayed:
+                            page.get_by_role('button', name='Continue to PhotoCraft').click()
+                        self.assertEqual(replayed.value.status, 400)
+                        self.assertEqual(Provider.calls, ['/auth/v1/verify','/auth/v1/user','/auth/v1/verify'])
+                        record.update(identity_verified=True, replay_status=replayed.value.status)
+                        if artifacts:
+                            (artifacts/'confirmation-browser-observations.json').write_text(json.dumps(observations,indent=2))
+                    finally:
+                        browser.close()
 
     def invite_fixture(self):
         auth=self.callback()
