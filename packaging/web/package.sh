@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Build the browser version and zip it:  $DIST/photocraft-web-<version>.zip
+# Modified by PhotoCraft Studio to remap operator paths in browser release builds.
 #
 # Usage: packaging/web/package.sh [--skip-build]
 #
@@ -13,7 +14,7 @@ HERE="$ROOT/packaging/web"
 
 if [ "${1:-}" != "--skip-build" ]; then
   command -v trunk >/dev/null || { echo "error: trunk not found (cargo install trunk --locked)" >&2; exit 1; }
-  (cd "$ROOT/apps/photocraft-web" && trunk build --release)
+  python3 "$ROOT/packaging/web/build-release.py"
 fi
 
 SITE="$ROOT/dist/web"
