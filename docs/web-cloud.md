@@ -157,7 +157,7 @@ python -m playwright install chromium webkit
 cargo build --locked -p photocraft-cloud
 cargo test --locked -p photocraft-cloud
 cargo run --locked -p photocraft-cloud --example fixture -- /tmp/fixture.pcraft
-(cd apps/photocraft-web && NO_COLOR=true trunk build --release)
+python packaging/web/build-release.py
 # Start the service with CLOUD_LOCAL_DEV=1, DATABASE_URL pointing to disposable PostgreSQL,
 # APP_ORIGIN=http://127.0.0.1:8876, PORT=8876 and PUBLIC_DIR=dist/web.
 PHOTOCRAFT_FIXTURE=/tmp/fixture.pcraft python tests/web/test_api.py

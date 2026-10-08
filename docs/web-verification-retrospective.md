@@ -405,3 +405,15 @@ A fixture may prepare a preceding state, but cannot replace the transition under
 Use held responses and failure injection for races; reserve actual provider/inbox and
 independent-user hosted flows for explicit live acceptance. The contract table above
 keeps those boundaries visible instead of converting a total test count into parity.
+
+## Inspect generated release artifacts separately
+
+The final source scan was clean, but a byte-level deployment ZIP inspection found
+748 operator-home-prefix matches in its optimized WASM. Release stripping removes
+debug information, not every compiler-generated panic or `file!()` location.
+Source-only privacy checks therefore missed the distribution boundary. The release
+build now uses [standard compiler remapping](https://doc.rust-lang.org/rustc/remap-source-paths.html),
+and Tofu packaging rejects retained home paths before opening the archive. Keep
+failed artifacts and receipts, rebuild rather than patch binary strings, and run
+browser/paint acceptance against the replacement artifact's exact hash. A clean
+source tree or earlier binary's passing tests cannot stand in for this check.
