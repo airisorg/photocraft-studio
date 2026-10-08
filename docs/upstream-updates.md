@@ -18,8 +18,9 @@ command and egui changes continue to arrive through Git merges.
 
 ## Automatic path
 
-`.github/workflows/update-and-release.yml` runs on main changes, manual dispatch, and a
-six-hour schedule. Scheduled jobs can be delayed by GitHub; updates are not instantaneous.
+`.github/workflows/update-and-release.yml` is configured to run on main changes, manual
+dispatch, and a six-hour schedule. Scheduled jobs can be delayed by GitHub; updates are
+not instantaneous.
 
 1. Fetch `storytold/photocraft` main from its fixed upstream URL. Merge into an isolated
    candidate descended from our current main. Never replace our tree with upstream files.
@@ -35,8 +36,9 @@ six-hour schedule. Scheduled jobs can be delayed by GitHub; updates are not inst
    atomically advances main and `tofu-release`. No force push is used. The generated branch
    holds prebuilt `public/` files for the existing Dockerfile, avoiding a second WASM build
    at Tofu. Its history contains build artifacts; main remains source-only.
-6. Tofu follows **tofu-release**, not main. Its own safety check, deployment and visitor
-   check remain additional gates. Failed preparation or deployment keeps the prior live app.
+6. After owner activation, configure Tofu to follow **tofu-release**. Its safety check,
+   deployment and visitor check remain additional gates. Failed preparation or deployment
+   keeps the prior live app.
 7. An unchanged scheduled check does not rebuild or redeploy. Successful candidates are
    removed after promotion; failed candidates remain for investigation.
 
