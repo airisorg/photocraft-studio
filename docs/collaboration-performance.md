@@ -2,9 +2,10 @@
 
 This report separates HTTP/state measurements from calibrated input-to-remote-paint
 measurements. The 2026-10-08 private RPC candidate passed three local paint observations
-during a mixed workload of 998 modeled HTTP actors and two actual native browser clients;
-the largest uncertainty-inclusive upper bound was 235.656 ms. A separate matched HTTP-only
-comparison and the earlier 19-observation browser profile remain distinct evidence below.
+during each of two mixed workloads of 998 modeled HTTP actors and two actual native browser
+clients. The largest uncertainty-inclusive upper bound was 235.656 ms with both browsers
+on one worker and 209.369 ms with the browsers on separate workers. A separate matched
+HTTP-only comparison and 19-observation browser profiles remain distinct evidence below.
 The preferred 150 ms target was not met. These are bounded local observations, not hosted
 capacity, 1,000 browsers, physical-device latency or a production service-level objective. See
 [collaboration architecture](collaboration-architecture.md) for the transport and limits.
@@ -121,6 +122,77 @@ shared application rows. The passing mixed run verified unchanged backend/WASM b
 before and after. This bounded local evidence does not cover 1,000 browsers, large native
 documents, arbitrary commands, sustained failure/reconnect workloads, physical devices,
 hosted geographic latency or production capacity. Hosted acceptance remains a separate gate.
+
+### Direct cross-worker native paint — 2026-10-08 UTC
+
+An additional mixed run at 10:09:46–10:10:09 UTC connected the sender directly to worker 0
+and the receiver directly to worker 1, with separate loopback origins and no request proxy.
+Both workers served the same index/WASM hashes. It used the same optimized `90908c3f`
+backend and `c0a89fbd` WASM, 998 HTTP actors plus two native browser clients, 100 rooms,
+eight workers with four database connections each, verified database TLS, three-second
+warmup and twelve-second active load. The earlier same-worker run and failed initial
+attempt remain separate observations above.
+
+| Trusted native input | Cross-worker paint upper bound | Clock uncertainty | Result |
+|---|---:|---:|---|
+| Cursor movement 1 | 197.587 ms | 6.415 ms | Passed |
+| Cursor movement 2 | 209.369 ms | 3.970 ms | Passed |
+| Held native Pencil prefix | 143.335 ms | 12.839 ms | Passed |
+
+All three actual CDP pixel observations passed the unchanged strict 500 ms / 15 ms gates,
+with no missing/invalid/timed-out samples or capture errors. Descriptive p50 was 197.587 ms;
+p95/p99/maximum was 209.369 ms. Three samples do not establish tail reliability, and the
+preferred 150 ms target did not pass across the run. The GPU backend was not recorded.
+There was no added network delay; loopback workers on one Mac do not reproduce WAN routing,
+provider load balancing, worker startup or geographic placement.
+
+All 998 HTTP actors had succeeded in the active window before the timed input; the three
+measurement brackets saw 5,705 / 6,237 / 9,638 additional HTTP requests. Full usable peer
+coverage was observed over the twelve-second active period, not for every actor in every
+subsecond bracket. Every HTTP actor completed at least 138 active successful requests.
+There were 138,718 active HTTP 200s out of 149,700 nominal opportunities (**92.6640%**),
+zero errors including warmup, and zero coalesced ticks. PUT p50/p95/p99/maximum was
+7.195/23.454/31.326/51.840 ms; scheduled completion was
+11.885/42.255/55.023/82.057 ms. This remains below full nominal delivery and is not an
+offered-rate capacity certificate. Start/end host load was 2.79/2.37/2.64 →
+9.63/3.91/3.18; the different observations do not isolate a cross-worker speed advantage.
+
+Preview native pixel/history/revision checks and unchanged canonical revisions passed.
+After load, pointer release reached revision 2; native peer pixels, reload and the downloaded
+5,089-byte 320×240 archive matched SHA-256
+`50ec0246f89c71d8b5c7289c2c5675b150f4e3faf8925ad008e14eefdffca945`.
+These are untimed persistence checks. All safe checkpoints and owned cleanup passed, zero
+shared application rows were touched, and backend/WASM hashes were unchanged. The receipt
+is `rpc-cross-worker-1000.json` with adjacent screenshots in the evidence directory above.
+
+### Deployed guest scope — source `a17cea25`
+
+Retained Tofu status identifies deployment `dpl_5crMQxccD2ZaNAMi951jJ2jVQ43d` as ready and
+serving source `a17cea25d9dfcc84f68313b3e2d1e6e6beaa3cfb`. A stored-source round trip
+matched all 1,855 expected package files with zero mismatches. The 30,262,084-byte ZIP's
+SHA-256 is `2bbaef0b5b88c46b3bc3288cf964c508b8cb401a290d157d8f1fcdbf2e5a10a6`;
+Tofu's source snapshot identifier is
+`9e9f67ba869e30965daac3a087c8825da7beabdaddb5486d4b300cd788b02f2b`.
+These hash different representations and are not equal; per-file comparison supplies the
+source correspondence evidence.
+
+At 10:08:10–10:08:17 UTC, one fresh guest browser context verified the exact served
+25,982,845-byte `c0a89fbd` WASM, painted workspace/Create dialog, a local 320×240 document,
+trusted Pencil input, full exported-PNG pixel equality through undo/redo, and downloaded
+`.pcraft` file-picker reopen with preserved dimensions/layers/pixels. Dialog values,
+confirmation and menu actions used the original native command bridge; this is not a claim
+that every control was exercised through pointer input. There were no page exceptions;
+the guest `/api/me` 401 produced the expected console resource error. The owned context
+and browser closed. Non-GET/HEAD requests were blocked by the fixture; none were attempted.
+There was no sign-in, cloud mutation, invitation or existing user project access.
+
+`tofu-status-a17cea25-2.json`, `package-a17cea25-receipt.json`,
+`tofu-source-roundtrip-a17cea25.json` and `hosted-guest-a17cea25/report.json` retain these
+separate provenance and guest results. The guest check does not establish hosted
+two-account synchronization, input-to-remote-paint latency, capacity, all-command coverage,
+WAN behavior or a hardware GPU backend. The local cross-worker results cannot be relabeled
+as hosted results, and this deployment does not substitute for the separate CI container
+contract gate.
 
 ### RPC debug browser acceptance and latency profiles
 
