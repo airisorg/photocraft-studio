@@ -1,8 +1,10 @@
 # Collaboration latency measurements
 
-This benchmark measures the local HTTP adapter and PostgreSQL path. It does not establish
-hosted capacity, maximum collaborator counts, browser interaction latency, or a production
-service-level objective. See [collaboration architecture](collaboration-architecture.md)
+This report separates historical HTTP/state measurements from calibrated input-to-remote-paint
+measurements. The final bounded native-preview run below passed all 19 observations, with
+an 84.552 ms local median and a 287.777 ms maximum across simulated network profiles.
+These are local two-account observations, not hosted capacity, physical-device latency or
+a production service-level objective. See [collaboration architecture](collaboration-architecture.md)
 for the transport, current limits, and optimization decisions.
 
 ## Reproducible bounded benchmark
@@ -295,3 +297,101 @@ requests or real email were sent. Reports retain all raw samples, cleanup, and b
 
 Before binary SHA-256: `70cb5758027ae1de95a37c8f2beac8ae3d5213a4817fda4a08ec8553c54bfde6`.
 Fixed/current backend SHA-256: `7ab7cd6b407a0d5098c2181926b80bc590081e8f9f83eec7086f584737d551ea`.
+
+## Bounded original-native previews — 2026-10-07 local date
+
+The optional adapter now reuses the original `LiveStroke::begin_with/push`, layer `moved`
+operation and damage-region compositor in a separate COW preview. It preserves the real
+document, local input and undo. The authenticated HTTP/PostgreSQL transport coalesces writes
+at 40 ms, reads at 80 ms with one pending request per direction, and expires peer state
+after two seconds. Canonical full-document autosave starts after 150 ms of idle time with
+the pointer released. Preview feedback and durable persistence are separate measurements.
+
+`benchmark_live_collaboration.py` used two distinct synthetic accounts and independent
+Chromium contexts, the 320×240 one-layer native fixture (4,769 bytes), zoom 100%, viewport
+1440×960 and DPR1. Trusted pointer moves drive the original Pencil at eight paced points;
+the expected green prefix must appear while the button remains held. Cursor observations
+require the peer marker's actual purple pixels. The owner/receiver native revisions and
+pixels, saved archive and history must remain unchanged during the preview. After release,
+native pixels, committed archive SHA and reload convergence must match.
+
+The final run at 02:22:37–02:22:59 UTC on 2026-10-08 (2026-10-07 locally) used macOS
+26.5.1 ARM64, 12 logical CPUs and Chrome 154.0.8037.98. Headless launch enabled unsafe WebGPU
+and SwiftShader options; the selected GPU adapter was not measured. No owned build,
+other test browser, proxy or native performance run was concurrent. Other host activity
+was unmeasured: load averages were 9.27/12.12/15.71 at start and 8.42/11.74/15.49 at end.
+
+CDP added a minimum HTTP request delay on both pages, without packet loss or a bandwidth
+cap. This is not a physical packet RTT or geographic-region benchmark. Five `/api/me`
+requests per account/profile verified identity and measured the following actual round trips.
+All timing values below are conservative observed compositor-frame upper bounds including
+clock uncertainty; physical display photon latency was not measured.
+
+| Configured HTTP delay per page | Observed `/api/me` RTT range | Cursor + held-pencil samples | Median | Maximum |
+|---|---:|---:|---:|---:|
+| 0 ms | 0.80–1.90 ms | 6 | 84.552 ms | 117.382 ms |
+| 50 ms | 50.90–55.60 ms | 6 | 155.437 ms | 187.766 ms |
+| 100 ms | 100.70–105.50 ms | 6 | 236.291 ms | 287.777 ms |
+
+One additional held stroke after a real sender reload passed at 82.821 ms while the receiver
+remained open. Tab identity was retained and the wire sequence advanced from 102 to 103.
+All 19 observations passed the strict 500 ms gate; none was invalid, missing or timed out,
+and captures reported zero errors. Each six-sample profile's p95/p99 is its maximum, not a
+reliable tail estimate. The preferred 150 ms threshold passed locally but not across delayed
+profiles. The final canonical revision was 11, exact native convergence/reload passed, and
+both synthetic accounts were removed with zero remaining.
+
+The report counted 332 successful live GETs, 111 successful PUTs and three PUT 409s; no
+401/403/404 responses were counted. The profile report does not retain 409 bodies/timestamps,
+so it cannot attribute a particular sample's delay to one of those responses. A separate
+rendered race test held the previous-base End request for 536.645 ms, confirmed a real 409,
+and then observed the newer held stroke at 165.704 ms. Accepted new-base writes, unchanged
+held native state, committed bytes, receiver reload and native undo/redo all passed.
+
+The initial final-profile attempt is retained: it passed 16 observations, then declared
+one capture invalid and two planned samples missing. Its observer was left recording during
+intervening canonical-save waits, overflowing the bounded frame queue before the next input.
+The harness now opens/closes capture per timed sample, outside save/reload waits. The frozen
+observer, clocks, pixel oracle and strict 500 ms gate were unchanged. Ten observer calibration
+tests passed, including stale/frozen pixels and deliberately delayed over-budget paint.
+
+Local artifacts under `outputs/verification/2026-10-07-realtime-latency/` retain every sample,
+capture readiness, clock bounds, frame timestamps, PNG hashes, request counts and cleanup:
+
+- `final-live-profiles-r2.json` and adjacent screenshots: final 19 passing observations.
+- `final-live-profiles.json`: initial invalid-capture attempt; do not discard it.
+- `final-live-journeys/`: delayed 409, edit-to-view downgrade, cursor lease expiry/reconnect.
+- `final-live-calibration/`: frozen-oracle calibration evidence.
+
+The existing five-click native Pencil journey was also repeated with previews enabled.
+All five visual upper bounds passed: 166.806, 170.153, 172.863, 101.130 and 101.347 ms.
+Native pixel convergence, exact archive/layer checks, receiver reload and both-account
+cleanup passed. Its first attempt is retained: fast preview pixels arrived before the peer
+adopted the newly committed archive, exposing an immediate-canonical-readiness assertion.
+The harness now waits up to ten seconds for exact native convergence outside the unchanged
+visual timer. It also limits capture to each sample and removes obsolete runtime-delay
+metadata. Final evidence is `final-native-paint-preview-enabled-r2.json`; the initial
+`final-native-paint-preview-enabled.json` must not be treated as a passing run.
+
+Final WASM SHA-256:
+`c2c847c5bffe1d325c234082283120e9d270f2731e053d9a64d35b0151518c96`.
+Cloud debug binary SHA-256:
+`e393cdfe5ed5b71137581cbc5ba8392e41f7059b94870926dfa49460c8fee428`.
+
+Regression gates passed 739 native UI tests (three existing benchmark tests ignored), 11
+cloud unit tests, 41 API tests, 13 auth tests, four cold-worker tests, seven release-provenance
+tests, 12 live API tests and three new rendered live journeys. The live API cases also passed
+through 948 forced idle backend switches with zero SQLSTATE errors. The 50 existing browser
+journeys passed across the full run and a focused recovery-fixture correction/rerun; the
+initial obsolete-autosave-deadline failure is preserved. Layering, all 23 WASM targets,
+strict touched-crate Clippy and the quick native performance smoke passed. Quick performance
+had no matching baseline and was contended; it is not a no-regression performance claim.
+
+These observations establish a small supported-preview envelope. They do not establish
+hosted two-user latency, 500 ms for every command/file/network, unrestricted simultaneous
+writers, shared undo, large-room capacity, or sub-500 ms durable persistence. A sender must
+start a supported gesture from its last acknowledged native base; rapid subsequent gestures
+before canonical acknowledgment and unsupported/oversized operations can use saved-version
+sync. Only one remote drawing gesture is displayed; receiver-local work takes precedence.
+HTTP read/write costs, native object deltas and the safe provider private-Broadcast bridge
+remain explicit scaling work in [the plan](sub500-collaboration-plan.md).

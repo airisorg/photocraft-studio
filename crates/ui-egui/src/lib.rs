@@ -35,6 +35,7 @@ pub mod channel_view;
 pub mod channels_panel;
 pub mod chrome_ui;
 pub mod cjk_fonts;
+pub mod collaboration;
 pub mod color_picker_ui;
 pub mod color_range_ui;
 pub mod comps_ui;
@@ -253,6 +254,8 @@ pub struct Services {
 
 pub struct PhotocraftApp {
     pub session: Session,
+    /// Optional, ephemeral collaboration views. Never part of the document or its history.
+    pub collaboration: collaboration::State,
     pub ui: UiState,
     pub services: Services,
     /// Canvas caches per (document, display): CPU textures hold monitor values; the GPU
@@ -399,6 +402,7 @@ impl PhotocraftApp {
     pub fn new(session: Session, services: Services) -> Self {
         let mut app = Self {
             session,
+            collaboration: Default::default(),
             ui: UiState::default(),
             services,
             canvases: HashMap::new(),
