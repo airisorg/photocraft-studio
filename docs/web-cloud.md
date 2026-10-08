@@ -8,7 +8,7 @@ is introduced. This startup policy does not replace an active renderer after a l
 hardware device loss.
 
 Imported upstream reference: `storytold/photocraft@3a3984075a1fd06d1af3e660aa376ee5368c4f73`.
-Repository: `FZ2000/photocraft`, currently private with upstream history and an `upstream` remote.
+Repository: [airisorg/photocraft-studio](https://github.com/airisorg/photocraft-studio), with upstream history and an `upstream` remote.
 See [the fork code map](fork-code-map.md) for original and added modules and the public-release boundary.
 
 ## Adapter boundaries

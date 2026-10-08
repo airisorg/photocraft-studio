@@ -6,6 +6,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tarfile
@@ -85,6 +86,50 @@ class UpstreamRelease(unittest.TestCase):
 
     def promote(self, info, package=None):
         release.promote(**{k: v for k, v in info.items() if k != 'needed'}, package=package or self.package(info))
+
+    def test_workflow_opt_in_precedes_every_candidate_write(self):
+        workflow = (Path(SPEC.origin).parents[2] / '.github/workflows/update-and-release.yml').read_text()
+        jobs = dict(re.findall(r'^  ([a-z]+):\n((?:^    .*\n|^\n)+)', workflow.split('\njobs:\n', 1)[1], re.M))
+        self.assertEqual(set(jobs), {'prepare', 'native', 'browser', 'promote'})
+        # Accept only a single, event-independent equality at job scope. A step
+        # guard, truthy string, manual-event escape or `always()` must fail here.
+        conditions = re.findall(r'^    if: (.+)$', jobs['prepare'], re.M)
+        self.assertEqual(len(conditions), 1, 'Preparation must default to skipped before checkout or Git writes')
+        condition = conditions[0].strip()
+        if condition.startswith('${{') and condition.endswith('}}'):
+            condition = condition[3:-2].strip()
+        equality = re.fullmatch(r"vars\.(PHOTOCRAFT_UPSTREAM_UPDATES_ENABLED) == 'true'", condition)
+        self.assertIsNotNone(equality, 'Only the explicit repository-variable opt-in may admit preparation')
+        self.assertRegex(workflow, r'(?m)^  push:\n    branches: \[main\]$')
+        self.assertRegex(workflow, r'(?m)^  schedule:$')
+        self.assertRegex(workflow, r'(?m)^  workflow_dispatch:$')
+        for name in ('native', 'browser'):
+            self.assertRegex(jobs[name], r'(?m)^    needs: prepare$')
+            self.assertRegex(jobs[name], r"(?m)^    if: needs.prepare.outputs.needed == 'true'$")
+        self.assertRegex(jobs['promote'], r'(?m)^    needs: \[prepare, native, browser\]$')
+        self.assertNotRegex(jobs['promote'], r'(?m)^    if:')
+
+        # Exercise the actual candidate-producing helper against disposable Git
+        # remotes under the parsed guard. This is not a hosted Actions run. GitHub
+        # string equality ignores case; missing vars resolve to the empty string.
+        original_refs = release.git('ls-remote', 'origin').stdout
+        for event in ('default', 'push', 'schedule', 'workflow_dispatch'):
+            for value in (None, '', 'false', '0', 'yes', ' true '):
+                with self.subTest(event=event, value=value):
+                    variables = {} if value is None else {equality[1]: value}
+                    admitted = variables.get(equality[1], '').lower() == 'true'
+                    self.assertFalse(admitted)
+                    if admitted:
+                        self.prepare()
+                    self.assertEqual(release.git('ls-remote', 'origin').stdout, original_refs)
+                    self.assertEqual(self.head(), self.base)
+        for event, value in (('push', 'true'), ('schedule', 'TRUE'), ('workflow_dispatch', 'true')):
+            with self.subTest(event=event, enabled=value):
+                self.assertEqual(value.lower(), 'true')
+                info = self.prepare()
+                self.assertEqual(self.remote_head('automation/upstream-test'), info['candidate'])
+                self.assertEqual(self.remote_head(), self.base, 'Enabling preparation still cannot promote main')
+                release.git('push', 'origin', '--delete', 'automation/upstream-test')
 
     def test_merge_preserves_adapter_and_promotion_keeps_exact_source(self):
         info = self.prepare()
