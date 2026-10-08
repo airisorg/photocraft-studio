@@ -118,8 +118,16 @@ pub fn show(app: &mut PhotocraftApp, ctx: &egui::Context) {
                 .max_height((ctx.content_rect().height() - 160.0).max(120.0))
                 .auto_shrink([true, true])
                 .show(ui, |ui| {
-                    ui.set_min_width(if d.kind == DialogKind::NewDocument { min_width.min(viewport_width) } else { min_width });
-                    ui.set_max_width(if d.kind == DialogKind::NewDocument { max_width.min(viewport_width) } else { max_width });
+                    ui.set_min_width(if d.kind == DialogKind::NewDocument || crate::prefs_ui::is_preferences(&fields) {
+                        min_width.min(viewport_width)
+                    } else {
+                        min_width
+                    });
+                    ui.set_max_width(if d.kind == DialogKind::NewDocument || crate::prefs_ui::is_preferences(&fields) {
+                        max_width.min(viewport_width)
+                    } else {
+                        max_width
+                    });
                     match d.kind {
                         DialogKind::NewDocument => crate::new_doc_ui::body(ui, &mut fields),
                         DialogKind::About if fields.get("systemInfo").and_then(Value::as_bool) == Some(true) => {
