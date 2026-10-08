@@ -36,7 +36,7 @@ not instantaneous.
    identifies the source commit and WASM checksum; dirty or mismatched packages are refused.
 5. A fresh Linux runner downloads that exact ZIP and native fixture. The container gate
    builds its Dockerfile, verifies the served index/WASM bytes, and runs the trusted API,
-   live-state and live-lock suites against the release image using verified database TLS.
+   live-state, live-lock and preview-handoff suites against the release image using verified database TLS.
    A failed build, contract, receipt or cleanup stops the reusable browser workflow.
 6. A separate write-permission job verifies the exact-package container receipt before
    calling promotion. It then checks that main has not changed while tests ran and
@@ -77,14 +77,14 @@ an owned loopback PostgreSQL cluster, CA and UUID database. The image receives t
 and explicit local database/origin settings, without `CLOUD_LOCAL_DEV` or provider secrets.
 Database clients use TLS `verify-full`. The gate waits for `/api/config` schema readiness
 and checks the exact served index and WASM lengths/hashes before running trusted
-`test_api.py`, `test_live.py` and `test_live_scale.py` against that image. Browser, auth,
+`test_api.py`, `test_live.py`, `test_live_scale.py` and `test_live_handoff.py` against that image. Browser, auth,
 archive and other suites remain separate acceptance checks; this container job does not
 rerun the complete browser/paint suite or a scale benchmark.
 
 The `container-package-evidence` artifact includes logs and `container-package.json`.
 The receipt binds the candidate SHA, ZIP SHA-256, WASM/index bytes and hashes, native fixture
 bytes/hash, trusted suite/helper hashes and built image ID. It requires successful Linux
-execution, all three suites, verified TLS, matching served bytes and completed cleanup of
+execution, all four suites, verified TLS, matching served bytes and completed cleanup of
 the owned container, image, database, cluster and context. The promotion job downloads
 both evidence artifacts and runs `--verify-receipt` from its trusted checkout **before**
 `upstream-release.py promote`. A missing or changed receipt/package/fixture/test helper,
@@ -98,10 +98,12 @@ post-deployment evidence.
 
 ## One-time activation and current limits
 
-At the 2026-10-08 gate review, GitHub Actions remained blocked by the account's payment or
-spending restriction. Local tests of the pipeline do not establish a successful
-hosted Actions run. The new actual Linux Docker/TLS execution is **unverified**; mocked
-container-guard tests and local macOS backend/browser passes are not a container pass.
+At the earlier 2026-10-08 gate review, GitHub Actions was blocked by the account's payment
+or spending restriction. Later runs at `f707cdc` executed: browser acceptance failed its
+transaction-pool fixture and FreeBSD exhausted host disk space. Their targeted fixture/runner
+changes still require fresh exact-head CI. The actual Linux Docker/TLS execution remains
+**unverified** because the dependent container job was skipped. Mocked container-guard tests
+and local macOS backend/browser passes are not a container pass.
 
 The first gate introduction needs a reviewed trusted-branch bootstrap: install the helper,
 required suites and workflow in the trusted base/caller revision before expecting its
@@ -115,8 +117,8 @@ The current full-history publication gate fails on retained artwork and personal
 paths. Do not enable this workflow in a public repository until those boundaries are
 resolved, and run the publication gate before pushing public candidates.
 
-After completing that review and the trusted bootstrap, and resolving the account
-restriction, set `PHOTOCRAFT_UPSTREAM_UPDATES_ENABLED=true` and run **Upstream and tested web release**
+After completing that review and the trusted bootstrap, set
+`PHOTOCRAFT_UPSTREAM_UPDATES_ENABLED=true` and run **Upstream and tested web release**
 against a fresh candidate. The first fully passing run creates
 `tofu-release`. Never bypass failing gates to make the update appear enabled.
 

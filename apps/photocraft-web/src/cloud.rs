@@ -1059,6 +1059,7 @@ impl Cloud {
                     // Never replace an edited tab, a switched document, or an active gesture.
                     if app.session.active().is_some_and(|d| d.doc.id == id && d.revision == expected)
                         && !ctx.input(|i| i.pointer.any_down())
+                        && !app.has_active_canvas_gesture()
                         && !ctx.egui_wants_keyboard_input()
                     {
                         match photocraft_format::load_from_bytes(&bytes) {
@@ -1112,6 +1113,7 @@ impl Cloud {
                             && !self.busy
                             && !ctx.egui_wants_keyboard_input()
                             && !ctx.input(|i| i.pointer.any_down())
+                            && !app.has_active_canvas_gesture()
                             && now() - self.last_change > 800.
                             && let Some(d) = app.session.active().filter(|d| d.revision == b.saved_local)
                         {
@@ -1320,6 +1322,9 @@ impl Cloud {
                 && !self.busy
                 && !self.error
                 && !ctx.input(|i| i.pointer.any_down())
+                // Raw Release reaches logic before the native canvas commits its
+                // gesture in ui. Auto-Select's view revision must not save old pixels.
+                && !app.has_active_canvas_gesture()
                 && now() - self.last_change > 150.
             {
                 self.save(app, ctx, false);
@@ -1355,6 +1360,7 @@ impl Cloud {
                 && !self.busy
                 && !ctx.egui_wants_keyboard_input()
                 && !ctx.input(|i| i.pointer.any_down())
+                && !app.has_active_canvas_gesture()
                 && let Some(d) = app.session.active().filter(|d| d.revision == b.saved_local)
             {
                 self.newer = true;

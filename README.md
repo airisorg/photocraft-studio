@@ -12,14 +12,11 @@ PhotoCraft Studio is deployed on [Tofu](https://trytofu.ai/), which helps your c
 
 ![PhotoCraft Studio running in a browser with an editable starter design, native tools and nine layers](docs/media/editor.png)
 
-<details>
-<summary>Watch a seven-second editing demo</summary>
+[Watch the editing walkthrough](https://photocraft-studio-d42c446ec275.trytofu.app/media/editing-walkthrough.mp4) · [Watch two editors collaborate](https://photocraft-studio-d42c446ec275.trytofu.app/media/collaboration-demo.mp4)
 
-![A native layer moves, Undo restores the design, and Redo brings the change back](docs/media/native-editing-demo.gif)
+The editing video follows a real template through text changes, artwork movement, Undo/Redo and a layered file download/reopen. The collaboration video shows two independent browser sessions, including collaborator cursors and paint previews. Both are recorded locally at original speed using this browser editor. The public editor is deployed on Tofu. The collaboration workspace uses disposable test accounts; it is not a measurement of internet latency.
 
-Recorded in the deployed editor with a fresh guest session. The original PhotoCraft engine moves a layer and restores the design through Undo and Redo.
-
-</details>
+[![Two native PhotoCraft canvases showing the same drawing from two editors](docs/media/collaboration-preview.png)](https://photocraft-studio-d42c446ec275.trytofu.app/about.html#collaboration-demo)
 
 ## What we added
 
@@ -33,7 +30,7 @@ We adapted the existing editor for a hosted, shared browser workspace rather tha
 
 Editing remains the original Rust/egui application compiled to WebAssembly. The cloud adapter reuses the native `.pcraft` document format. Rendering and painting run on the user's machine. The browser prefers hardware WebGPU and selects the existing WebGL2 renderer for software WebGPU adapters before opening the workspace.
 
-The editor and this adaptation remain early-alpha software. A short local workload with 998 HTTP collaborators and two browser clients passes the cursor/Pencil paint and save/reload checks; the [production 1,000-active-client target](docs/scale-release-review.md) remains unverified. See the [collaboration contract](docs/collaboration-architecture.md), [measured performance](docs/collaboration-performance.md), and [upstream roadmap](docs/roadmap.md) for current behavior and limits.
+The editor and this adaptation remain early-alpha software. A recorded short local workload with 998 HTTP collaborators and two browser clients passed the cursor/Pencil paint and save/reload checks; the [production 1,000-active-client target](docs/scale-release-review.md) remains unverified. See the [collaboration contract](docs/collaboration-architecture.md), [measured performance](docs/collaboration-performance.md), and [upstream roadmap](docs/roadmap.md) for current behavior and limits.
 
 ## Try it
 

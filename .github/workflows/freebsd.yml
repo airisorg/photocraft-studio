@@ -34,6 +34,20 @@ jobs:
     timeout-minutes: 300
     steps:
       - uses: actions/checkout@v4
+      - name: Reserve disk for the FreeBSD VM
+        shell: bash
+        run: |
+          set -euo pipefail
+          df -h / "$GITHUB_WORKSPACE"
+          # This disposable host only runs QEMU; these host SDKs are unused.
+          # Keep the runner toolcache, action files and VM/runtime directories.
+          for unused_sdk in /usr/local/lib/android /usr/share/dotnet /opt/ghc; do
+            if [ -d "$unused_sdk" ]; then
+              sudo du -sh -- "$unused_sdk"
+              sudo rm -rf -- "$unused_sdk"
+            fi
+          done
+          df -h / "$GITHUB_WORKSPACE"
       - name: Build, test and package in a FreeBSD VM
         uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc # v1
         with:

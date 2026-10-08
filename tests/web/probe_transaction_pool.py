@@ -65,6 +65,9 @@ def probe(database, binary, output, api_suite=False, live_suite=False):
 
     def connect(startup):
         upstream = socket.create_connection((host, target.port or 5432), timeout=5)
+        # Forward complete protocol frames promptly, including after every swap.
+        # Nagle + delayed ACK can otherwise add artificial per-frame latency.
+        upstream.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         upstream.sendall(startup)
         frames = []
         while True:
@@ -80,6 +83,7 @@ def probe(database, binary, output, api_suite=False, live_suite=False):
         def handle(self):
             upstream = None
             try:
+                self.request.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
                 length = exact(self.request, 4)
                 startup = length + exact(self.request, int.from_bytes(length, 'big')-4)
                 upstream, frames = connect(startup)

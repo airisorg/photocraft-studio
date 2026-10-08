@@ -20,9 +20,12 @@ git log --oneline 3a3984075a1fd06d1af3e660aa376ee5368c4f73..HEAD -- crates/engin
 | Path | Responsibility |
 |---|---|
 | `apps/photocraft-web/src/home.rs` | Reusable workspace styling, navigation and starter-design widgets |
-| `apps/photocraft-web/src/cloud.rs` | Stateful workspace, project/recovery/account/sharing UI, authenticated HTTP calls, native save/load integration, versions and synchronization |
-| `apps/photocraft-web/src/live.rs` | Ephemeral cursor and native gesture transport; no separate painting engine |
+| `apps/photocraft-web/src/cloud.rs` | Stateful workspace, project/recovery/account/sharing UI, authenticated HTTP calls, native save/load integration, versions and synchronization; automatic save/sync/install guards wait for the native gesture to finish |
+| `apps/photocraft-web/src/live.rs`, `live_peer.rs` | Ephemeral cursor and native gesture transport, with bounded preview-to-saved-version handoff; no separate painting engine |
 | `crates/ui-egui/src/collaboration.rs` | Temporary remote view state around the existing native canvas and compositor |
+| `crates/ui-egui/src/lib.rs` | Modified upstream integration hooks, including a read-only pending-drag predicate for adapters; exposes the existing native gesture lifecycle without replacing its commit or undo behavior |
+| `crates/ui-egui/src/move_ui.rs`, `snap_ui.rs`, `crates/engine/src/transform_cmds.rs` | Modified upstream correctness paths: repaint revealed vector pixels and use the picked layer's complete shape bounds; keep original Move/transform commands and history |
+| `crates/vector/src/raster.rs` | Modified upstream pixel-bounds conversion: saturating endpoints for extreme geometry; original vector rasterization remains in use |
 | `crates/ui-egui/src/prefs_ui.rs` | Modified upstream Preferences view: compact native section selector and stacked, width-bounded fields on narrow viewports; reuses the existing widgets, working copy and preference commands |
 | `crates/ui-egui/src/dialogs.rs` | Modified upstream dialog shell: bounds the Preferences body to the available viewport while preserving its existing Apply/OK/Cancel path |
 | `apps/photocraft-cloud/src/` | HTTP service, authorization, invitations, document merge/validation and bounded live previews |
