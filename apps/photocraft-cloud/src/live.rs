@@ -70,17 +70,9 @@ WITH identity AS MATERIALIZED (
 )
 "#;
 
-// A PL/pgSQL call's statement_timestamp precedes its lock wait. Evaluate this
-// materialized clock in the separate post-lock data statement instead, so an
-// expired renewal cannot bypass admission and expired peers cannot be returned.
-const CLOCK: &str = r#"
-, live_clock AS MATERIALIZED (SELECT clock_timestamp() AS observed_at)
-"#;
-
-// GET and successful PUT expose the same authorized peer snapshot. A PUT reads
-// peers in its post-lock write statement, not in another transaction after it.
-// Its own row is excluded, so the data-modifying CTE's pre-write snapshot is enough.
-const PEERS: &str = r#"
+const READ: &str = r#"
+SELECT gate.status,(SELECT revision FROM access) AS revision,
+       (SELECT role FROM access) AS role,
  COALESCE((SELECT jsonb_agg(peer ORDER BY actor,tab) FROM (
   SELECT a.id AS actor,l.tab_id AS tab,jsonb_build_object(
    'actor',a.id,'name',a.name,'tab',l.tab_id,'seq',l.seq,
@@ -94,62 +86,39 @@ const PEERS: &str = r#"
   JOIN access p ON p.id=l.project_id
   LEFT JOIN photocraft.members m ON m.project_id=p.id AND m.email=a.email
   WHERE gate.status=200
-   AND l.seen_at>(SELECT observed_at FROM live_clock)-interval '2 seconds'
+   AND l.seen_at>clock_timestamp()-interval '2 seconds'
    AND (p.owner_id=a.id OR m.role IN ('view','edit'))
-   -- A completed old-base gesture is metadata only, but keeps an authorized
-   -- publisher present while the receiver installs the saved document.
-   AND (l.cursor IS NOT NULL OR (l.gesture IS NOT NULL AND (p.owner_id=a.id OR m.role='edit')
-        AND (l.base_revision=p.revision OR (l.base_revision<p.revision AND l.gesture->'events'-> -1->>'kind'='end'))))
+   AND (l.cursor IS NOT NULL OR (l.gesture IS NOT NULL AND l.base_revision=p.revision AND (p.owner_id=a.id OR m.role='edit')))
    AND NOT(l.session_hash=$1 AND l.tab_id=$4)
- ) peers),'[]'::jsonb)
+ ) peers),'[]'::jsonb) AS peers
+FROM gate
 "#;
 
 const WRITE: &str = r#"
 , previous AS MATERIALIZED (
- SELECT seq,project_id,base_revision,seen_at,cursor,gesture FROM photocraft.live_previews WHERE session_hash=$1 AND tab_id=$4
-), handoff AS MATERIALIZED (
- -- Pointer exit after a completed save must not erase the publisher's identity
- -- before peers install its bytes. Retain only an already admitted End, with
- -- its ORIGINAL lease and current editing authority; never admit empty rows.
- SELECT previous.base_revision,previous.gesture,previous.seen_at
- FROM previous CROSS JOIN access
- WHERE $7::jsonb IS NULL AND $8::jsonb IS NULL
-  AND previous.project_id=$3 AND previous.base_revision<access.revision
-  AND previous.seen_at>(SELECT observed_at FROM live_clock)-interval '2 seconds'
-  AND previous.gesture->'events'-> -1->>'kind'='end'
-  AND access.role IN ('owner','edit')
+ SELECT seq FROM photocraft.live_previews WHERE session_hash=$1 AND tab_id=$4
 ), decision AS MATERIALIZED (
  SELECT CASE
  WHEN gate.status<>200 THEN gate.status
  WHEN $8::jsonb IS NOT NULL AND (SELECT revision FROM access)<>$6 THEN 409
  WHEN $8::jsonb IS NOT NULL AND (SELECT role FROM access)='view' THEN 403
  WHEN EXISTS(SELECT 1 FROM previous WHERE seq>=$5) THEN 200
- -- An existing clear cannot add occupancy. A renewal must still be active in
- -- this project after shared room/session locks were obtained. Admissions and
- -- revocations need the exclusive room lock and cannot race this transaction.
- WHEN $9::boolean AND NOT EXISTS(SELECT 1 FROM previous
-  WHERE ($7::jsonb IS NULL AND $8::jsonb IS NULL)
-     OR (project_id=$3 AND seen_at>(SELECT observed_at FROM live_clock)-interval '2 seconds'
-         AND (cursor IS NOT NULL OR gesture IS NOT NULL))) THEN 431
- WHEN $9::boolean THEN 200
  WHEN NOT EXISTS(SELECT 1 FROM previous)
   AND (SELECT count(*) FROM photocraft.live_previews WHERE session_hash=$1)>=256 THEN 430
  WHEN ($7::jsonb IS NOT NULL OR $8::jsonb IS NOT NULL)
   AND (SELECT count(*) FROM photocraft.live_previews
-       WHERE session_hash=$1 AND tab_id<>$4 AND seen_at>(SELECT observed_at FROM live_clock)-interval '2 seconds'
+       WHERE session_hash=$1 AND tab_id<>$4 AND seen_at>clock_timestamp()-interval '2 seconds'
        AND (cursor IS NOT NULL OR gesture IS NOT NULL))>=8 THEN 429
  WHEN ($7::jsonb IS NOT NULL OR $8::jsonb IS NOT NULL)
   AND (SELECT count(*) FROM photocraft.live_previews l
        JOIN photocraft.sessions s ON s.hash=l.session_hash AND s.expires_at>clock_timestamp()
-       WHERE l.project_id=$3 AND l.seen_at>(SELECT observed_at FROM live_clock)-interval '2 seconds'
+       WHERE l.project_id=$3 AND l.seen_at>clock_timestamp()-interval '2 seconds'
        AND (l.cursor IS NOT NULL OR l.gesture IS NOT NULL)
        AND NOT(l.session_hash=$1 AND l.tab_id=$4))>=64 THEN 429
  ELSE 200 END AS status FROM gate
 ), written AS (
  INSERT INTO photocraft.live_previews(session_hash,tab_id,project_id,seq,base_revision,cursor,gesture,seen_at)
- SELECT $1,$4,$3,$5,
-  COALESCE((SELECT base_revision FROM handoff),CASE WHEN $8::jsonb IS NULL THEN (SELECT revision FROM access) ELSE $6 END),
-  $7,COALESCE((SELECT gesture FROM handoff),$8),COALESCE((SELECT seen_at FROM handoff),clock_timestamp())
+ SELECT $1,$4,$3,$5,CASE WHEN $8::jsonb IS NULL THEN (SELECT revision FROM access) ELSE $6 END,$7,$8,clock_timestamp()
  FROM decision WHERE status=200
  ON CONFLICT(session_hash,tab_id) DO UPDATE SET
   project_id=EXCLUDED.project_id,seq=EXCLUDED.seq,base_revision=EXCLUDED.base_revision,
@@ -157,36 +126,11 @@ const WRITE: &str = r#"
  WHERE live_previews.seq<EXCLUDED.seq
  RETURNING seq
 )
+SELECT decision.status,(SELECT revision FROM access) AS revision,
+ EXISTS(SELECT 1 FROM written) AS accepted,
+ COALESCE((SELECT seq FROM written),(SELECT seq FROM previous),0) AS seq
+FROM decision
 "#;
-
-// Install under ready_db's existing setup transaction/lock. Only compile-time SQL
-// fragments enter this DDL; all request values remain bound function arguments.
-// Keeping the definition here lets GET and the function share AUTH/PEERS exactly.
-pub(crate) fn migration() -> String {
-    format!(
-        "CREATE OR REPLACE FUNCTION photocraft.exchange_live_v1(text,uuid,uuid,uuid,bigint,bigint,jsonb,jsonb,boolean)
-         RETURNS TABLE(result_status integer,result_revision bigint,result_role text,result_accepted boolean,result_seq bigint,result_peers jsonb)
-         LANGUAGE plpgsql VOLATILE SECURITY INVOKER SET search_path=pg_catalog AS $photocraft_live$
-         DECLARE admitted integer;
-         BEGIN
-          {AUTH} SELECT gate.status INTO admitted FROM gate;
-          IF admitted<>200 THEN
-           RETURN QUERY SELECT admitted,NULL::bigint,NULL::text,false,0::bigint,'[]'::jsonb;
-           RETURN;
-          END IF;
-          PERFORM photocraft.lock_live($1,$3,$9);
-          -- VOLATILE gives this internal query a new snapshot after the lock wait.
-          -- The clock CTE is evaluated here, not at the outer function call's start.
-          RETURN QUERY {AUTH}{CLOCK}{WRITE}
-           SELECT decision.status,(SELECT revision FROM access),(SELECT role FROM access),
-            EXISTS(SELECT 1 FROM written),COALESCE((SELECT seq FROM written),(SELECT seq FROM previous),0),
-            CASE WHEN decision.status=200 THEN {PEERS} ELSE '[]'::jsonb END
-           FROM decision CROSS JOIN gate;
-         END;
-         $photocraft_live$;
-         REVOKE ALL ON FUNCTION photocraft.exchange_live_v1(text,uuid,uuid,uuid,bigint,bigint,jsonb,jsonb,boolean) FROM PUBLIC;"
-    )
-}
 
 fn identity(h: &HeaderMap) -> Result<(String, Option<Uuid>)> {
     let session =
@@ -209,11 +153,8 @@ fn checked_status(status: i32) -> Result<()> {
 
 pub(crate) async fn get(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>, Query(v): Query<LiveQuery>) -> Result<Json<Value>> {
     let (session, expected) = identity(&h)?;
-    // Even this single data statement needs BEGIN: SQLx's unnamed Parse/Bind
-    // exchange otherwise crosses an idle boundary in transaction-mode poolers.
     let mut tx = ready_db(&s).await?.begin().await?;
-    let sql =
-        format!("{AUTH}{CLOCK} SELECT gate.status,(SELECT revision FROM access) AS revision,(SELECT role FROM access) AS role,{PEERS} AS peers FROM gate");
+    let sql = format!("{AUTH}{READ}");
     let row = query(&sql).bind(session).bind(expected).bind(id).bind(v.tab).fetch_one(&mut *tx).await?;
     checked_status(row.get("status"))?;
     tx.commit().await?;
@@ -230,38 +171,14 @@ pub(crate) async fn put(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>
     let gesture = update.gesture.map(|g| json!({"events":g.events}));
     let seq = i64::try_from(update.seq).map_err(|_| bad("Invalid live sequence"))?;
     let base = i64::try_from(update.base_revision).map_err(|_| bad("Invalid live base revision"))?;
-    let pool = ready_db(&s).await?;
-    for shared in [true, false] {
-        let mut tx = pool.begin().await?;
-        let row = query(
-            "SELECT result_status AS status,result_revision AS revision,result_role AS role,
-                    result_accepted AS accepted,result_seq AS seq,result_peers AS peers
-             FROM photocraft.exchange_live_v1($1,$2,$3,$4,$5,$6,$7,$8,$9)",
-        )
-        .bind(&session)
-        .bind(expected)
-        .bind(id)
-        .bind(update.tab)
-        .bind(seq)
-        .bind(base)
-        .bind(&cursor)
-        .bind(&gesture)
-        .bind(shared)
-        .fetch_one(&mut *tx)
-        .await?;
-        let status = row.get("status");
-        if shared && status == 431 {
-            // Never upgrade a held shared lock: concurrent expired renewals could
-            // deadlock. A new transaction obtains exclusive locks and fresh AUTH.
-            tx.rollback().await?;
-            continue;
-        }
-        checked_status(status)?;
-        tx.commit().await?;
-        return Ok(Json(json!({"accepted":row.get::<bool,_>("accepted"),"seq":row.get::<i64,_>("seq"),"revision":row.get::<i64,_>("revision"),
-            "role":row.get::<String,_>("role"),"peers":row.get::<Value,_>("peers")})));
-    }
-    Err(ApiError(StatusCode::SERVICE_UNAVAILABLE, "Live preview admission could not complete.".into()))
+    let mut tx = ready_db(&s).await?.begin().await?;
+    let lock_sql = format!("{AUTH} SELECT photocraft.lock_live($1,$3) FROM gate WHERE status=200");
+    query(&lock_sql).bind(&session).bind(expected).bind(id).execute(&mut *tx).await?;
+    let sql = format!("{AUTH}{WRITE}");
+    let row = query(&sql).bind(session).bind(expected).bind(id).bind(update.tab).bind(seq).bind(base).bind(cursor).bind(gesture).fetch_one(&mut *tx).await?;
+    checked_status(row.get("status"))?;
+    tx.commit().await?;
+    Ok(Json(json!({"accepted":row.get::<bool,_>("accepted"),"seq":row.get::<i64,_>("seq"),"revision":row.get::<i64,_>("revision")})))
 }
 
 fn parse(body: &[u8]) -> Result<Update> {

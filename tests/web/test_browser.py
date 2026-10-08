@@ -85,7 +85,9 @@ class BrowserAcceptance(unittest.TestCase):
         return ctx, page
 
     def load(self, page, query=''):
-        page.goto(BASE + '/' + query, wait_until='networkidle', timeout=90000)
+        # A collaborative editor keeps its live transport active. Readiness is
+        # the actual native command bridge, rather than a quiet network.
+        page.goto(BASE + '/' + query, wait_until='domcontentloaded', timeout=90000)
         page.wait_for_function('typeof window.photocraftCommand === "function"', timeout=60000)
         page.wait_for_timeout(400)
 
@@ -1828,15 +1830,42 @@ class BrowserAcceptance(unittest.TestCase):
                 pid = created.value.json()['id']
                 original = wait_saved(pid)
                 self.page.wait_for_timeout(200)
+                autosave_failures = []
+                upload_path = BASE+f'/api/projects/{pid}/uploads'
+
+                def reject_original_autosave(route):
+                    if route.request.method == 'POST':
+                        autosave_failures.append(route.request.post_data_json)
+                        route.fulfill(status=503, content_type='application/json',
+                                      body=json.dumps({'error': 'Synthetic recovery fixture upload outage'}))
+                    else:
+                        route.continue_()
+
                 if source == 'recovery':
-                    self.execute('edit.fill', {'color': '#cc5577'})
-                    self.page.wait_for_timeout(2300)  # Persist browser recovery before the cloud autosave deadline.
-                expected = self.inspect()['document']
-                pixels = Image.open(self.download('file.export.quickExportAsPng')).convert('RGBA').tobytes()
-                # Use the existing native close command while keeping Cloud and
-                # its old binding alive in this same WASM session.
-                self.execute('file.close')
-                self.assertIsNone(self.inspect()['document'])
+                    self.page.route(upload_path, reject_original_autosave)
+                try:
+                    if source == 'recovery':
+                        self.execute('edit.fill', {'color': '#cc5577'})
+                        # Recovery must contain an unsaved edit regardless of the
+                        # cloud autosave interval. Fail only this original's upload.
+                        self.page.wait_for_timeout(2300)
+                        self.assertTrue(autosave_failures, 'The fixture did not exercise a failed autosave')
+                        unchanged = self.context.request.get(BASE+'/api/projects/'+pid).json()
+                        self.assertEqual((unchanged['revision'], unchanged['content']['sha256']),
+                                         (original['revision'], original['content']['sha256']))
+                        (ARTIFACTS/'same-session-recovery-autosave-failure.json').write_text(json.dumps({
+                            'project': pid, 'failed_uploads': len(autosave_failures),
+                            'original_revision': original['revision'], 'original_sha256': original['content']['sha256'],
+                            'revision_before_close': unchanged['revision'], 'sha256_before_close': unchanged['content']['sha256']}, indent=2))
+                    expected = self.inspect()['document']
+                    pixels = Image.open(self.download('file.export.quickExportAsPng')).convert('RGBA').tobytes()
+                    # Use the existing native close command while keeping Cloud and
+                    # its old binding alive in this same WASM session.
+                    self.execute('file.close')
+                    self.assertIsNone(self.inspect()['document'])
+                finally:
+                    if source == 'recovery':
+                        self.page.unroute(upload_path, reject_original_autosave)
                 if source == 'recovery':
                     self.return_to_workspace()
                     self.page.mouse.click(100, 249)

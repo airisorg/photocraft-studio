@@ -1,6 +1,5 @@
 //! Bounded, authenticated transient views. Saved documents still use the native cloud path.
 use super::{Binding, CloudHttp, HttpFailure, account_request, field, now};
-use crate::live_peer::PreviewLease;
 use photocraft_doc::{DocId, Document};
 use photocraft_ui_egui::{
     PhotocraftApp,
@@ -14,7 +13,8 @@ use std::{
     sync::Arc,
 };
 
-const EXCHANGE_MS: f64 = 80.;
+const READ_MS: f64 = 80.;
+const WRITE_MS: f64 = 40.;
 const HEARTBEAT_MS: f64 = 500.;
 const EXPIRE_MS: f64 = 2_000.;
 const TAB_KEY: &str = "photocraft.live.tab.v1";
@@ -24,7 +24,7 @@ struct Failure {
 }
 enum Reply {
     Read(u64, f64, Result<Value, Failure>),
-    Write(u64, f64, Option<u64>, i64, Result<Value, Failure>),
+    Write(u64, Option<u64>, i64, Result<Value, Failure>),
 }
 pub(super) struct Update {
     pub revision: i64,
@@ -41,7 +41,6 @@ pub(super) struct Live {
     replies: Rc<RefCell<Vec<Reply>>>,
     read_pending: bool,
     write_pending: bool,
-    read_required: bool,
     read_at: f64,
     write_at: f64,
     cursor: Option<[f64; 2]>,
@@ -52,7 +51,6 @@ pub(super) struct Live {
     editing_paused: bool,
     blocked_base: Option<i64>,
     peers: HashMap<String, f64>,
-    previews: HashMap<String, PreviewLease>,
     pub notice: Option<String>,
 }
 
@@ -139,7 +137,6 @@ impl Live {
         self.base = None;
         self.read_pending = false;
         self.write_pending = false;
-        self.read_required = true;
         self.read_at = 0.;
         self.write_at = 0.;
         self.cursor = None;
@@ -149,7 +146,6 @@ impl Live {
         self.editing_paused = false;
         self.blocked_base = None;
         self.peers.clear();
-        self.previews.clear();
         self.notice = None;
         collaboration::clear_all(app);
         collaboration::set_enabled(app, false);
@@ -191,7 +187,6 @@ impl Live {
         if self.base.as_ref().is_some_and(|(revision, _)| *revision != binding.revision) {
             collaboration::clear_all(app);
             self.peers.clear();
-            self.previews.clear();
             self.events.clear();
             self.gesture = None;
             self.changed = true;
@@ -243,7 +238,7 @@ impl Live {
         for reply in replies {
             let (generation, read, elapsed, terminal, submitted_base, result) = match reply {
                 Reply::Read(g, started, r) => (g, true, (clock - started).max(0.), None, 0, r),
-                Reply::Write(g, started, terminal, base, r) => (g, false, (clock - started).max(0.), terminal, base, r),
+                Reply::Write(g, terminal, base, r) => (g, false, 0., terminal, base, r),
             };
             if generation != self.generation || http.generation != http.current.get() || !http.allowed.get() {
                 continue;
@@ -267,8 +262,7 @@ impl Live {
                             self.notice = Some("Live gestures resume after the latest saved version arrives.".into());
                         }
                         self.read_at = 0.;
-                        self.read_required = true;
-                        self.write_at = clock - EXCHANGE_MS;
+                        self.write_at = clock - WRITE_MS;
                         self.changed = true;
                         continue;
                     }
@@ -279,7 +273,6 @@ impl Live {
                         self.cursor = None;
                         self.changed = false;
                         self.peers.clear();
-                        self.previews.clear();
                         collaboration::clear_all(app);
                         collaboration::set_enabled(app, false);
                         return Some(Update { revision: binding.revision, role: "unavailable".into() });
@@ -292,14 +285,12 @@ impl Live {
                         self.editing_paused = true;
                         self.changed = true;
                         self.read_at = 0.;
-                        self.read_required = true;
                     }
                     self.notice = Some("Live updates reconnecting. Saved changes still sync.".into());
                     if read {
                         self.read_at = clock + 250.;
                     } else {
                         self.write_at = clock + 500.;
-                        self.read_required = true;
                         self.changed = true;
                     }
                     // Existing peers retain only their admitted remaining lease. A
@@ -315,15 +306,8 @@ impl Live {
                     self.gesture = None;
                     self.changed = true;
                 }
-                // Older servers acknowledge writes without returning a peer
-                // snapshot. Reconcile with GET before sending another update.
-                if !value.get("peers").is_some_and(Value::is_array) || !matches!(field(&value, "role"), "owner" | "edit" | "view") {
-                    self.read_required = true;
-                    self.read_at = 0.;
-                    continue;
-                }
+                continue;
             }
-            self.read_required = false;
             if self.notice.as_deref().is_some_and(|n| n.starts_with("Live updates reconnecting")) {
                 self.notice = None;
             }
@@ -334,7 +318,6 @@ impl Live {
             if !matches!(role.as_str(), "owner" | "edit" | "view") {
                 collaboration::clear_all(app);
                 self.peers.clear();
-                self.previews.clear();
                 continue;
             }
             let mut present = HashMap::new();
@@ -347,15 +330,8 @@ impl Live {
                         continue;
                     }
                     present.insert(label.clone(), clock + lease);
-                    let clean_base = app.session.active().is_some_and(|d| self.base.as_ref().is_some_and(|(_, base)| Arc::ptr_eq(base, &d.doc)));
-                    // The server hides previous-base gestures as soon as a save commits.
-                    // Its native bytes may still be downloading: retire at installation,
-                    // not at notification, without renewing the admitted preview's lease.
-                    if peer.get("gesture").is_none_or(Value::is_null)
-                        && !self.previews.get(&label).is_some_and(|p| p.retain_for_install(clock, revision, binding.revision, clean_base))
-                    {
-                        collaboration::clear_preview(app, &label);
-                        self.previews.remove(&label);
+                    if peer.get("gesture").is_none_or(Value::is_null) {
+                        collaboration::clear_peer(app, &label);
                     }
                     collaboration::set_peer_label(app, &label, field(peer, "name"));
                     let position = peer.get("cursor").filter(|c| !c.is_null()).and_then(|c| Some([c.get("x")?.as_f64()?, c.get("y")?.as_f64()?]));
@@ -367,28 +343,20 @@ impl Live {
                         PreviewEvent { gesture: 0, sequence: 0, kind: PreviewKind::Cursor { position } },
                         native_clock,
                     );
+                    let clean_base = app.session.active().is_some_and(|d| self.base.as_ref().is_some_and(|(_, base)| Arc::ptr_eq(base, &d.doc)));
                     if peer.get("baseRevision").and_then(Value::as_i64) != Some(binding.revision) || !clean_base {
                         continue;
                     }
                     let expected = app.session.active().map_or(0, |d| d.revision);
                     if let Some(events) = peer.pointer("/gesture/events").and_then(Value::as_array) {
                         for raw in events.iter().take(collaboration::MAX_EVENTS) {
-                            let result = serde_json::from_value::<PreviewEvent>(raw.clone()).map_err(|e| e.to_string()).and_then(|event| {
-                                let clear = matches!(event.kind, PreviewKind::Cancel | PreviewKind::Unavailable { .. });
-                                collaboration::receive(app, document, expected, &label, event, native_clock)?;
-                                if clear {
-                                    self.previews.remove(&label);
-                                } else {
-                                    self.previews.entry(label.clone()).or_default().admitted(clock + lease);
-                                }
-                                Ok(())
-                            });
+                            let result = serde_json::from_value::<PreviewEvent>(raw.clone())
+                                .map_err(|e| e.to_string())
+                                .and_then(|event| collaboration::receive(app, document, expected, &label, event, native_clock));
                             match result {
                                 Ok(()) => {}
                                 Err(_) => {
                                     self.notice = Some("Some live gestures are waiting for the saved version.".into());
-                                    collaboration::clear_preview(app, &label);
-                                    self.previews.remove(&label);
                                     break;
                                 }
                             }
@@ -400,7 +368,6 @@ impl Live {
                 collaboration::clear_peer(app, absent);
             }
             self.peers = present;
-            self.previews.retain(|peer, _| self.peers.contains_key(peer));
             ctx.request_repaint();
         }
         self.peers.retain(|peer, expires| {
@@ -411,23 +378,7 @@ impl Live {
                 true
             }
         });
-        self.previews.retain(|peer, preview| {
-            if !self.peers.contains_key(peer) || preview.expired(clock) {
-                collaboration::clear_preview(app, peer);
-                false
-            } else {
-                true
-            }
-        });
-        let heartbeat = (self.cursor.is_some() || !self.events.is_empty()) && clock - self.write_at >= HEARTBEAT_MS;
-        // One request at a time exchanges the whole latest transient state.
-        // A publish also returns authorized peers, so an active tab does not
-        // need a second independent read loop.
-        if !self.read_pending
-            && !self.write_pending
-            && clock - self.read_at >= EXCHANGE_MS
-            && (self.read_required || clock - self.write_at < EXCHANGE_MS || !(self.changed || heartbeat))
-        {
+        if !self.read_pending && clock - self.read_at >= READ_MS {
             self.read_pending = true;
             self.read_at = clock;
             let queue = self.replies.clone();
@@ -441,13 +392,8 @@ impl Live {
                 context.request_repaint();
             });
         }
-        if !self.read_pending
-            && !self.write_pending
-            && !self.read_required
-            && clock - self.read_at >= EXCHANGE_MS
-            && clock - self.write_at >= EXCHANGE_MS
-            && (self.changed || heartbeat)
-        {
+        let heartbeat = (self.cursor.is_some() || !self.events.is_empty()) && clock - self.write_at >= HEARTBEAT_MS;
+        if !self.write_pending && clock - self.write_at >= WRITE_MS && (self.changed || heartbeat) {
             let cursor = self.cursor.map(|p| json!({"x":p[0],"y":p[1]}));
             let gesture = if self.events.is_empty() { Value::Null } else { json!({"events":self.events}) };
             self.sequence = self.sequence.saturating_add(1);
@@ -461,7 +407,6 @@ impl Live {
             } else {
                 self.write_pending = true;
                 self.changed = false;
-                self.read_at = clock;
                 self.write_at = clock;
                 let queue = self.replies.clone();
                 let generation = self.generation;
@@ -472,7 +417,7 @@ impl Live {
                 let submitted_base = if self.gesture.is_some() { self.gesture_base } else { binding.revision };
                 wasm_bindgen_futures::spawn_local(async move {
                     let result = call(&http, "PUT", &path, Some(body)).await;
-                    queue.borrow_mut().push(Reply::Write(generation, clock, terminal, submitted_base, result));
+                    queue.borrow_mut().push(Reply::Write(generation, terminal, submitted_base, result));
                     context.request_repaint();
                 });
             }

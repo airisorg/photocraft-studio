@@ -306,50 +306,6 @@ fn pointer_moves(events: &[egui::Event], button: egui::PointerButton, down_at_st
     out
 }
 
-/// Tools whose gesture follows a freehand path (a polyline of the input points), so every pointer
-/// sample the OS delivered improves the result. Other tools are driven by the pointer's latest
-/// position (endpoints, anchors, guides), so feeding them a whole frame's moves only repeats work.
-pub(crate) fn freehand_tool(tool: Tool) -> bool {
-    matches!(
-        tool,
-        Tool::Brush
-            | Tool::Pencil
-            | Tool::MixerBrush
-            | Tool::Eraser
-            | Tool::BackgroundEraser
-            | Tool::HistoryBrush
-            | Tool::SpotHealing
-            | Tool::Healing
-            | Tool::CloneStamp
-            | Tool::Blur
-            | Tool::Sharpen
-            | Tool::Smudge
-            | Tool::Dodge
-            | Tool::Burn
-            | Tool::Sponge
-            | Tool::Lasso
-            | Tool::Patch
-            | Tool::QuickSelection
-    )
-}
-
-/// The pointer moves this frame delivered while `button` was held, in order. `down_at_start` is
-/// whether the button was already down when the frame began. A move before a press or after a
-/// release in the same frame is dropped, so a gesture never picks up input from outside its own
-/// press..release interval.
-fn pointer_moves(events: &[egui::Event], button: egui::PointerButton, down_at_start: bool) -> Vec<Pos2> {
-    let mut down = down_at_start;
-    let mut out = Vec::new();
-    for e in events {
-        match e {
-            egui::Event::PointerButton { button: b, pressed, .. } if *b == button => down = *pressed,
-            egui::Event::PointerMoved(p) if down => out.push(*p),
-            _ => {}
-        }
-    }
-    out
-}
-
 /// Abstract tool event, produced by the mouse or by automation (`ui.pointer`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ToolEvent {
@@ -688,6 +644,12 @@ fn damage_since(app: &PhotocraftApp, idx: usize, seen: (u64, u64), now: (u64, u6
     if seen.0 == now.0
         && let Some(st) = app.session.documents().get(idx)
         && let Some(r) = crate::patch_preview::damage(app, st.doc.id, now.0, seen.1 ^ display_key, now.1)
+    {
+        return Some(if r.is_empty() { r } else { r.inflate(effect_reach(&st.doc.layers)) });
+    }
+    if seen.0 == now.0
+        && let Some(st) = app.session.documents().get(idx)
+        && let Some(r) = crate::collaboration::damage(app, st.doc.id, now.0, seen.1 ^ display_key, now.1)
     {
         return Some(if r.is_empty() { r } else { r.inflate(effect_reach(&st.doc.layers)) });
     }
@@ -1977,6 +1939,7 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
             crate::stroke_constraint::draw_line_preview(app, &painter, &xf, p, tool, held.shift);
         }
     }
+    crate::collaboration::canvas(app, ui, &xf, doc.id, primary);
     // Scrollbars (scrollbars.rs): drawn over the canvas edges, they take the pointer there.
     let t0 = crate::gpu_canvas::now_ms();
     let before = view.center;
@@ -2311,10 +2274,16 @@ fn tool_move(app: &mut PhotocraftApp, x: f64, y: f64, pressure: f32, mods: egui:
             app.stylus.record_point();
         }
     }
+    if tool == Tool::Move {
+        crate::collaboration::progress(app, None);
+    }
 }
 
 /// Tool state machine. Shared by mouse input and automation.
 pub fn tool_event(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers) {
+    if matches!(ev, ToolEvent::Down { .. }) {
+        crate::collaboration::prepare_down(app);
+    }
     // An Alt+right-drag armed for this press (`paint_mouse`): taken before anything else can
     // consume the event, so it never outlives the press it was armed for (#297).
     let armed = std::mem::take(&mut app.brush_resize_armed);
@@ -2456,6 +2425,13 @@ pub fn tool_event(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers)
                 app.stylus.record_point();
             }
             app.live_stroke = if strokes_live(tool) { begin_live_stroke(app) } else { None };
+            let preview_params = app.live_stroke.as_ref().map(|live| {
+                let points = app.drag.as_ref().map(|d| app.stylus.stroke_points(&d.points)).unwrap_or_default();
+                let mut params = stroke_params(app, tool, erase, &points);
+                params["seed"] = json!(live.stroke.seed);
+                params
+            });
+            crate::collaboration::begin(app, preview_params);
         }
         ToolEvent::Move { x, y, pressure } => {
             tool_move(app, x, y, pressure, mods);
@@ -2484,6 +2460,7 @@ pub fn tool_event(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers)
             if d.tool == Tool::Move && d.points.len() < 2 && matches!(raw, ToolEvent::Up { x, y } if [x, y] == d.start) {
                 app.move_preview = None;
                 crate::move_mods::finish(app);
+                crate::collaboration::finish(app, false);
                 return;
             }
             if d.points.last().is_none_or(|p| p[0] != x || p[1] != y) {
@@ -2493,6 +2470,8 @@ pub fn tool_event(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers)
             crate::collaboration::progress(app, Some(&d));
             let before = app.session.active().map(|st| st.revision);
             finish_gesture(app, d);
+            let committed = app.session.active().map(|st| st.revision) != before;
+            crate::collaboration::finish(app, committed);
             crate::move_mods::finish(app);
         }
     }
