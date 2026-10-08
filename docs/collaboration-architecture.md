@@ -138,6 +138,22 @@ Bounds are 64 KiB per update, 256 events, 1,024 points, eight active tabs per se
 work limit. Watermarks survive clear/expiry and disappear with their session. These are
 admission bounds, not demonstrated capacity or an unlimited multiplayer contract.
 
+The optional native label candidate changes only overlay placement. It retains that
+32-peer cap and the exact pointer geometry, sorts by peer key, and searches at most 64
+candidate positions for each opaque theme-token plate. Single-line names are truncated to
+a bounded width; a plate with no safe viewport space is skipped while its pointer remains.
+There is no label animation or previous-slot cache, so unchanged inputs are deterministic
+but moving peers may change placement. Full names behind truncated/omitted labels and a
+live-presence roster have not been verified as accessible features. The
+[candidate evidence](collaboration-performance.md#optional-native-cursor-label-candidate--2026-10-08-utc)
+records the intermediate label-only checks separately from the combined Preferences/label
+build's focused checks, 63 passing browser checks and 19 passing local paint observations.
+A separate combined cross-worker run passed three local paint observations during a mixed
+998-HTTP-actor/two-browser workload; its 73.62859% nominal HTTP completion is not a capacity
+certificate. The receipt and its limitations are separate from the older WASM's results.
+Hosted deployment acceptance is separately recorded outside source, and this candidate
+section makes no hosted claim.
+
 The first transport uses existing HTTP/PostgreSQL credentials and needs no new provider
 secret. Supabase private Broadcast remains a later optimization: the opaque cookie does
 not become a Realtime JWT by exposing the anonymous key. The safe provider-session bridge,

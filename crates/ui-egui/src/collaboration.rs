@@ -20,6 +20,54 @@ const PREVIEW_TTL_MS: f64 = 15_000.;
 const CURSOR_TTL_MS: f64 = 5_000.;
 const KEY_BASE: u64 = 1 << 48;
 const MAX_DAB_PIXEL_WORK: f64 = 16_000_000.;
+const CURSOR_LABEL_INSET: f32 = 4.;
+const CURSOR_LABEL_GAP: f32 = 2.;
+const CURSOR_LABEL_MAX_WIDTH: f32 = 160.;
+const CURSOR_LABEL_PADDING: egui::Vec2 = egui::vec2(6., 3.);
+
+/// A bounded, view-only search: crowded or tiny canvases may show a pointer without its label.
+/// Call in stable peer-key order. Every pointer is an obstacle, including later peers' pointers.
+fn place_cursor_label(anchor: egui::Pos2, size: egui::Vec2, canvas: egui::Rect, pointers: &[egui::Rect], labels: &[egui::Rect]) -> Option<egui::Rect> {
+    if ![anchor.x, anchor.y, size.x, size.y, canvas.min.x, canvas.min.y, canvas.max.x, canvas.max.y, canvas.width(), canvas.height()]
+        .iter()
+        .all(|v| v.is_finite())
+        || size.x <= 0.
+        || size.y <= 0.
+        || !canvas.contains(anchor)
+        || pointers.len() > MAX_PEERS
+        || labels.len() >= MAX_PEERS
+        || pointers.iter().chain(labels).any(|r| !r.is_finite())
+    {
+        return None;
+    }
+    let bounds = canvas.shrink(CURSOR_LABEL_INSET);
+    if size.x > bounds.width() || size.y > bounds.height() {
+        return None;
+    }
+    // Four nearby quadrants per row, at most 64 candidates. Clamping flips edge labels inward;
+    // the obstacle test still rejects a clamped plate that would cover any cursor marker.
+    for row in 0..16 {
+        let offset = row as f32 * (size.y + 2. * CURSOR_LABEL_GAP);
+        for candidate in [
+            anchor + egui::vec2(16., 16. + offset),
+            anchor + egui::vec2(-6. - size.x, 16. + offset),
+            anchor + egui::vec2(16., -6. - size.y - offset),
+            anchor + egui::vec2(-6. - size.x, -6. - size.y - offset),
+        ] {
+            let rect = egui::Rect::from_min_size(
+                egui::pos2(
+                    candidate.x.clamp(bounds.left(), (bounds.right() - size.x).max(bounds.left())),
+                    candidate.y.clamp(bounds.top(), (bounds.bottom() - size.y).max(bounds.top())),
+                ),
+                size,
+            );
+            if bounds.contains_rect(rect) && pointers.iter().chain(labels).all(|r| !r.expand(CURSOR_LABEL_GAP).intersects(rect)) {
+                return Some(rect);
+            }
+        }
+    }
+    None
+}
 
 /// Cumulative transport snapshots may replay these events. Sequence numbers make that harmless.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -654,16 +702,38 @@ pub(crate) fn canvas(app: &mut PhotocraftApp, ui: &egui::Ui, xf: &crate::canvas:
         }
     }
     let painter = ui.painter_at(xf.rect);
-    let color = crate::theme::Tokens::get(ui.ctx()).collaborator_color();
-    for (peer, cursor) in &app.collaboration.cursors {
-        if cursor.doc != doc {
-            continue;
-        }
-        let p = xf.to_screen(cursor.position[0] as f32, cursor.position[1] as f32);
+    let tokens = crate::theme::Tokens::get(ui.ctx());
+    let color = tokens.collaborator_color();
+    // Admission already bounds this map to MAX_PEERS (32). Sorting prevents HashMap iteration
+    // order from changing the label layout when the same authenticated peer positions repeat.
+    let mut cursors: Vec<_> = app
+        .collaboration
+        .cursors
+        .iter()
+        .filter(|(_, cursor)| cursor.doc == doc)
+        .take(MAX_PEERS)
+        .map(|(peer, cursor)| (peer, xf.to_screen(cursor.position[0] as f32, cursor.position[1] as f32)))
+        .collect();
+    cursors.sort_unstable_by(|a, b| a.0.cmp(b.0));
+    let pointers: Vec<_> = cursors.iter().map(|(_, p)| egui::Rect::from_min_max(*p - egui::vec2(3., 3.), *p + egui::vec2(13., 13.))).collect();
+    let mut labels = Vec::with_capacity(cursors.len());
+    let text_width = CURSOR_LABEL_MAX_WIDTH.min(xf.rect.width() - 2. * CURSOR_LABEL_INSET) - 2. * CURSOR_LABEL_PADDING.x;
+    for (peer, p) in cursors {
         painter.circle_filled(p, 3., color);
         painter.add(egui::Shape::convex_polygon(vec![p, p + egui::vec2(4., 13.), p + egui::vec2(8., 8.), p + egui::vec2(13., 4.)], color, egui::Stroke::NONE));
-        let label = app.collaboration.labels.get(peer).map(String::as_str).unwrap_or(peer);
-        painter.text(p + egui::vec2(10., 14.), egui::Align2::LEFT_TOP, label, egui::FontId::proportional(12.), color);
+        if !xf.rect.contains(p) || !text_width.is_finite() {
+            continue;
+        }
+        let label = app.collaboration.labels.get(peer).map(String::as_str).filter(|label| !label.is_empty()).unwrap_or(peer);
+        let Some(galley) = crate::layer_row_ui::truncated(&painter, label, egui::FontId::proportional(12.), tokens.text, false, text_width) else {
+            continue;
+        };
+        if let Some(rect) = place_cursor_label(p, galley.size() + 2. * CURSOR_LABEL_PADDING, xf.rect, &pointers, &labels) {
+            painter.rect_filled(rect, tokens.radius_sm, tokens.card);
+            painter.rect_stroke(rect, tokens.radius_sm, egui::Stroke::new(1., tokens.card_border), egui::StrokeKind::Inside);
+            painter.galley(rect.min + CURSOR_LABEL_PADDING, galley, tokens.text);
+            labels.push(rect);
+        }
     }
     if app.collaboration.remote.is_some() || !app.collaboration.cursors.is_empty() {
         ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
@@ -674,6 +744,120 @@ pub(crate) fn canvas(app: &mut PhotocraftApp, ui: &egui::Ui, xf: &crate::canvas:
 mod tests {
     use super::*;
     use crate::canvas::{ToolEvent, tool_event};
+
+    #[test]
+    fn cursor_label_cluster_keeps_eight_names_clear_of_each_other_and_every_pointer() {
+        let canvas = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(640., 360.));
+        for spacing in [0., 7.] {
+            let anchors: Vec<_> = (0..8).map(|i| egui::pos2(310., 145. + i as f32 * spacing)).collect();
+            let pointers: Vec<_> = anchors.iter().map(|p| egui::Rect::from_min_max(*p - egui::vec2(3., 3.), *p + egui::vec2(13., 13.))).collect();
+            let mut labels = Vec::new();
+            for (i, anchor) in anchors.iter().enumerate() {
+                let rect = place_cursor_label(*anchor, egui::vec2(if i == 7 { 160. } else { 95. }, 22.), canvas, &pointers, &labels)
+                    .expect("all eight clustered names fit");
+                assert!(canvas.shrink(4.).contains_rect(rect));
+                assert!(pointers.iter().chain(&labels).all(|other| !other.expand(2.).intersects(rect)));
+                labels.push(rect);
+            }
+            assert_eq!(labels.len(), 8);
+        }
+    }
+
+    #[test]
+    fn cursor_label_edges_flip_inward_and_invalid_or_tiny_geometry_omits_only_labels() {
+        let canvas = egui::Rect::from_min_max(egui::pos2(20., 40.), egui::pos2(660., 400.));
+        for anchor in [canvas.left_top(), canvas.right_top(), canvas.left_bottom(), canvas.right_bottom()] {
+            let pointer = egui::Rect::from_min_max(anchor - egui::vec2(3., 3.), anchor + egui::vec2(13., 13.));
+            let rect = place_cursor_label(anchor, egui::vec2(160., 22.), canvas, &[pointer], &[]).expect("edge label fits");
+            assert!(canvas.shrink(4.).contains_rect(rect));
+            assert!(!pointer.expand(2.).intersects(rect));
+        }
+        let tiny = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(16., 16.));
+        assert!(place_cursor_label(tiny.center(), egui::vec2(80., 22.), tiny, &[], &[]).is_none());
+        assert!(place_cursor_label(canvas.center(), egui::vec2(f32::NAN, 22.), canvas, &[], &[]).is_none());
+        assert!(place_cursor_label(egui::pos2(f32::INFINITY, 0.), egui::vec2(80., 22.), canvas, &[], &[]).is_none());
+        assert!(place_cursor_label(canvas.center(), egui::vec2(-1., 22.), canvas, &[], &[]).is_none());
+        assert!(place_cursor_label(canvas.center(), egui::vec2(80., 22.), egui::Rect::NOTHING, &[], &[]).is_none());
+        assert!(place_cursor_label(canvas.center(), egui::vec2(80., 22.), canvas, &[egui::Rect::NOTHING], &[]).is_none());
+        assert!(place_cursor_label(canvas.min - egui::vec2(1., 1.), egui::vec2(80., 22.), canvas, &[], &[]).is_none());
+        assert!(place_cursor_label(canvas.center(), egui::vec2(80., 22.), canvas, &vec![canvas; MAX_PEERS + 1], &[]).is_none());
+    }
+
+    fn cursor_shapes(peers: &[(&str, &str, [f64; 2])], rect: egui::Rect) -> Vec<egui::Shape> {
+        let mut app = PhotocraftApp::new(Session::new(), Default::default());
+        app.run("file.new", json!({"width":64,"height":64})).unwrap();
+        set_enabled(&mut app, true);
+        let st = app.session.active().unwrap();
+        let (id, revision, original, history) = (st.doc.id, st.revision, st.doc.clone(), st.history.past_len());
+        for &(peer, label, position) in peers {
+            receive(&mut app, id, revision, peer, PreviewEvent { gesture: 0, sequence: 0, kind: PreviewKind::Cursor { position: Some(position) } }, 0.)
+                .unwrap();
+            set_peer_label(&mut app, peer, label);
+        }
+        let ctx = egui::Context::default();
+        let out = ctx.run_ui(egui::RawInput { time: Some(0.), ..Default::default() }, |ui| {
+            let xf = crate::canvas::ViewXform { rect, zoom: 1., center: [rect.center().x, rect.center().y], flip: false };
+            canvas(&mut app, ui, &xf, id, false);
+        });
+        let egui::FullOutput { mut textures_delta, shapes, .. } = out;
+        textures_delta.clear(); // This headless test inspects shapes, without a texture renderer.
+        assert!(Arc::ptr_eq(&original, &app.session.active().unwrap().doc));
+        assert_eq!(app.session.active().unwrap().revision, revision);
+        assert_eq!(app.session.active().unwrap().history.past_len(), history);
+        shapes.into_iter().map(|shape| shape.shape).collect()
+    }
+
+    #[test]
+    fn cursor_label_paint_order_and_positions_ignore_peer_insertion_order() {
+        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(640., 360.));
+        let a = ("actor-a:tab", "First", [300., 150.]);
+        let b = ("actor-b:tab", "Second", [300., 150.]);
+        let forward = cursor_shapes(&[a, b], rect);
+        let reverse = cursor_shapes(&[b, a], rect);
+        let text = |shapes: Vec<egui::Shape>| {
+            shapes.into_iter().filter_map(|s| if let egui::Shape::Text(t) = s { Some((t.pos, t.galley.text().to_owned())) } else { None }).collect::<Vec<_>>()
+        };
+        assert_eq!(text(forward), text(reverse));
+        assert_eq!(text(cursor_shapes(&[a, b], rect)).len(), 2);
+    }
+
+    #[test]
+    fn cursor_label_native_ellipsis_is_bounded_and_themed_text_has_readable_contrast() {
+        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(640., 360.));
+        let shapes = cursor_shapes(&[("actor:tab", "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW", [300., 150.])], rect);
+        let text = shapes.iter().find_map(|s| if let egui::Shape::Text(t) = s { Some(t) } else { None }).unwrap();
+        assert!(text.galley.elided);
+        assert_eq!(text.galley.rows.len(), 1);
+        assert!(text.galley.size().x + 2. * CURSOR_LABEL_PADDING.x <= CURSOR_LABEL_MAX_WIDTH);
+        let luminance = |color: egui::Color32| {
+            let linear = |v: u8| {
+                let v = f64::from(v) / 255.;
+                if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+            };
+            0.2126 * linear(color.r()) + 0.7152 * linear(color.g()) + 0.0722 * linear(color.b())
+        };
+        for theme in crate::theme::ThemeKind::ALL {
+            let tokens = crate::theme::Tokens::for_kind(theme);
+            let (a, b) = (luminance(tokens.text), luminance(tokens.card));
+            assert!((a.max(b) + 0.05) / (a.min(b) + 0.05) >= 4.5, "{theme:?} label contrast");
+        }
+    }
+
+    #[test]
+    fn cursor_only_fallback_retains_the_exact_native_pointer_shapes() {
+        for (rect, point) in [
+            (egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(16., 16.)), egui::pos2(8., 8.)),
+            (egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(640., 360.)), egui::pos2(-1., 150.)),
+        ] {
+            let shapes = cursor_shapes(&[("actor:tab", "Visible pointer", [f64::from(point.x), f64::from(point.y)])], rect);
+            assert!(!shapes.iter().any(|s| matches!(s, egui::Shape::Text(_))));
+            let marker = shapes.iter().find_map(|s| if let egui::Shape::Circle(c) = s { Some(c) } else { None }).unwrap();
+            assert_eq!((marker.center, marker.radius, marker.fill), (point, 3., egui::Color32::from_rgb(154, 107, 255)));
+            let arrow = shapes.iter().find_map(|s| if let egui::Shape::Path(p) = s { Some(p) } else { None }).unwrap();
+            assert_eq!(arrow.points, vec![point, point + egui::vec2(4., 13.), point + egui::vec2(8., 8.), point + egui::vec2(13., 4.)]);
+            assert_eq!(arrow.fill, marker.fill);
+        }
+    }
 
     fn pair(depth: u8, tool: Tool) -> (PhotocraftApp, PhotocraftApp) {
         let mut owner = PhotocraftApp::new(Session::new(), Default::default());
