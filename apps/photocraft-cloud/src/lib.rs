@@ -282,15 +282,21 @@ pub async fn application() -> std::result::Result<Router, Box<dyn std::error::Er
 async fn browser_headers(req: axum::extract::Request, next: Next) -> Response {
     let path = req.uri().path();
     let immutable = path.starts_with("/photocraft-web-") && (path.ends_with(".wasm") || path.ends_with(".js"));
+    let referrer = referrer_policy(path);
     let mut response = next.run(req).await;
     let cache = if immutable && response.status().is_success() { "public, max-age=31536000, immutable" } else { "no-cache" };
     if !response.headers().contains_key(header::CACHE_CONTROL) {
         response.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static(cache));
     }
     response.headers_mut().insert("x-content-type-options", HeaderValue::from_static("nosniff"));
-    response.headers_mut().insert("referrer-policy", HeaderValue::from_static("no-referrer"));
+    response.headers_mut().insert("referrer-policy", HeaderValue::from_static(referrer));
     response.headers_mut().insert("x-frame-options", HeaderValue::from_static("SAMEORIGIN"));
     response
+}
+fn referrer_policy(path: &str) -> &'static str {
+    // no-referrer makes native form POSTs send Origin:null. Keep the confirmation
+    // form's real origin while withholding its single-use token path and query.
+    if path == "/auth/confirm" { "strict-origin" } else { "no-referrer" }
 }
 pub fn router(s: App) -> Router {
     Router::new()
@@ -329,9 +335,9 @@ async fn guard(State(s): State<App>, req: axum::extract::Request, next: Next) ->
     {
         return (StatusCode::FORBIDDEN, Json(json!({"error":"Request origin does not match this workspace"}))).into_response();
     }
+    let referrer = referrer_policy(req.uri().path());
     let mut r = next.run(req).await;
-    for (k, v) in [("cache-control", "no-store"), ("x-content-type-options", "nosniff"), ("referrer-policy", "no-referrer"), ("x-frame-options", "SAMEORIGIN")]
-    {
+    for (k, v) in [("cache-control", "no-store"), ("x-content-type-options", "nosniff"), ("referrer-policy", referrer), ("x-frame-options", "SAMEORIGIN")] {
         r.headers_mut().insert(k, HeaderValue::from_static(v));
     }
     r

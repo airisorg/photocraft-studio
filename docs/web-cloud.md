@@ -154,7 +154,10 @@ python packaging/web/tofu-package.py dist/photocraft-tofu.zip
 
 The auth suite simulates GoTrue on loopback and verifies redirect state, single-use token
 handling, verified email ownership, session cookies and server-side identity verification.
-It does not substitute for a real hosted Google sign-in. Tests never add an authentication
+It also renders and submits the actual confirmation form in Chromium and WebKit, with
+no injected Origin header, then verifies identity, token privacy and replay rejection.
+Both engines are mandatory dependencies; a missing browser must fail, not skip, the gate.
+It does not substitute for inbox receipt or a real hosted Google sign-in. Tests never add an authentication
 bypass to the deployed application, and refuse to seed accounts on non-loopback services.
 
 ## Deliberate limits

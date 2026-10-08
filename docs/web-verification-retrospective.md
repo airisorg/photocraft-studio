@@ -26,6 +26,7 @@ it through the UI, persisted state, runtime, and deployment.
 | Retry reports a conflict after a save actually committed | A rejected chunk leaves an incomplete upload | A missing response cannot establish whether the server committed the save | Let commit succeed, discard its response, then retry unchanged and newly edited local snapshots; prove the original project and collaborator edits survive |
 | Recovered copy can inherit a closed document's cloud binding | Recovery after a page reload starts with empty adapter state | Same-session recovery must also create an independent local copy | Save, close without reloading, recover, edit, wait past autosave and prove the original cloud revision/bytes stay unchanged |
 | Delayed Open or project list can override a later action | Cards were opened and modified one at a time | The latest navigation/refresh owns its result; stale success and failure must be ignored | Hold and reorder real card requests, duplicate-click Open, and complete an old list after a Trash/Restore refresh |
+| Email confirmation rejects a normal Continue click | HTTP tests manually supplied the correct Origin header | The delivered page policy determines the browser-generated POST Origin, cookie acceptance and redirect | Render the served form in Chromium and WebKit, click Continue without injected headers, verify identity and token privacy, reject replay and foreign/null/missing origins |
 | Browser recovery accumulates old documents | Individual snapshots could be written and recovered | The requested policy is one latest-visited recovery copy, including real eviction | Visit clean A/B/A documents, reload, migrate old rows, preserve account isolation, reject stale writes and prevent multi-tab work loss on sign-in |
 
 The test for the saved CPU preference failed before the adapter fix: it observed GPU still
@@ -104,9 +105,9 @@ Each row needs a UI journey and server authorization evidence; API coverage alon
 
 | Capability | Current implementation | Local regression entry points | Remaining acceptance boundary |
 |---|---|---|---|
-| Google identity and sessions | Tofu-managed sign-in, verified identity, avatar, logout | Browser 17/18/39/44; simulated-provider auth suite | Real hosted callback, expiration and safe reauthentication |
+| Google identity and sessions | Tofu-managed sign-in, verified identity, avatar, logout | Browser 17/18/39/44/48–50; simulated-provider auth suite | Real hosted provider callback and same-account reauthentication; local expiration/pending-save preservation is covered |
 | Initial save and autosave | Native `.pcraft`, checksums, revision checks, chunked saves | Browser 7/35/40/46/47; API 8–14/35; cold-worker suite | Hosted save/reload and account changes during requests |
-| Email invitation | Owner grants view/edit access and requests a sign-in email | Browser 36/38; simulated-provider invitation tests | Exact approved recipient, inbox receipt and actual acceptance |
+| Email invitation | Owner grants view/edit access and requests a sign-in email | Browser 36/38; invitation provider tests; `AuthContract.test_browser_email_confirmation_submits_real_same_origin_form` in Chromium/WebKit | Exact approved recipient, inbox receipt and actual hosted acceptance; real local browser form now crosses the simulated provider boundary |
 | Membership | Owner changes roles and removes access | Browser 25/28/37; API 6/7/27/34 | Real second-user stale-tab and reconnect behavior after removal |
 | Shared projects | Matching signed-in email sees authorized projects | Browser 16; API 6/7 | New invitee, wrong real account, expired session and removed member |
 | Public view link | Anonymous view/download, rotation, revocation | Browser 8/22/45; API 15/22 | Hosted separate-browser flow; downloaded copies cannot be recalled |
@@ -193,8 +194,9 @@ inbox delivery, and one successful interaction does not cover all states in its 
 - The candidate separates recovery warnings/retry timing from cloud-save eligibility.
   Its quota-failure journey must prove that cloud revisions still advance automatically,
   and that restoring local recovery cannot dismiss an unrelated cloud-save failure.
-- Expired sessions still need a safe, explicit reauthentication journey with open work
-  preserved. Retrying an expired cookie is not a complete sign-in experience.
+- Local browser cases 48–50 now verify explicit same-account reauthentication, wrong-account
+  refusal and deferred committed-save acknowledgment with native open work preserved.
+  Their login provider is simulated; a real hosted renewal remains an acceptance boundary.
 - Comment posting still needs a pending-submission guard and separate feedback for a
   successful POST followed by a failed refresh, without inviting duplicate submissions.
 
@@ -341,3 +343,35 @@ changing ResizeObserver's `devicePixelContentBoxSize`. PhotoCraft correctly reli
 physical box through eframe. The test now launches Chromium with the matching process scale
 as well as its context scale. DPR 1/1.25/1.5/2 canvas backing dimensions and rendered header
 geometry pass. No renderer workaround was added for a test-emulation artifact.
+
+## Email confirmation incident: verify transitions, not isolated components
+
+The owner reported `/auth/confirm` rejecting a normal button click after the earlier
+release had passed 50 editor/browser cases and 12 auth cases. Two independent source
+audits and both real browser engines reproduced the cause: `no-referrer` in the page
+and middleware made the form POST send `Origin: null`. The strict origin guard correctly
+rejected it before contacting the provider. The old auth test supplied `Origin` itself,
+so it could not exercise the delivered page policy. More tests of the same isolated
+contract would not have caught this missing transition.
+
+The confirmation page now uses `strict-origin` in its meta tag and both header writers.
+It retains the real request origin while withholding the path and token query from
+`Referer`; the external Tofu credit has `rel="noreferrer"`. Other pages retain
+`no-referrer`, and the exact-origin guard remains unchanged.
+
+The mandatory `python tests/web/test_auth.py` command now includes Chromium and WebKit
+GET → reload → real Continue click → redirect → browser-accepted session → identity read.
+GET never redeems the token; replay fails; missing/null/foreign origins are denied.
+Missing browser dependencies fail this gate rather than skipping it. The existing
+`web-cloud.yml` command already runs before browser packaging/promotion, and manual
+releases must run the same command on the frozen service alongside API, startup and
+browser journeys. Preserve before/after evidence, and match the served confirmation
+policy after deployment. This remains a simulated provider test, not proof of delivered
+email or Google consent.
+
+Before marking any journey verified, classify every transition: UI input, navigation,
+provider return, identity, authorization, persisted state, reload and visible feedback.
+A fixture may prepare a preceding state, but cannot replace the transition under test.
+Use held responses and failure injection for races; reserve actual provider/inbox and
+independent-user hosted flows for explicit live acceptance. The contract table above
+keeps those boundaries visible instead of converting a total test count into parity.
