@@ -16,7 +16,7 @@ We adapted the existing editor for a hosted, shared browser workspace rather tha
 
 Editing remains the original Rust/egui application compiled to WebAssembly. The cloud adapter reuses the native `.pcraft` document format. Rendering and painting run on the user's machine. The browser prefers hardware WebGPU and selects the existing WebGL2 renderer for software WebGPU adapters before opening the workspace.
 
-The editor and this adaptation remain early-alpha software. A passed local benchmark is not a production latency or capacity guarantee. See the [collaboration contract](docs/collaboration-architecture.md), [measured performance](docs/collaboration-performance.md), and [upstream roadmap](docs/roadmap.md) for current behavior and limits.
+The editor and this adaptation remain early-alpha software. A passed local benchmark is not a production latency or capacity guarantee; the [1,000-active-client release target](docs/scale-release-review.md) is not met. See the [collaboration contract](docs/collaboration-architecture.md), [measured performance](docs/collaboration-performance.md), and [upstream roadmap](docs/roadmap.md) for current behavior and limits.
 
 ## Try it
 

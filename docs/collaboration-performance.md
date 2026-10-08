@@ -1,11 +1,24 @@
 # Collaboration latency measurements
 
 This report separates historical HTTP/state measurements from calibrated input-to-remote-paint
-measurements. The final bounded native-preview run below passed all 19 observations, with
-an 84.552 ms p50 with no configured delay and a 287.777 ms maximum across simulated network profiles.
+measurements. The latest security-remediation run passed all 19 hardware-browser observations,
+with a 105.764 ms upper-bound p50 with no configured delay and a 304.150 ms largest upper bound
+across simulated HTTP-delay profiles. The older measurements below remain historical evidence.
 These are local two-account observations, not hosted capacity, physical-device latency or
 a production service-level objective. See [collaboration architecture](collaboration-architecture.md)
 for the transport, current limits, and optimization decisions.
+
+## Latest security-remediation sample
+
+The frozen browser artifact `3c65885b` and debug backend `53c0126` passed the
+hardware Chrome 154 lane with two independent local accounts. Ordinary profiles
+contain six samples each: configured minimum HTTP delays of 0 / 50 / 100 ms produced
+largest uncertainty-inclusive upper bounds of 142.529 / 204.208 / 304.150 ms.
+One additional reload observation was 83.976 ms. The endpoint is a matching
+CDP-swapped PNG, not a physical display. See the [release review](security-release-review.md)
+for exact hashes, environment, statistics and the separate inconclusive software-renderer
+timing runs. The [1,000-client scale gate](scale-release-review.md) is not met;
+these two-browser results do not certify hosted scale or all editing operations.
 
 ## Reproducible bounded benchmark
 
