@@ -38,57 +38,6 @@ class MixedPaintGuards(unittest.TestCase):
         self.assertIn('worker0',p['browser_routing'])
         self.assertIn('No files opened',report['scope'])
 
-    def test_cross_worker_dry_plan_preserves_all_workload_and_timing_limits_without_io(self):
-        with ExitStack() as stack:
-            for obj,name in [(benchmark.scale.psycopg,'connect'),(benchmark.scale.requests,'Session'),
-                             (benchmark.scale.subprocess,'Popen'),(benchmark.scale.socket,'socket'),
-                             (benchmark.scale.asyncio,'open_connection'),(benchmark,'mixed_browser'),
-                             (benchmark,'verify_worker_assets'),(Path,'open'),(Path,'read_bytes'),
-                             (Path,'read_text'),(Path,'glob'),(Path,'mkdir'),(Path,'write_text'),(Path,'is_file'),(Path,'stat')]:
-                stack.enter_context(patch.object(obj,name,side_effect=AssertionError('Dry plan performed IO')))
-            with redirect_stdout(io.StringIO()) as output:
-                benchmark.main(self.argv('--cross-worker-browsers','--workers','2'))
-        p=json.loads(output.getvalue())['plan']
-        self.assertEqual(p['native_client_workers'],[0,1])
-        self.assertIn('no request proxy',p['browser_routing'])
-        self.assertEqual((p['total_actors'],p['http_actors'],p['rooms']),(1000,998,100))
-        self.assertEqual((p['paint_target_ms'],p['paint_max_uncertainty_ms']),(500,15))
-        self.assertEqual(p['http_put_ms'],80)
-        with redirect_stderr(io.StringIO()),self.assertRaises(SystemExit):
-            benchmark.arguments(self.argv('--cross-worker-browsers','--workers','1'))
-
-    def test_peer_worker_must_serve_the_expected_hash_before_native_timing(self):
-        import hashlib
-        expected={'index.html':hashlib.sha256(b'index').hexdigest(), 'native_bg.wasm':hashlib.sha256(b'wasm').hexdigest()}
-        for wrong in [False, True]:
-            with self.subTest(wrong=wrong):
-                client=MagicMock()
-                client.__enter__.return_value=client
-                def response(url,**options):
-                    self.assertTrue(url.startswith('http://127.0.0.1:45679/'))
-                    self.assertFalse(options['allow_redirects'])
-                    self.assertTrue(options['stream'])
-                    res=MagicMock(); res.__enter__.return_value=res; res.status_code=200
-                    res.iter_content.return_value=[b'index' if url.endswith('index.html') else b'stale' if wrong else b'wasm']
-                    return res
-                client.get.side_effect=response
-                with patch.object(benchmark.scale.requests,'Session',return_value=client):
-                    if wrong:
-                        with self.assertRaisesRegex(RuntimeError,'different public artifact'):
-                            benchmark.verify_worker_assets('http://127.0.0.1:45679',expected)
-                    else:
-                        self.assertEqual(benchmark.verify_worker_assets('http://127.0.0.1:45679',expected),expected)
-                self.assertFalse(client.trust_env)
-
-    def test_cross_worker_peer_load_keeps_native_document_readiness(self):
-        bench,page=MagicMock(),MagicMock()
-        expected={'width':320,'height':240,'layers':[{'id':'native-layer','name':'Layer'}]}
-        bench.inspect.return_value={'document':expected}
-        benchmark.load_native_peer(bench,page,'http://127.0.0.1:45679','?project=synthetic')
-        page.goto.assert_called_once_with('http://127.0.0.1:45679/?project=synthetic',wait_until='domcontentloaded',timeout=90000)
-        page.wait_for_function.assert_called_once_with('typeof window.photocraftCommand === "function"',timeout=60000)
-        bench.wait_opened_document.assert_called_once_with(page,expected)
-
     def test_remote_or_credentialed_database_and_resource_excess_are_rejected(self):
         invalid=[('--database','postgresql://fixture@example.invalid/postgres'),
                  ('--database','postgresql://fixture@localhost/postgres'),
@@ -164,9 +113,8 @@ class MixedPaintGuards(unittest.TestCase):
             events.append('browser-fixture')
             raise RuntimeError('synthetic-secret must not enter report')
         @contextmanager
-        def isolated(args,report,*,public_dir,browser_workers):
+        def isolated(args,report,*,public_dir):
             self.assertEqual(public_dir,Path('synthetic-public'))
-            self.assertEqual(browser_workers,(0,))
             events.append('isolated-enter')
             try:
                 yield 'http://127.0.0.1:12345',MagicMock(),[{'index':0,'port':12345}]

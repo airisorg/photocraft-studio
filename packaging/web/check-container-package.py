@@ -27,7 +27,7 @@ import zipfile
 SPEC = importlib.util.spec_from_file_location("upstream_release", Path(__file__).with_name("upstream-release.py"))
 release = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(release)
-SUITES = ("test_api.py", "test_live.py", "test_live_scale.py", "test_live_handoff.py")
+SUITES = ("test_api.py", "test_live.py", "test_live_scale.py")
 TRUSTED_ROOT = Path(__file__).resolve().parents[2]
 LABEL = "ai.photocraft.package-check"
 HTTP_CHECK_SECONDS = 95

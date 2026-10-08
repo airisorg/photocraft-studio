@@ -210,6 +210,88 @@ class LiveContract(unittest.TestCase):
             session.close()
             self.db.execute('DELETE FROM photocraft.sessions WHERE hash=%s', (digest,))
 
+    def test_13_exchange_matches_read_for_each_role_and_excludes_only_own_tab(self):
+        gesture = {'events': [{'gesture': 1, 'sequence': 1, 'kind': 'cancel'}]}
+        for session, role, count in [(self.owner, 'owner', 0), (self.editor, 'edit', 1),
+                                     (self.viewer, 'view', 2)]:
+            with self.subTest(role=role):
+                reply = self.put(self.state(gesture=gesture if role == 'edit' else None), session=session)
+                self.assertEqual(reply['role'], role)
+                self.assertEqual(reply['revision'], 1)
+                self.assertTrue(reply['accepted'])
+                self.assertEqual(len(reply['peers']), count)
+                read = self.req(session, 'GET', self.path+'?tab='+self.tab).json()
+                # TTL decreases between requests; all other peer data must agree.
+                strip_ttl = lambda peers: [{k: v for k, v in p.items() if k != 'ttlMs'} for p in peers]
+                self.assertEqual(strip_ttl(reply['peers']), strip_ttl(read['peers']))
+                self.assertTrue(all(0 <= p['ttlMs'] <= 2000 for p in reply['peers']))
+        reply = self.put(self.state(2))
+        self.assertEqual({p['actor'] for p in reply['peers']}, {self.accounts[1][0], self.accounts[2][0]})
+        self.assertEqual(next(p for p in reply['peers'] if p['actor'] == self.accounts[1][0])['gesture'], gesture)
+        cleared = self.put(self.state(3, cursor=None))
+        self.assertTrue(cleared['accepted'])
+        self.assertEqual({p['actor'] for p in cleared['peers']}, {self.accounts[1][0], self.accounts[2][0]})
+        self.assertEqual([p['actor'] for p in self.peers(self.editor, self.tab)], [self.accounts[2][0]])
+
+    def test_14_exchange_filters_downgraded_revoked_and_expired_peers(self):
+        gesture = {'events': [{'gesture': 1, 'sequence': 1, 'kind': 'cancel'}]}
+        self.put(self.state(gesture=gesture), session=self.editor)
+        self.put(session=self.viewer)
+        self.assertEqual(len(self.put()['peers']), 2)
+        self.member(self.pid, 1, 'view')
+        reply = self.put(self.state(2))
+        downgraded = next(p for p in reply['peers'] if p['actor'] == self.accounts[1][0])
+        self.assertIsNone(downgraded['gesture'])
+        self.assertEqual(downgraded['cursor'], {'x': 20.0, 'y': 20.0})
+        self.member(self.pid, 1, 'remove')
+        self.assertEqual([p['actor'] for p in self.put(self.state(3))['peers']], [self.accounts[2][0]])
+        digest = hashlib.sha256(self.viewer.cookies.get('pc_session').encode()).hexdigest()
+        self.db.execute("UPDATE photocraft.live_previews SET seen_at=clock_timestamp()-interval '3seconds' WHERE session_hash=%s AND tab_id=%s",
+                        (digest, self.tab))
+        self.assertEqual(self.put(self.state(4))['peers'], [])
+        self.assertEqual(self.peers(tab=self.tab), [])
+
+    def test_15_replayed_exchange_returns_current_peers_without_renewing_own_lease(self):
+        self.put(self.state(10))
+        digest = hashlib.sha256(self.owner.cookies.get('pc_session').encode()).hexdigest()
+        before = self.db.execute('SELECT seq,seen_at,cursor FROM photocraft.live_previews WHERE session_hash=%s AND tab_id=%s',
+                                 (digest, self.tab)).fetchone()
+        for peer_seq, own_seq in [(1, 10), (2, 9)]:
+            self.put(self.state(peer_seq, cursor={'x': 30+peer_seq, 'y': 40}), session=self.editor)
+            reply = self.put(self.state(own_seq, cursor={'x': 99, 'y': 99}))
+            self.assertFalse(reply['accepted'])
+            self.assertEqual(reply['seq'], 10)
+            self.assertEqual(reply['role'], 'owner')
+            self.assertEqual(reply['peers'][0]['seq'], peer_seq)
+            self.assertEqual(reply['peers'][0]['cursor'], {'x': 30+peer_seq, 'y': 40})
+            after = self.db.execute('SELECT seq,seen_at,cursor FROM photocraft.live_previews WHERE session_hash=%s AND tab_id=%s',
+                                    (digest, self.tab)).fetchone()
+            self.assertEqual(after, before, 'A read-through exchange renewed or replaced a replayed preview')
+
+    def test_16_exchange_hides_previous_revision_gesture_like_read(self):
+        gesture = {'events': [{'gesture': 1, 'sequence': 1, 'kind': 'cancel'}]}
+        self.put(self.state(gesture=gesture), session=self.editor)
+        self.upload(self.pid, base=1)
+        reply = self.put()
+        self.assertEqual(reply['revision'], 2)
+        self.assertEqual(reply['role'], 'owner')
+        self.assertEqual(len(reply['peers']), 1)
+        self.assertIsNone(reply['peers'][0]['gesture'])
+        self.assertEqual(reply['peers'][0]['cursor'], {'x': 20.0, 'y': 20.0})
+        self.assertEqual(reply['peers'][0]['baseRevision'], 1)
+
+    def test_17_exchange_function_is_volatile_invoker_only_and_private(self):
+        signature = 'photocraft.exchange_live_v1(text,uuid,uuid,uuid,bigint,bigint,jsonb,jsonb,boolean)'
+        row = self.db.execute("""SELECT p.provolatile,p.prosecdef,p.proconfig,
+            EXISTS(SELECT 1 FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a
+                   WHERE a.grantee=0 AND a.privilege_type='EXECUTE')
+            FROM pg_proc p WHERE p.oid=to_regprocedure(%s)""", (signature,)).fetchone()
+        self.assertIsNotNone(row, 'The private exchange function was not installed at startup')
+        self.assertEqual(row[0], 'v', 'Post-lock authorization requires fresh VOLATILE query snapshots')
+        self.assertFalse(row[1], 'The exchange must not gain SECURITY DEFINER privileges')
+        self.assertIn('search_path=pg_catalog', row[2])
+        self.assertFalse(row[3], 'PUBLIC must not execute a session-hash-taking exchange directly')
+
 
 if __name__ == '__main__':
     unittest.main()
