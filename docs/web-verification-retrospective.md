@@ -44,6 +44,15 @@ after the safe recovery link. Its mandatory cases cover bundled default, explici
 escaped initialization errors; hardware coverage is separately reported when available.
 This does not establish recovery from device loss during an already-open editing session.
 
+The final full run passed 47 journeys before the expired-session fixture exposed another
+readiness assumption: the command bridge was ready while asynchronous project Open still
+reported no document. Expiring the session at that point tested interruption during Open,
+not preservation of an already-open unsaved document. The affected setups now wait, with
+a deadline, for the expected native dimensions, exact layers and active selection before
+injecting expiry or merge changes. Focused journeys 48–50 pass with every original
+unsaved-work, account, revision and error assertion retained. The complete run and the
+initial failure are recorded separately; an extra fixed sleep is not a readiness contract.
+
 ## Inventory: scope is larger than a menu count
 
 The Version 0 incident exposed an environment-model gap: one warm local server does not
