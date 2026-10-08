@@ -45,7 +45,7 @@ preserves the original editor state.
   recorded separately after publication; local passes do not establish hosted behavior.
 
 On this Mac the evidence is under
-`/redacted/operator/Documents/Codex/2026-10-06/ca/outputs/verification/`:
+`$WORKSPACE/outputs/verification/`:
 `2026-10-07-spacing/session-recovery/` contains full50 logs, screenshots and before/after
 hashes; `2026-10-07-session-recovery/` contains service checks; and
 `2026-10-07-final-release/` contains the final package/deployment/hosted acceptance record.
@@ -122,3 +122,6 @@ to be tested directly rather than replaced by headers, cookies or delivery fixtu
 
 Resume with reliability and UI defects first, then the real two-account hosted journey.
 Keep the accepted release serving while the next candidate is developed and tested in isolation.
+
+Local evidence paths use `$WORKSPACE` for the local evidence workspace and
+`$CHECKOUT` for the source checkout; neither names a contributor’s home directory.

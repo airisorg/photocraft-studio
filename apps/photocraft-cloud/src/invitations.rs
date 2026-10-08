@@ -14,12 +14,17 @@ pub(crate) async fn invite(State(s): State<App>, h: HeaderMap, Path(id): Path<Uu
     }
     let pool = db(&s)?;
     let mut tx = pool.begin().await?;
+    locked_role(&mut tx, &a, id, true, true).await?;
     // Serialize the owner's rate limit, including concurrent requests and failed sends.
     query("SELECT id FROM photocraft.accounts WHERE id=$1 FOR UPDATE").bind(a.id).execute(&mut *tx).await?;
     let recent: i64 = scalar("SELECT count(*) FROM photocraft.invitation_deliveries WHERE sender_id=$1 AND created_at>now()-interval '1 hour'")
         .bind(a.id)
         .fetch_one(&mut *tx)
         .await?;
+    // Different owners can invite the same recipient: serialize the global
+    // cooldown independently of the per-owner quota, in a consistent lock order.
+    query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))").bind(format!("photocraft.invitation-recipient/{email}")).execute(&mut *tx).await?;
+    role_in_transaction(&mut tx, &a, id, true, true).await?;
     let cooldown: bool = scalar("SELECT EXISTS(SELECT 1 FROM photocraft.invitation_deliveries WHERE email=$1 AND created_at>now()-interval '1 minute')")
         .bind(&email)
         .fetch_one(&mut *tx)
@@ -30,10 +35,7 @@ pub(crate) async fn invite(State(s): State<App>, h: HeaderMap, Path(id): Path<Uu
             "Please wait before sending another invitation. Limit: 20 per hour and one per recipient per minute.".into(),
         ));
     }
-    let count: i64 = scalar("SELECT count(*) FROM photocraft.members WHERE project_id=$1").bind(id).fetch_one(&mut *tx).await?;
-    if count >= 100 {
-        return Err(bad("This project has reached 100 collaborators"));
-    }
+    member_capacity(&mut tx, id, &email).await?;
     query("INSERT INTO photocraft.members(project_id,email,role) VALUES($1,$2,$3) ON CONFLICT(project_id,email) DO UPDATE SET role=EXCLUDED.role")
         .bind(id)
         .bind(&email)
@@ -74,7 +76,7 @@ pub(crate) async fn invite(State(s): State<App>, h: HeaderMap, Path(id): Path<Uu
     Ok(Json(json!({"ok":true,"message":"Sign-in invitation sent. After verifying this email address, the project appears in Shared with you."})))
 }
 
-fn email(value: &str) -> Result<String> {
+pub(crate) fn email(value: &str) -> Result<String> {
     let value = text(value, 320)?.to_lowercase();
     let Some((local, domain)) = value.split_once('@') else {
         return Err(bad("Enter a valid email address"));

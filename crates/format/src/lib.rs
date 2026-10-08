@@ -1,3 +1,4 @@
+// Modified by the independent FZ2000 PhotoCraft Studio fork; see docs/fork-code-map.md.
 //! # photocraft-format
 //!
 //! The native, lossless `.pcraft` document bundle (architecture §9).
@@ -92,6 +93,13 @@ pub struct LoadOptions {
     pub preserve_ids: bool,
 }
 
+/// Payload bytes accounted by the native loader. Reused blobs count once;
+/// every materialized tile counts, including repeated content at new coordinates.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LoadStats {
+    pub decoded_bytes: u64,
+}
+
 impl Default for LoadOptions {
     fn default() -> Self {
         LoadOptions { max_manifest_bytes: 256 << 20, max_blob_bytes: 1 << 30, max_total_bytes: 16 << 30, preserve_ids: true }
@@ -128,6 +136,13 @@ pub fn load_from_bytes(bytes: &[u8]) -> Result<Document> {
 pub fn load_from_bytes_with(bytes: &[u8], opts: &LoadOptions) -> Result<Document> {
     let src = store::ZipSource::new(bytes)?;
     store::load(&src, opts)
+}
+
+/// Load with the same validation and limits, exposing the existing payload
+/// accounting so a caller can share a budget across several documents.
+pub fn load_from_bytes_with_stats(bytes: &[u8], opts: &LoadOptions) -> Result<(Document, LoadStats)> {
+    let src = store::ZipSource::new(bytes)?;
+    store::load_with_stats(&src, opts)
 }
 
 /// Load a bundle from a path: a directory bundle or a ZIP file.

@@ -1,3 +1,4 @@
+// Modified by the independent FZ2000 PhotoCraft Studio fork; see docs/fork-code-map.md.
 //! The plug-in manifest (`pc_manifest`) and parameter schema.
 
 use serde::{Deserialize, Serialize};

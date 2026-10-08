@@ -5,6 +5,8 @@
 mod invitations;
 mod live;
 mod merge;
+mod security;
+mod validation;
 
 use axum::{
     Json, Router,
@@ -136,6 +138,7 @@ async fn ready_db(s: &App) -> Result<&PgPool> {
         query("SELECT pg_advisory_xact_lock(735193624)").execute(&mut *tx).await?;
         sqlx::Executor::execute(&mut *tx, include_str!("../migrations/001_cloud.sql")).await?;
         sqlx::Executor::execute(&mut *tx, include_str!("../migrations/002_live.sql")).await?;
+        sqlx::Executor::execute(&mut *tx, include_str!("../migrations/003_scale.sql")).await?;
         tx.commit().await?;
         s.ready.store(true, Ordering::Release);
         Ok::<(), sqlx::Error>(())
@@ -196,11 +199,13 @@ fn session_cookie(s: &App, name: &str, value: &str, age: u32) -> Result<HeaderVa
     let secure = if s.origin.starts_with("https://") { "; Secure" } else { "" };
     HeaderValue::from_str(&format!("{name}={value}; Path=/; HttpOnly; SameSite=Lax; Max-Age={age}{secure}")).map_err(|_| bad("Invalid session"))
 }
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize)]
 struct Account {
     id: Uuid,
     email: String,
     name: String,
+    #[serde(skip)]
+    session_hash: String,
 }
 fn expected_account(h: &HeaderMap) -> Result<Option<Uuid>> {
     let mut values = h.get_all("x-photocraft-account").iter();
@@ -221,16 +226,17 @@ async fn account(s: &App, h: &HeaderMap) -> Result<Account> {
     if t.len() != 64 {
         return Err(ApiError(StatusCode::UNAUTHORIZED, "Session expired".into()));
     }
+    let session_hash = hash(t);
     // Each serverless worker must initialize storage on its first authenticated request.
     let mut tx = ready_db(s).await?.begin().await?;
     let r =
-        query("SELECT a.id,a.email,a.name FROM photocraft.sessions s JOIN photocraft.accounts a ON a.id=s.account_id WHERE s.hash=$1 AND s.expires_at>now()")
-            .bind(hash(t))
+        query("SELECT a.id,a.email,a.name FROM photocraft.sessions s JOIN photocraft.accounts a ON a.id=s.account_id WHERE s.hash=$1 AND s.expires_at>clock_timestamp()")
+            .bind(&session_hash)
             .fetch_optional(&mut *tx)
             .await?
             .ok_or(ApiError(StatusCode::UNAUTHORIZED, "Session expired. Sign in again.".into()))?;
     tx.commit().await?;
-    let account = Account { id: r.get("id"), email: r.get("email"), name: r.get("name") };
+    let account = Account { id: r.get("id"), email: r.get("email"), name: r.get("name"), session_hash };
     // The cookie establishes authority. The optional client identity only prevents
     // another tab's account switch from redirecting this editor's reads or writes.
     if expected_account(h)?.is_some_and(|expected| expected != account.id) {
@@ -238,16 +244,57 @@ async fn account(s: &App, h: &HeaderMap) -> Result<Account> {
     }
     Ok(account)
 }
+async fn fresh_session(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, a: &Account) -> Result<()> {
+    let active: bool = scalar("SELECT EXISTS(SELECT 1 FROM photocraft.sessions WHERE hash=$1 AND account_id=$2 AND expires_at>clock_timestamp())")
+        .bind(&a.session_hash)
+        .bind(a.id)
+        .fetch_one(&mut **tx)
+        .await?;
+    if !active {
+        return Err(ApiError(StatusCode::UNAUTHORIZED, "Session expired. Sign in again.".into()));
+    }
+    Ok(())
+}
 async fn role(s: &App, a: &Account, id: Uuid, write: bool, owner: bool) -> Result<String> {
     let mut tx = db(s)?.begin().await?;
-    let r=query("SELECT CASE WHEN p.owner_id=$2 THEN 'owner' ELSE m.role END AS role FROM photocraft.projects p LEFT JOIN photocraft.members m ON m.project_id=p.id AND m.email=$3 WHERE p.id=$1")
-        .bind(id).bind(a.id).bind(&a.email).fetch_optional(&mut *tx).await?.ok_or_else(forbidden)?;
+    let role = role_in_transaction(&mut tx, a, id, write, owner).await?;
     tx.commit().await?;
+    Ok(role)
+}
+async fn role_in_transaction(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, a: &Account, id: Uuid, write: bool, owner: bool) -> Result<String> {
+    // Account is only an admission snapshot. A project lock may outlive this
+    // session or an email change, so establish identity and membership together
+    // from the fresh statement snapshot without adding a reversed session lock.
+    let r = query("WITH identity AS MATERIALIZED (SELECT a.id,a.email FROM photocraft.sessions s JOIN photocraft.accounts a ON a.id=s.account_id WHERE s.hash=$3 AND a.id=$2 AND s.expires_at>clock_timestamp()) SELECT EXISTS(SELECT 1 FROM identity) AS authenticated,(SELECT CASE WHEN p.owner_id=a.id THEN 'owner' ELSE m.role END FROM photocraft.projects p CROSS JOIN identity a LEFT JOIN photocraft.members m ON m.project_id=p.id AND m.email=a.email WHERE p.id=$1) AS role")
+        .bind(id).bind(a.id).bind(&a.session_hash).fetch_one(&mut **tx).await?;
+    if !r.get::<bool, _>("authenticated") {
+        return Err(ApiError(StatusCode::UNAUTHORIZED, "Session expired. Sign in again.".into()));
+    }
     let r = r.get::<Option<String>, _>("role").ok_or_else(forbidden)?;
     if (write && r == "view") || (owner && r != "owner") {
         return Err(forbidden());
     }
     Ok(r)
+}
+// Durable project mutations and membership/link changes share this lock. The access
+// query must run AFTER the lock wait: a statement's earlier snapshot may predate a
+// completed revocation. Lock projects before uploads or quota-owner account rows.
+pub(crate) async fn locked_role(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, a: &Account, id: Uuid, write: bool, owner: bool) -> Result<String> {
+    // Coordinate durable revision/access changes with live-preview admission too.
+    query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))").bind(format!("photocraft.live.project:{id}")).execute(&mut **tx).await?;
+    query("SELECT id FROM photocraft.projects WHERE id=$1 FOR UPDATE").bind(id).fetch_optional(&mut **tx).await?.ok_or_else(forbidden)?;
+    role_in_transaction(tx, a, id, write, owner).await
+}
+async fn member_capacity(tx: &mut sqlx::Transaction<'_, sqlx::Postgres>, id: Uuid, email: &str) -> Result<()> {
+    let full: bool = scalar("SELECT count(*) >= 100 AND NOT coalesce(bool_or(email=$2),false) FROM photocraft.members WHERE project_id=$1")
+        .bind(id)
+        .bind(email)
+        .fetch_one(&mut **tx)
+        .await?;
+    if full {
+        return Err(bad("This project has reached 100 collaborators"));
+    }
+    Ok(())
 }
 
 pub async fn application() -> std::result::Result<Router, Box<dyn std::error::Error>> {
@@ -261,7 +308,8 @@ pub async fn application() -> std::result::Result<Router, Box<dyn std::error::Er
                 let ca = std::env::var("SUPABASE_CA_CERT").map_err(|_| "SUPABASE_CA_CERT is required for verified database TLS")?;
                 opts = opts.ssl_mode(PgSslMode::VerifyFull).ssl_root_cert_from_pem(ca.into_bytes());
             }
-            Some(PgPoolOptions::new().max_connections(5).acquire_timeout(std::time::Duration::from_secs(10)).connect_lazy_with(opts))
+            let size = security::pool_size(std::env::var("PHOTOCRAFT_DB_POOL_SIZE").ok().as_deref())?;
+            Some(PgPoolOptions::new().max_connections(size).acquire_timeout(std::time::Duration::from_secs(2)).connect_lazy_with(opts))
         }
         Err(_) => None,
     };
@@ -330,6 +378,7 @@ pub fn router(s: App) -> Router {
         .route("/api/projects/{id}/live", get(live::get).put(live::put).layer(DefaultBodyLimit::max(65_536)))
         .layer(DefaultBodyLimit::max(CHUNK + 1024))
         .layer(middleware::from_fn_with_state(s.clone(), guard))
+        .layer(middleware::from_fn_with_state(Arc::new(security::Limits::default()), security::admit))
         .with_state(s)
 }
 async fn guard(State(s): State<App>, req: axum::extract::Request, next: Next) -> Response {
@@ -389,8 +438,9 @@ async fn callback(State(s): State<App>, h: HeaderMap, Query(q): Query<std::colle
     finish_sign_in(&s, t, ty).await
 }
 async fn finish_sign_in(s: &App, t: &str, ty: &str) -> Result<Response> {
-    // Establish storage before consuming the provider's single-use sign-in token.
-    let mut tx = ready_db(s).await?.begin().await?;
+    // Establish storage before consuming the provider's single-use sign-in token,
+    // without occupying a database connection while waiting on the external service.
+    ready_db(s).await?;
     let resp = s
         .http
         .post(format!("{}/auth/v1/verify", s.supabase))
@@ -422,6 +472,7 @@ async fn finish_sign_in(s: &App, t: &str, ty: &str) -> Result<Response> {
     let id = u.get("id").and_then(Value::as_str).and_then(|v| Uuid::parse_str(v).ok()).ok_or(bad("Missing account identity"))?;
     let email = text(u.get("email").and_then(Value::as_str).ok_or(bad("An email address is required"))?, 320)?.to_lowercase();
     let name = text(u.pointer("/user_metadata/full_name").and_then(Value::as_str).unwrap_or(&email), 160)?;
+    let mut tx = db(s)?.begin().await?;
     query("INSERT INTO photocraft.accounts(id,email,name) VALUES($1,$2,$3) ON CONFLICT(id) DO UPDATE SET email=EXCLUDED.email,name=EXCLUDED.name")
         .bind(id)
         .bind(email)
@@ -442,6 +493,9 @@ async fn logout(State(s): State<App>, h: HeaderMap) -> Result<Response> {
     if let Some(t) = cookie(&h, "pc_session") {
         let mut tx = ready_db(&s).await?.begin().await?;
         let digest = hash(t);
+        // Order revocation with live writes; requests waiting behind logout must
+        // observe the deleted session in their fresh authorization statement.
+        query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))").bind(format!("photocraft.live.session:{digest}")).execute(&mut *tx).await?;
         if let Some(expected) = expected {
             // Expired or already-removed sessions may still be cleared locally, but
             // a stale editor must never revoke another account's current session.
@@ -479,6 +533,7 @@ async fn create_project(State(s): State<App>, h: HeaderMap, Json(v): Json<NewPro
     let id = Uuid::new_v4();
     let mut tx = db(&s)?.begin().await?;
     query("SELECT id FROM photocraft.accounts WHERE id=$1 FOR UPDATE").bind(a.id).execute(&mut *tx).await?;
+    fresh_session(&mut tx, &a).await?;
     let n: i64 = scalar("SELECT count(*) FROM photocraft.projects WHERE owner_id=$1").bind(a.id).fetch_one(&mut *tx).await?;
     if n >= 500 {
         return Err(bad("Workspace limit: 500 projects"));
@@ -508,10 +563,10 @@ struct UpdateProject {
 }
 async fn update_project(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>, Json(v): Json<UpdateProject>) -> Result<Json<Value>> {
     let a = account(&s, &h).await?;
-    role(&s, &a, id, true, true).await?;
     let title = v.title.as_deref().map(|v| text(v, 160)).transpose()?;
     let folder = v.folder.map(|f| if f.is_empty() { Ok(f) } else { text(&f, 100) }).transpose()?;
     let mut tx = db(&s)?.begin().await?;
+    locked_role(&mut tx, &a, id, true, true).await?;
     query("UPDATE photocraft.projects SET title=coalesce($2,title),folder=coalesce($3,folder),starred=coalesce($4,starred),trashed=coalesce($5,trashed),updated_at=now() WHERE id=$1").bind(id).bind(title).bind(folder).bind(v.starred).bind(v.trashed).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(Json(json!({"ok":true})))
@@ -589,7 +644,6 @@ async fn thumbnail(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>) -> 
 }
 async fn put_thumbnail(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>, b: Bytes) -> Result<Json<Value>> {
     let a = account(&s, &h).await?;
-    role(&s, &a, id, true, false).await?;
     let dimensions = b.get(16..24).and_then(|v| Some((u32::from_be_bytes(v.get(..4)?.try_into().ok()?), u32::from_be_bytes(v.get(4..)?.try_into().ok()?))));
     if b.len() > 128 * 1024
         || !b.starts_with(b"\x89PNG\r\n\x1a\n")
@@ -599,16 +653,18 @@ async fn put_thumbnail(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>,
         return Err(bad("Invalid PNG preview"));
     }
     let mut tx = db(&s)?.begin().await?;
+    locked_role(&mut tx, &a, id, true, false).await?;
     query("UPDATE photocraft.projects SET thumbnail=$2 WHERE id=$1").bind(id).bind(b.to_vec()).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(Json(json!({"ok":true})))
 }
 async fn duplicate(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>) -> Result<Json<Value>> {
     let a = account(&s, &h).await?;
-    role(&s, &a, id, false, false).await?;
     let new = Uuid::new_v4();
     let mut tx = db(&s)?.begin().await?;
+    locked_role(&mut tx, &a, id, false, false).await?;
     query("SELECT id FROM photocraft.accounts WHERE id=$1 FOR UPDATE").bind(a.id).execute(&mut *tx).await?;
+    role_in_transaction(&mut tx, &a, id, false, false).await?;
     let count: i64 = scalar("SELECT count(*) FROM photocraft.projects WHERE owner_id=$1").bind(a.id).fetch_one(&mut *tx).await?;
     if count >= 500 {
         return Err(bad("Workspace limit: 500 projects"));
@@ -645,7 +701,6 @@ struct Upload {
 }
 async fn begin_upload(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>, Json(v): Json<Upload>) -> Result<Json<Value>> {
     let a = account(&s, &h).await?;
-    role(&s, &a, id, true, false).await?;
     if v.bytes == 0
         || v.bytes > MAX_FILE
         || v.parts != v.bytes.div_ceil(CHUNK)
@@ -662,6 +717,7 @@ async fn begin_upload(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>, 
     let title = text(&v.title, 160)?;
     let p = db(&s)?;
     let mut tx = p.begin().await?;
+    locked_role(&mut tx, &a, id, true, false).await?;
     // Serialize reservation counts across processes; parallel tabs cannot bypass the limit.
     query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))").bind(format!("photocraft.uploads/{}", a.id)).execute(&mut *tx).await?;
     query("DELETE FROM photocraft.uploads WHERE author_id=$1 AND created_at<now()-interval '1 hour'").bind(a.id).execute(&mut *tx).await?;
@@ -669,6 +725,7 @@ async fn begin_upload(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>, 
     if n >= 5 {
         return Err(bad("Too many pending uploads; finish one or retry in an hour"));
     }
+    role_in_transaction(&mut tx, &a, id, true, false).await?;
     let next = Uuid::new_v4();
     query("INSERT INTO photocraft.uploads(id,project_id,author_id,base_revision,bytes,parts,sha256,title,width,height) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)")
         .bind(next)
@@ -689,21 +746,29 @@ async fn begin_upload(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>, 
 async fn upload_chunk(State(s): State<App>, h: HeaderMap, Path((id, part)): Path<(Uuid, i32)>, b: Bytes) -> Result<Json<Value>> {
     let a = account(&s, &h).await?;
     let mut tx = db(&s)?.begin().await?;
-    let r = query("SELECT project_id,parts,bytes FROM photocraft.uploads WHERE id=$1 AND author_id=$2 AND created_at>now()-interval '1 hour'")
+    let project: Uuid = scalar("SELECT project_id FROM photocraft.uploads WHERE id=$1 AND author_id=$2 AND created_at>now()-interval '1 hour'")
         .bind(id)
         .bind(a.id)
         .fetch_optional(&mut *tx)
         .await?
         .ok_or_else(forbidden)?;
-    // Release this connection before role() acquires its own short transaction.
-    tx.commit().await?;
-    role(&s, &a, r.get("project_id"), true, false).await?;
+    locked_role(&mut tx, &a, project, true, false).await?;
+    // Recheck ownership and lifetime after acquiring the project lock, then lock
+    // the upload in the same order as commit so chunks cannot race its deletion.
+    let r =
+        query("SELECT parts,bytes FROM photocraft.uploads WHERE id=$1 AND project_id=$3 AND author_id=$2 AND created_at>now()-interval '1 hour' FOR UPDATE")
+            .bind(id)
+            .bind(a.id)
+            .bind(project)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(forbidden)?;
+    role_in_transaction(&mut tx, &a, project, true, false).await?;
     let parts: i32 = r.get("parts");
     let size: i64 = r.get("bytes");
     if part < 0 || part >= parts || b.len() != if part == parts - 1 { size as usize - (part as usize) * CHUNK } else { CHUNK } {
         return Err(bad("Chunk does not match the declared upload"));
     }
-    let mut tx = db(&s)?.begin().await?;
     query("INSERT INTO photocraft.chunks(upload_id,part,data) VALUES($1,$2,$3) ON CONFLICT(upload_id,part) DO UPDATE SET data=EXCLUDED.data")
         .bind(id)
         .bind(part)
@@ -715,57 +780,119 @@ async fn upload_chunk(State(s): State<App>, h: HeaderMap, Path((id, part)): Path
 }
 async fn commit_upload(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>) -> Result<Json<Value>> {
     let a = account(&s, &h).await?;
+    let permit = validation::acquire()
+        .await
+        .ok_or(ApiError(StatusCode::SERVICE_UNAVAILABLE, "Another cloud document is being checked. Your local work is safe; retry shortly.".into()))?;
     let p = db(&s)?;
+    // Snapshot only authorized immutable upload metadata and the exact revision
+    // used by a possible merge. No project/upload locks are held while decoding.
     let mut tx = p.begin().await?;
-    let u = query("SELECT * FROM photocraft.uploads WHERE id=$1 AND author_id=$2 AND created_at>now()-interval '1 hour' FOR UPDATE")
-        .bind(id)
-        .bind(a.id)
-        .fetch_optional(&mut *tx)
-        .await?
-        .ok_or_else(forbidden)?;
-    let project: Uuid = u.get("project_id");
-    // Use this transaction's connection: concurrent commits must not exhaust the pool while
-    // each waits for a second connection to authorize its own upload.
-    let can_write:bool=scalar("SELECT EXISTS(SELECT 1 FROM photocraft.projects p LEFT JOIN photocraft.members m ON m.project_id=p.id AND m.email=$3 WHERE p.id=$1 AND (p.owner_id=$2 OR m.role='edit'))").bind(project).bind(a.id).bind(&a.email).fetch_one(&mut *tx).await?;
-    if !can_write {
-        return Err(forbidden());
-    }
-    let pr = query("SELECT revision,owner_id,trashed FROM photocraft.projects WHERE id=$1 FOR UPDATE").bind(project).fetch_one(&mut *tx).await?;
-    query("SELECT id FROM photocraft.accounts WHERE id=$1 FOR UPDATE").bind(pr.get::<Uuid, _>("owner_id")).execute(&mut *tx).await?;
-    if pr.get::<bool, _>("trashed") {
+    let u = query("SELECT u.*,p.revision AS observed_revision,p.trashed AS project_trashed FROM photocraft.uploads u JOIN photocraft.projects p ON p.id=u.project_id LEFT JOIN photocraft.members m ON m.project_id=p.id AND m.email=$3 WHERE u.id=$1 AND u.author_id=$2 AND u.created_at>now()-interval '1 hour' AND (p.owner_id=$2 OR m.role='edit')")
+        .bind(id).bind(a.id).bind(&a.email).fetch_optional(&mut *tx).await?.ok_or_else(forbidden)?;
+    if u.get::<bool, _>("project_trashed") {
         return Err(bad("Restore this project from Trash before saving"));
     }
-    let revision: i64 = pr.get("revision");
+    let project: Uuid = u.get("project_id");
+    let revision: i64 = u.get("observed_revision");
+    let base_revision: i64 = u.get("base_revision");
+    let declared_bytes = u.get::<i64, _>("bytes");
+    let parts = u.get::<i32, _>("parts");
+    if declared_bytes <= 0 || declared_bytes as usize > MAX_FILE || parts <= 0 || parts as usize != (declared_bytes as usize).div_ceil(CHUNK) {
+        return Err(bad("Upload metadata is invalid; start a new save"));
+    }
     let rows = query("SELECT part,data FROM photocraft.chunks WHERE upload_id=$1 ORDER BY part").bind(id).fetch_all(&mut *tx).await?;
-    if rows.len() != u.get::<i32, _>("parts") as usize {
+    if rows.len() != parts as usize {
         return Err(bad("Upload is incomplete; retry the missing chunks"));
     }
-    let mut bytes = Vec::with_capacity(u.get::<i64, _>("bytes") as usize);
-    for r in rows {
-        bytes.extend(r.get::<Vec<u8>, _>("data"));
-    }
-    if bytes.len() != u.get::<i64, _>("bytes") as usize || hash(&bytes) != u.get::<String, _>("sha256") {
-        return Err(bad("Upload checksum does not match; retry saving"));
-    }
-    let manifest = photocraft_format::read_manifest(&bytes).map_err(|_| bad("Cloud saves must be valid PhotoCraft .pcraft documents"))?;
-    if manifest.document.size.width as i32 != u.get::<i32, _>("width") || manifest.document.size.height as i32 != u.get::<i32, _>("height") {
-        return Err(bad("Saved document dimensions do not match its upload"));
-    }
-    let merged = revision != u.get::<i64, _>("base_revision");
-    if merged {
+    let merged = revision != base_revision;
+    let merge_inputs = if merged {
         let base: Option<Vec<u8>> = scalar("SELECT data FROM photocraft.versions WHERE project_id=$1 AND revision=$2")
             .bind(project)
-            .bind(u.get::<i64, _>("base_revision"))
+            .bind(base_revision)
             .fetch_optional(&mut *tx)
             .await?;
         let latest: Option<Vec<u8>> =
             scalar("SELECT data FROM photocraft.versions WHERE project_id=$1 AND revision=$2").bind(project).bind(revision).fetch_optional(&mut *tx).await?;
-        bytes = base.zip(latest).and_then(|(base, latest)| merge::documents(&base, &bytes, &latest, MAX_FILE)).ok_or(ApiError(
-            StatusCode::CONFLICT,
-            "You and a collaborator changed the same content. Your edits are safe here. Save a copy, or open the latest version to compare.".into(),
-        ))?;
+        Some(base.zip(latest).ok_or(ApiError(StatusCode::CONFLICT, "The saved base version is unavailable. Your edits are safe here; save a copy.".into()))?)
+    } else {
+        None
+    };
+    tx.commit().await?;
+    let declared_hash = u.get::<String, _>("sha256");
+    let width = u.get::<i32, _>("width");
+    let height = u.get::<i32, _>("height");
+    let (bytes, checksum, saved_width, saved_height) = tokio::task::spawn_blocking(move || -> Result<_> {
+        // A detached blocking worker retains admission even if the HTTP timeout
+        // cancels its caller, preventing an unbounded queue of expensive decodes.
+        let _permit = permit;
+        let mut bytes = Vec::with_capacity(declared_bytes as usize);
+        for (part, r) in rows.into_iter().enumerate() {
+            let data: Vec<u8> = r.get("data");
+            let expected = if part + 1 == parts as usize { declared_bytes as usize - part * CHUNK } else { CHUNK };
+            if r.get::<i32, _>("part") != part as i32 || data.len() != expected {
+                return Err(bad("Upload chunks are incomplete; retry saving"));
+            }
+            bytes.extend(data);
+        }
+        if bytes.len() != declared_bytes as usize || hash(&bytes) != declared_hash {
+            return Err(bad("Upload checksum does not match; retry saving"));
+        }
+        let manifest = validation::manifest(&bytes).map_err(|message| bad(&message))?;
+        if manifest.document.size.width as i32 != width || manifest.document.size.height as i32 != height {
+            return Err(bad("Saved document dimensions do not match its upload"));
+        }
+        if let Some((base, latest)) = merge_inputs {
+            bytes = merge::documents(&base, &bytes, &latest, MAX_FILE).ok_or(ApiError(
+                StatusCode::CONFLICT,
+                "The documents could not be safely merged within cloud limits. Your edits are safe here. Save a copy, or open the latest version to compare."
+                    .into(),
+            ))?;
+        } else {
+            let mut remaining = validation::DECODED_LIMIT;
+            validation::document(&bytes, &mut remaining).map_err(|message| bad(&message))?;
+        }
+        let saved = validation::manifest(&bytes).map_err(|message| bad(&message))?.document.size;
+        let checksum = hash(&bytes);
+        Ok((bytes, checksum, saved.width as i32, saved.height as i32))
+    })
+    .await
+    .map_err(|_| bad("The cloud document check could not finish. Your local work is unchanged."))??;
+    // Authentication may have expired while the worker ran. Then lock in the
+    // shared project→upload→quota-owner order and reauthorize after the lock wait.
+    let a = account(&s, &h).await?;
+    let mut tx = p.begin().await?;
+    locked_role(&mut tx, &a, project, true, false).await?;
+    let current = query("SELECT * FROM photocraft.uploads WHERE id=$1 AND project_id=$3 AND author_id=$2 AND created_at>now()-interval '1 hour' FOR UPDATE")
+        .bind(id)
+        .bind(a.id)
+        .bind(project)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(forbidden)?;
+    // Upload declarations are immutable through the API; compare explicitly so
+    // a future mutation cannot cause validated bytes to be filed under new data.
+    if current.get::<i64, _>("bytes") != declared_bytes
+        || current.get::<i32, _>("parts") != parts
+        || current.get::<i64, _>("base_revision") != base_revision
+        || current.get::<String, _>("sha256") != u.get::<String, _>("sha256")
+        || current.get::<String, _>("title") != u.get::<String, _>("title")
+        || current.get::<i32, _>("width") != width
+        || current.get::<i32, _>("height") != height
+    {
+        return Err(bad("The upload changed while being checked; start a new save"));
     }
-    let checksum = hash(&bytes);
+    let pr = query("SELECT revision,owner_id,trashed FROM photocraft.projects WHERE id=$1").bind(project).fetch_one(&mut *tx).await?;
+    if pr.get::<bool, _>("trashed") {
+        return Err(bad("Restore this project from Trash before saving"));
+    }
+    if pr.get::<i64, _>("revision") != revision {
+        return Err(ApiError(
+            StatusCode::CONFLICT,
+            "A collaborator saved while this document was being checked. Your upload and local work are safe; retry saving.".into(),
+        ));
+    }
+    query("SELECT id FROM photocraft.accounts WHERE id=$1 FOR UPDATE").bind(pr.get::<Uuid, _>("owner_id")).execute(&mut *tx).await?;
+    role_in_transaction(&mut tx, &a, project, true, false).await?;
     let used: i64 = scalar(
         "SELECT coalesce(sum(octet_length(v.data)),0)::bigint FROM photocraft.versions v JOIN photocraft.projects p ON p.id=v.project_id WHERE p.owner_id=$1",
     )
@@ -788,8 +915,8 @@ async fn commit_upload(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>)
     query("UPDATE photocraft.projects SET revision=$2,width=$3,height=$4,thumbnail=CASE WHEN $5 THEN NULL ELSE thumbnail END,updated_at=now() WHERE id=$1")
         .bind(project)
         .bind(next)
-        .bind(u.get::<i32, _>("width"))
-        .bind(u.get::<i32, _>("height"))
+        .bind(saved_width)
+        .bind(saved_height)
         .bind(merged)
         .execute(&mut *tx)
         .await?;
@@ -800,6 +927,11 @@ async fn commit_upload(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>)
 async fn cancel_upload(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>) -> Result<Json<Value>> {
     let a = account(&s, &h).await?;
     let mut tx = db(&s)?.begin().await?;
+    // Lock only the author's reservation; cleanup remains possible after removal
+    // from a project, but a session that expires while waiting cannot delete it.
+    let upload = query("SELECT id FROM photocraft.uploads WHERE id=$1 AND author_id=$2 FOR UPDATE").bind(id).bind(a.id).fetch_optional(&mut *tx).await?;
+    fresh_session(&mut tx, &a).await?;
+    upload.ok_or_else(forbidden)?;
     let deleted = query("DELETE FROM photocraft.uploads WHERE id=$1 AND author_id=$2").bind(id).bind(a.id).execute(&mut *tx).await?.rows_affected();
     tx.commit().await?;
     if deleted == 0 {
@@ -822,15 +954,16 @@ struct Member {
 }
 async fn set_member(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>, Json(v): Json<Member>) -> Result<Json<Value>> {
     let a = account(&s, &h).await?;
-    role(&s, &a, id, true, true).await?;
-    let email = text(&v.email, 320)?.to_lowercase();
-    if !email.contains('@') || email.contains(char::is_whitespace) || !matches!(v.role.as_str(), "view" | "edit" | "remove") {
+    let email = invitations::email(&v.email)?;
+    if !matches!(v.role.as_str(), "view" | "edit" | "remove") {
         return Err(bad("Enter a valid email and access role"));
     }
     let mut tx = db(&s)?.begin().await?;
+    locked_role(&mut tx, &a, id, true, true).await?;
     if v.role == "remove" {
         query("DELETE FROM photocraft.members WHERE project_id=$1 AND email=$2").bind(id).bind(email).execute(&mut *tx).await?;
     } else {
+        member_capacity(&mut tx, id, &email).await?;
         query("INSERT INTO photocraft.members(project_id,email,role) VALUES($1,$2,$3) ON CONFLICT(project_id,email) DO UPDATE SET role=EXCLUDED.role")
             .bind(id)
             .bind(email)
@@ -843,9 +976,9 @@ async fn set_member(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>, Js
 }
 async fn create_share(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>) -> Result<Json<Value>> {
     let a = account(&s, &h).await?;
-    role(&s, &a, id, true, true).await?;
     let t = token();
     let mut tx = db(&s)?.begin().await?;
+    locked_role(&mut tx, &a, id, true, true).await?;
     query("DELETE FROM photocraft.shares WHERE project_id=$1").bind(id).execute(&mut *tx).await?;
     query("INSERT INTO photocraft.shares(hash,project_id) VALUES($1,$2)").bind(hash(&t)).bind(id).execute(&mut *tx).await?;
     tx.commit().await?;
@@ -853,8 +986,8 @@ async fn create_share(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>) 
 }
 async fn revoke_shares(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>) -> Result<Json<Value>> {
     let a = account(&s, &h).await?;
-    role(&s, &a, id, true, true).await?;
     let mut tx = db(&s)?.begin().await?;
+    locked_role(&mut tx, &a, id, true, true).await?;
     query("DELETE FROM photocraft.shares WHERE project_id=$1").bind(id).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(Json(json!({"ok":true})))
@@ -900,9 +1033,9 @@ struct Comment {
 }
 async fn add_comment(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>, Json(v): Json<Comment>) -> Result<Json<Value>> {
     let a = account(&s, &h).await?;
-    role(&s, &a, id, false, false).await?;
     let body = text(&v.body, 4000)?;
     let mut tx = db(&s)?.begin().await?;
+    locked_role(&mut tx, &a, id, false, false).await?;
     let n: i64 = scalar("SELECT count(*) FROM photocraft.comments WHERE project_id=$1").bind(id).fetch_one(&mut *tx).await?;
     if n >= 1000 {
         return Err(bad("This project has reached 1,000 comments"));
@@ -924,8 +1057,8 @@ struct Resolve {
 }
 async fn resolve_comment(State(s): State<App>, h: HeaderMap, Path((id, cid)): Path<(Uuid, Uuid)>, Json(v): Json<Resolve>) -> Result<Json<Value>> {
     let a = account(&s, &h).await?;
-    role(&s, &a, id, true, false).await?;
     let mut tx = db(&s)?.begin().await?;
+    locked_role(&mut tx, &a, id, true, false).await?;
     let n = query("UPDATE photocraft.comments SET resolved=$3 WHERE project_id=$1 AND id=$2")
         .bind(id)
         .bind(cid)
@@ -993,6 +1126,12 @@ mod tests {
         h.insert(header::COOKIE, HeaderValue::from_static("other=1; pc_session=abc; pc_session_fake=xyz"));
         assert_eq!(cookie(&h, "pc_session").as_deref(), Some("abc"));
         assert!(cookie(&h, "missing").is_none());
+    }
+    #[test]
+    fn account_serialization_never_exposes_session_identity() {
+        let account =
+            Account { id: Uuid::nil(), email: "synthetic@example.invalid".into(), name: "Synthetic".into(), session_hash: "private-session-digest".into() };
+        assert_eq!(serde_json::to_value(account).unwrap(), json!({"id":Uuid::nil(),"email":"synthetic@example.invalid","name":"Synthetic"}));
     }
     #[test]
     fn capabilities_have_entropy() {

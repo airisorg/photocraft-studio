@@ -1,3 +1,4 @@
+// Modified by the independent FZ2000 PhotoCraft Studio fork; see docs/fork-code-map.md.
 //! The browser shell: web `Services`, drag-and-drop, and the eframe web runner.
 
 use std::sync::{Arc, Mutex};
@@ -39,6 +40,8 @@ pub fn start() {
             && let eframe::egui_wgpu::WgpuSetup::CreateNew(create) = &mut options.wgpu_options.wgpu_setup
         {
             create.instance_descriptor.backends = eframe::wgpu::Backends::GL;
+        } else {
+            prefer_hardware_webgpu(&mut options).await;
         }
         let pen_target = canvas.clone();
         let result = eframe::WebRunner::new()
@@ -72,10 +75,70 @@ pub fn start() {
         if let Some(el) = document.get_element_by_id("photocraft_loading") {
             match result {
                 Ok(()) => el.remove(),
-                Err(e) => el.set_inner_html(&format!("<p>PhotoCraft failed to start: {e:?}</p><p>A browser with WebGPU or WebGL2 is required.</p>")),
+                Err(e) => {
+                    el.set_text_content(None);
+                    el.set_class_name("photocraft-startup-error");
+                    for (tag, text) in [
+                        ("strong", "Let’s get your workspace open"),
+                        ("p", "PhotoCraft couldn’t start the graphics renderer. Try the compatible renderer, or reload if you’re already using it."),
+                    ] {
+                        if let Ok(child) = document.create_element(tag) {
+                            child.set_text_content(Some(text));
+                            let _ = el.append_child(&child);
+                        }
+                    }
+                    if let Some(w) = web_sys::window()
+                        && let Ok(href) = w.location().href()
+                        && let Ok(url) = web_sys::Url::new(&href)
+                        && let Ok(link) = document.create_element("a")
+                    {
+                        let search = url.search();
+                        if !q.contains("webgl") {
+                            url.set_search(&format!("{search}{}webgl", if search.is_empty() { "?" } else { "&" }));
+                        }
+                        link.set_text_content(Some(if q.contains("webgl") { "Reload PhotoCraft" } else { "Try the compatible renderer" }));
+                        let _ = link.set_attribute("href", &url.href());
+                        let _ = el.append_child(&link);
+                    }
+                    if let Ok(details) = document.create_element("details")
+                        && let Ok(summary) = document.create_element("summary")
+                        && let Ok(diagnostic) = document.create_element("pre")
+                    {
+                        summary.set_text_content(Some("Technical details"));
+                        diagnostic.set_text_content(Some(&format!("{e:?}")));
+                        let _ = details.append_child(&summary);
+                        let _ = details.append_child(&diagnostic);
+                        let _ = el.append_child(&details);
+                    }
+                }
             }
         }
     });
+}
+
+/// Software WebGPU adapters can initialize successfully and then lose their device before
+/// the first frame. That also blanks eframe's shell, beyond the document CPU fallback.
+/// Choose the existing WebGL renderer before binding the canvas or constructing any document.
+/// Hardware WebGPU and the explicit `?webgl` option retain their original paths.
+async fn prefer_hardware_webgpu(options: &mut eframe::WebOptions) {
+    let power_preference = match &options.wgpu_options.wgpu_setup {
+        eframe::egui_wgpu::WgpuSetup::CreateNew(create) if create.instance_descriptor.backends.contains(eframe::wgpu::Backends::BROWSER_WEBGPU) => {
+            create.power_preference
+        }
+        _ => return,
+    };
+    let instance = options.wgpu_options.wgpu_setup.new_instance().await;
+    let Ok(adapter) = instance.request_adapter(&eframe::wgpu::RequestAdapterOptions { power_preference, ..Default::default() }).await else {
+        return;
+    };
+    let info = adapter.get_info();
+    if info.backend == eframe::wgpu::Backend::BrowserWebGpu
+        && info.device_type == eframe::wgpu::DeviceType::Cpu
+        && let eframe::egui_wgpu::WgpuSetup::CreateNew(create) = &mut options.wgpu_options.wgpu_setup
+    {
+        log::info!("photocraft-web: software WebGPU adapter; selecting the compatible WebGL2 renderer before startup");
+        create.instance_descriptor.backends = eframe::wgpu::Backends::GL;
+    }
 }
 
 thread_local! {static UNSAVED:std::cell::Cell<bool>=const{std::cell::Cell::new(false)};}

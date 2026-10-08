@@ -1,3 +1,4 @@
+// Modified by the independent FZ2000 PhotoCraft Studio fork; see docs/fork-code-map.md.
 //! Dependency layering rules (plan/architecture.md §3).
 //!
 //! The rule engine works on a small, metadata-independent model so it can be

@@ -2,11 +2,13 @@
 import contextlib
 import hashlib
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
+import tarfile
 import tempfile
 import unittest
 import zipfile
@@ -150,25 +152,78 @@ class UpstreamRelease(unittest.TestCase):
         script = self.source / 'packaging/web/tofu-package.py'
         script.parent.mkdir(parents=True)
         self.commit(str(script.relative_to(self.source)), Path(SPEC.origin).with_name('tofu-package.py').read_text())
+        self.commit('packaging/web/rust-notices.py', Path(SPEC.origin).with_name('rust-notices.py').read_text())
+        self.commit('packaging/web/runtime-notices.py', Path(SPEC.origin).with_name('runtime-notices.py').read_text())
+        runtime_source = Path(SPEC.origin).parents[1] / 'licenses/rust-runtime'
+        for path in sorted(runtime_source.rglob('*')):
+            if path.is_file():
+                destination = 'packaging/licenses/rust-runtime/' + path.relative_to(runtime_source).as_posix()
+                Path(destination).parent.mkdir(parents=True, exist_ok=True)
+                self.commit(destination, path.read_text())
         self.commit('.gitignore', 'dist/\n')
-        for name in ['LICENSE-MIT', 'LICENSE-APACHE', 'NOTICE']:
+        registry = self.root / 'registry/src/synthetic-index/synthetic-dependency-1.0.0'
+        registry.mkdir(parents=True)
+        license_bytes = b'MIT License\nCopyright (c) Synthetic test publisher\n'
+        (registry / 'LICENSE-MIT').write_bytes(license_bytes)
+        cached = self.root / 'registry/cache/synthetic-index/synthetic-dependency-1.0.0.crate'
+        cached.parent.mkdir(parents=True)
+        with tarfile.open(cached, 'w:gz') as archive:
+            member = tarfile.TarInfo('synthetic-dependency-1.0.0/LICENSE-MIT')
+            member.size = len(license_bytes)
+            archive.addfile(member, io.BytesIO(license_bytes))
+        self.commit('Cargo.lock', '[[package]]\nname="synthetic-dependency"\nversion="1.0.0"\nsource="registry+https://github.com/rust-lang/crates.io-index"\nchecksum="'+hashlib.sha256(cached.read_bytes()).hexdigest()+'"\n')
+        metadata = {'packages': [{'name': 'synthetic-dependency', 'version': '1.0.0', 'license': 'MIT', 'license_file': None,
+                                 'manifest_path': str(registry / 'Cargo.toml'), 'source': 'registry+https://github.com/rust-lang/crates.io-index'}]}
+        cargo = self.root / 'synthetic-cargo'
+        cargo.write_text('#!' + sys.executable + '\nimport sys\nprint(' + repr(json.dumps(metadata)) + " if sys.argv[1] == 'metadata' else 'synthetic-dependency v1.0.0')\n")
+        cargo.chmod(0o755)
+        notices = ['LICENSE-MIT', 'LICENSE-APACHE', 'NOTICE', 'ATTRIBUTION.md', 'SECURITY.md',
+                   'assets/fonts/OFL-Inter.txt', 'assets/fonts/OFL-JetBrainsMono.txt',
+                   'assets/icons/LICENSE-lucide.txt', 'assets/dict/LICENSE-SCOWL.txt',
+                   'assets/app-icon/LICENSE.txt', 'crates/ui-egui/src/i18n/LICENSE-translations.txt',
+                   'docs/brand/LICENSE-brand.txt']
+        for name in notices:
+            Path(name).parent.mkdir(parents=True, exist_ok=True)
             self.commit(name, 'Fixture notice')
         assets = self.source / 'dist/web'
         assets.mkdir(parents=True)
-        (assets / 'editor.wasm').write_bytes(b'\0asm-test-fixture')
+        from test_runtime_notices import wasm as runtime_wasm
+        (assets / 'editor.wasm').write_bytes(runtime_wasm())
         output = self.root / 'package-provenance.zip'
 
         def manifest():
-            subprocess.run([sys.executable, str(script), str(output)], check=True, capture_output=True, text=True)
+            subprocess.run([sys.executable, str(script), str(output)], check=True, capture_output=True, text=True, env={**os.environ, 'CARGO': str(cargo)})
             with zipfile.ZipFile(output) as archive:
                 return json.loads(archive.read('release-source.json')), archive.namelist()
 
-        clean, _ = manifest()
+        clean, clean_files = manifest()
         self.assertFalse(clean['dirty'])
+        with zipfile.ZipFile(output) as archive:
+            for name in notices:
+                self.assertIn('public/'+name, clean_files)
+                self.assertEqual(archive.read('public/'+name), Path(name).read_bytes())
+            notice_index = json.loads(archive.read('public/rust-notices/index.json'))
+            self.assertEqual(notice_index['cargoLockSha256'], hashlib.sha256(Path('Cargo.lock').read_bytes()).hexdigest())
+            self.assertEqual(archive.read('public/rust-notices/synthetic-dependency-1.0.0/registry/LICENSE-MIT'), license_bytes)
+            self.assertNotIn(str(registry), json.dumps(notice_index))
+            runtime_index = json.loads(archive.read('public/runtime-notices/index.json'))
+            self.assertEqual(runtime_index['browserArtifact']['rustcProducer'], '1.95.0 (59807616e 2026-04-14)')
+            for item in runtime_index['files']:
+                self.assertEqual(archive.read('public/runtime-notices/' + item['path']), (runtime_source / item['path']).read_bytes())
         Path('uncommitted-adapter.rs').write_text('unreviewed implementation')
         dirty, files = manifest()
         self.assertIn('uncommitted-adapter.rs', files)
         self.assertTrue(dirty['dirty'], 'Packaged source absent from the named commit must never claim to be clean')
+        previous_package = output.read_bytes()
+        (assets / 'editor.wasm').write_bytes(runtime_wasm('1.96.0 (wrong compiler)'))
+        with self.assertRaises(subprocess.CalledProcessError):
+            manifest()
+        self.assertEqual(output.read_bytes(), previous_package, 'Wrong actual WASM compiler must stop before replacing the distributable')
+        (assets / 'editor.wasm').write_bytes(runtime_wasm())
+        (registry / 'LICENSE-MIT').unlink()
+        with self.assertRaises(subprocess.CalledProcessError):
+            manifest()
+        self.assertEqual(output.read_bytes(), previous_package, 'Missing dependency notices must stop before writing a new distributable')
 
 
 if __name__ == '__main__':

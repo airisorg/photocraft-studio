@@ -1,3 +1,4 @@
+// Modified by the independent FZ2000 PhotoCraft Studio fork; see docs/fork-code-map.md.
 //! Object storage (ZIP or directory), incremental writer and loader.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -12,7 +13,7 @@ use photocraft_raster::{Rgba8Image, Tile};
 use crate::convert::{self, Fetch, Loader, Sink, is_valid_hash, swap_to_le};
 use crate::manifest::{ContentM, FORMAT_VERSION, Hash, LayerM, Manifest};
 use crate::zip::{ZipReader, ZipWriter};
-use crate::{FormatError, LoadOptions, Result, SaveOptions};
+use crate::{FormatError, LoadOptions, LoadStats, Result, SaveOptions};
 
 pub(crate) const MANIFEST: &str = "manifest.json";
 pub(crate) const THUMB: &str = "thumb.png";
@@ -230,6 +231,10 @@ impl Fetch for LoadFetch<'_> {
 }
 
 pub(crate) fn load(src: &dyn Source, opts: &LoadOptions) -> Result<Document> {
+    load_with_stats(src, opts).map(|(doc, _)| doc)
+}
+
+pub(crate) fn load_with_stats(src: &dyn Source, opts: &LoadOptions) -> Result<(Document, LoadStats)> {
     let m = read_manifest(src, opts)?;
     let mut fetch = LoadFetch { src, opts: *opts, total: 0, blobs: HashMap::new() };
     let mut loader = Loader { fetch: &mut fetch, preserve_ids: opts.preserve_ids, max_id: 0, id_map: HashMap::new() };
@@ -237,9 +242,9 @@ pub(crate) fn load(src: &dyn Source, opts: &LoadOptions) -> Result<Document> {
     if opts.preserve_ids && !convert::reserve_ids_through(loader.max_id) {
         // Ids far beyond our counter: remap instead of risking collisions.
         let fresh = LoadOptions { preserve_ids: false, ..*opts };
-        return load(src, &fresh);
+        return load_with_stats(src, &fresh);
     }
-    Ok(doc)
+    Ok((doc, LoadStats { decoded_bytes: fetch.total }))
 }
 
 // ---------------------------------------------------------------------------

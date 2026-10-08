@@ -1,3 +1,4 @@
+# Modified for PhotoCraft Studio: package upstream notices and embedded-asset licenses.
 # shellcheck shell=bash
 # Shared setup for the packaging scripts. Source it: `. "$(dirname "$0")/../env.sh"`.
 #
@@ -47,8 +48,17 @@ warn() {
 # Copy licence and readme files that exist into a package directory.
 copy_docs() {
   local dest="$1" f
-  for f in README.md LICENSE LICENSE-MIT LICENSE-APACHE COPYRIGHT; do
+  for f in README.md LICENSE LICENSE-MIT LICENSE-APACHE COPYRIGHT NOTICE ATTRIBUTION.md SECURITY.md; do
     if [ -f "$ROOT/$f" ]; then cp "$ROOT/$f" "$dest/"; fi
+  done
+  # Preserve the relative paths referenced by NOTICE/ATTRIBUTION in binary and
+  # static-web distributions, including the fonts embedded without craft-fonts.
+  for f in assets/fonts/OFL-Inter.txt assets/fonts/OFL-JetBrainsMono.txt \
+    assets/icons/LICENSE-lucide.txt assets/dict/LICENSE-SCOWL.txt \
+    assets/app-icon/LICENSE.txt crates/ui-egui/src/i18n/LICENSE-translations.txt \
+    docs/brand/LICENSE-brand.txt; do
+    mkdir -p "$dest/$(dirname "$f")"
+    cp "$ROOT/$f" "$dest/$f"
   done
   copy_font_licences "$dest"
 }

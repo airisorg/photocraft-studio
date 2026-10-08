@@ -1,3 +1,4 @@
+// Modified by the independent FZ2000 PhotoCraft Studio fork; see docs/fork-code-map.md.
 //! Colour transforms between profiles through the PCS, with rendering intents, black point
 //! compensation, soft-proofing chains, and fast lookup-table evaluation of pixel buffers.
 
