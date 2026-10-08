@@ -19,8 +19,8 @@ git log --oneline 3a3984075a1fd06d1af3e660aa376ee5368c4f73..HEAD -- crates/engin
 
 | Path | Responsibility |
 |---|---|
-| `apps/photocraft-web/src/home.rs` | Browser workspace, project navigation, recovery, account and sharing UI |
-| `apps/photocraft-web/src/cloud.rs` | Authenticated HTTP calls, native save/load integration, versions, recovery and synchronization |
+| `apps/photocraft-web/src/home.rs` | Reusable workspace styling, navigation and starter-design widgets |
+| `apps/photocraft-web/src/cloud.rs` | Stateful workspace, project/recovery/account/sharing UI, authenticated HTTP calls, native save/load integration, versions and synchronization |
 | `apps/photocraft-web/src/live.rs` | Ephemeral cursor and native gesture transport; no separate painting engine |
 | `crates/ui-egui/src/collaboration.rs` | Temporary remote view state around the existing native canvas and compositor |
 | `apps/photocraft-cloud/src/` | HTTP service, authorization, invitations, document merge/validation and bounded live previews |
