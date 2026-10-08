@@ -44,9 +44,11 @@ links. Links are unguessable, stored as hashes, revocable, and expose only the l
 Owners can send invitation emails through Tofu-managed Supabase authentication. The email is
 a sign-in email; membership is granted before delivery and delivery failures are explicit.
 Confirmation requires a user POST so email-link scanners do not consume a token. Invitation
-requests are limited to 20 per owner per hour and one per recipient per minute. Legacy presence polls every 1.5 seconds. Visible editors also read authorized live state and
-revision every 80 ms and coalesce changed cursor/gesture writes at 40 ms, with one request
-in flight per direction. Room, session, native preview and expiry bounds are documented in
+requests are limited to 20 per owner per hour and one per recipient per minute. Legacy presence polls every 1.5 seconds. Visible editors coalesce changed cursor/gesture writes at 80 ms; a successful write
+also returns authorized live state and revision. Quiet editors poll every 80 ms. The adapter
+keeps one GET or PUT pending per document/account generation and heartbeats unchanged active
+state every 500 ms. Initial synchronization and old-server ACKs require a GET; stale-base and
+role-change failures force a fresh read before further writes. Room, session, native preview and expiry bounds are documented in
 [collaboration architecture](collaboration-architecture.md). These timers are not a latency guarantee.
 Version history is retained; the initial quota is 1 GB per owner including versions.
 
