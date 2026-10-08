@@ -219,6 +219,20 @@ class BenchmarkGuards(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'missing_exchange_snapshot'):
             self.http_reply(model,{'revision':1,'accepted':True,'seq':7})
 
+    def test_http_actor_origin_follows_its_worker_without_changing_legacy_default(self):
+        for explicit in [False,True]:
+            with self.subTest(explicit=explicit):
+                model=self.exchange_model()
+                model.workers[0]['port']=45679
+                if explicit:
+                    model.workers[0]['origin']='http://127.0.0.1:45679'
+                self.http_reply(model,{'revision':1,'accepted':True,'seq':7,'role':'owner','peers':[]})
+                writer=model.connection.return_value[1]
+                sent=writer.write.call_args.args[0]
+                expected='http://127.0.0.1:45679' if explicit else model.base
+                self.assertIn(('Origin: '+expected+'\r\n').encode(),sent)
+                self.assertIn(b'Host: 127.0.0.1:45679\r\n',sent)
+
     def test_coverage_requires_usable_peer_observed_entirely_during_active_window(self):
         row={'actor':'actor-b','tab':'tab-b','seq':7,'baseRevision':1,'ttlMs':500,'cursor':{'x':7,'y':1},'gesture':None}
         response={'revision':1,'accepted':True,'seq':7,'role':'owner','peers':[row]}
@@ -312,6 +326,11 @@ class BenchmarkGuards(unittest.TestCase):
                                             "own_database_dropped": True, "shared_application_rows_touched": 0})
 
     def test_partial_fleet_start_stops_existing_workers_before_dropping_own_database(self):
+        for browser_workers in [(0,), (0,1)]:
+            with self.subTest(browser_workers=browser_workers):
+                self.partial_fleet_start(browser_workers)
+
+    def partial_fleet_start(self,browser_workers):
         admin = MagicMock()
         admin.info.server_version = 160000
         admin.__enter__.return_value = admin
@@ -343,7 +362,7 @@ class BenchmarkGuards(unittest.TestCase):
                 patch.object(benchmark.requests, "Session", side_effect=AssertionError("Failed startup must not reach readiness")), \
                 patch.object(benchmark.subprocess, "Popen", side_effect=[process, RuntimeError("Synthetic second worker failure")]) as spawn:
             with self.assertRaisesRegex(RuntimeError, "second worker"):
-                with benchmark.isolated(args, report):
+                with benchmark.isolated(args, report,public_dir=Path('synthetic-public'),browser_workers=browser_workers):
                     self.fail("Partial startup must not begin load")
         own_name = report["disposable_database"]
         self.assertRegex(own_name, r"^photocraft_scale_[0-9a-f]{32}$")
@@ -354,9 +373,21 @@ class BenchmarkGuards(unittest.TestCase):
         process.wait.assert_called_once_with(timeout=5)
         process.kill.assert_not_called()
         self.assertEqual(spawn.call_count, 2)
-        for call in spawn.call_args_list:
+        for index,call in enumerate(spawn.call_args_list):
             self.assertIn('/'+own_name+'?', call.kwargs['env']['DATABASE_URL'])
-            self.assertEqual(call.kwargs['env']['APP_ORIGIN'], 'http://127.0.0.1:45678')
+            expected_port=45678+index if index in browser_workers else 45678
+            self.assertEqual(call.kwargs['env']['APP_ORIGIN'], f'http://127.0.0.1:{expected_port}')
+            expected_public=Path('synthetic-public').resolve() if index in browser_workers else args.output.parent/'no-public'
+            self.assertEqual(call.kwargs['env']['PUBLIC_DIR'],str(expected_public))
+
+    def test_invalid_browser_worker_topology_fails_before_provisioning(self):
+        args=SimpleNamespace(workers=2)
+        for topology in [(),(1,),(-1,0),(0,2),(0,0),(0,True),(0,'1')]:
+            with self.subTest(topology=topology),patch.object(benchmark.psycopg,'connect') as connect:
+                with self.assertRaises(ValueError):
+                    with benchmark.isolated(args,{},browser_workers=topology):
+                        self.fail('Invalid topology admitted database provisioning')
+                connect.assert_not_called()
 
 
 if __name__ == "__main__":
