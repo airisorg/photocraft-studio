@@ -13,8 +13,7 @@ use std::{
     sync::Arc,
 };
 
-const READ_MS: f64 = 80.;
-const WRITE_MS: f64 = 40.;
+const EXCHANGE_MS: f64 = 80.;
 const HEARTBEAT_MS: f64 = 500.;
 const EXPIRE_MS: f64 = 2_000.;
 const TAB_KEY: &str = "photocraft.live.tab.v1";
@@ -24,7 +23,7 @@ struct Failure {
 }
 enum Reply {
     Read(u64, f64, Result<Value, Failure>),
-    Write(u64, Option<u64>, i64, Result<Value, Failure>),
+    Write(u64, f64, Option<u64>, i64, Result<Value, Failure>),
 }
 pub(super) struct Update {
     pub revision: i64,
@@ -41,6 +40,7 @@ pub(super) struct Live {
     replies: Rc<RefCell<Vec<Reply>>>,
     read_pending: bool,
     write_pending: bool,
+    read_required: bool,
     read_at: f64,
     write_at: f64,
     cursor: Option<[f64; 2]>,
@@ -137,6 +137,7 @@ impl Live {
         self.base = None;
         self.read_pending = false;
         self.write_pending = false;
+        self.read_required = true;
         self.read_at = 0.;
         self.write_at = 0.;
         self.cursor = None;
@@ -238,7 +239,7 @@ impl Live {
         for reply in replies {
             let (generation, read, elapsed, terminal, submitted_base, result) = match reply {
                 Reply::Read(g, started, r) => (g, true, (clock - started).max(0.), None, 0, r),
-                Reply::Write(g, terminal, base, r) => (g, false, 0., terminal, base, r),
+                Reply::Write(g, started, terminal, base, r) => (g, false, (clock - started).max(0.), terminal, base, r),
             };
             if generation != self.generation || http.generation != http.current.get() || !http.allowed.get() {
                 continue;
@@ -262,7 +263,8 @@ impl Live {
                             self.notice = Some("Live gestures resume after the latest saved version arrives.".into());
                         }
                         self.read_at = 0.;
-                        self.write_at = clock - WRITE_MS;
+                        self.read_required = true;
+                        self.write_at = clock - EXCHANGE_MS;
                         self.changed = true;
                         continue;
                     }
@@ -285,12 +287,14 @@ impl Live {
                         self.editing_paused = true;
                         self.changed = true;
                         self.read_at = 0.;
+                        self.read_required = true;
                     }
                     self.notice = Some("Live updates reconnecting. Saved changes still sync.".into());
                     if read {
                         self.read_at = clock + 250.;
                     } else {
                         self.write_at = clock + 500.;
+                        self.read_required = true;
                         self.changed = true;
                     }
                     // Existing peers retain only their admitted remaining lease. A
@@ -306,8 +310,15 @@ impl Live {
                     self.gesture = None;
                     self.changed = true;
                 }
-                continue;
+                // Older servers acknowledge writes without returning a peer
+                // snapshot. Reconcile with GET before sending another update.
+                if !value.get("peers").is_some_and(Value::is_array) || !matches!(field(&value, "role"), "owner" | "edit" | "view") {
+                    self.read_required = true;
+                    self.read_at = 0.;
+                    continue;
+                }
             }
+            self.read_required = false;
             if self.notice.as_deref().is_some_and(|n| n.starts_with("Live updates reconnecting")) {
                 self.notice = None;
             }
@@ -378,7 +389,15 @@ impl Live {
                 true
             }
         });
-        if !self.read_pending && clock - self.read_at >= READ_MS {
+        let heartbeat = (self.cursor.is_some() || !self.events.is_empty()) && clock - self.write_at >= HEARTBEAT_MS;
+        // One request at a time exchanges the whole latest transient state.
+        // A publish also returns authorized peers, so an active tab does not
+        // need a second independent read loop.
+        if !self.read_pending
+            && !self.write_pending
+            && clock - self.read_at >= EXCHANGE_MS
+            && (self.read_required || clock - self.write_at < EXCHANGE_MS || !(self.changed || heartbeat))
+        {
             self.read_pending = true;
             self.read_at = clock;
             let queue = self.replies.clone();
@@ -392,8 +411,13 @@ impl Live {
                 context.request_repaint();
             });
         }
-        let heartbeat = (self.cursor.is_some() || !self.events.is_empty()) && clock - self.write_at >= HEARTBEAT_MS;
-        if !self.write_pending && clock - self.write_at >= WRITE_MS && (self.changed || heartbeat) {
+        if !self.read_pending
+            && !self.write_pending
+            && !self.read_required
+            && clock - self.read_at >= EXCHANGE_MS
+            && clock - self.write_at >= EXCHANGE_MS
+            && (self.changed || heartbeat)
+        {
             let cursor = self.cursor.map(|p| json!({"x":p[0],"y":p[1]}));
             let gesture = if self.events.is_empty() { Value::Null } else { json!({"events":self.events}) };
             self.sequence = self.sequence.saturating_add(1);
@@ -407,6 +431,7 @@ impl Live {
             } else {
                 self.write_pending = true;
                 self.changed = false;
+                self.read_at = clock;
                 self.write_at = clock;
                 let queue = self.replies.clone();
                 let generation = self.generation;
@@ -417,7 +442,7 @@ impl Live {
                 let submitted_base = if self.gesture.is_some() { self.gesture_base } else { binding.revision };
                 wasm_bindgen_futures::spawn_local(async move {
                     let result = call(&http, "PUT", &path, Some(body)).await;
-                    queue.borrow_mut().push(Reply::Write(generation, terminal, submitted_base, result));
+                    queue.borrow_mut().push(Reply::Write(generation, clock, terminal, submitted_base, result));
                     context.request_repaint();
                 });
             }

@@ -1,4 +1,152 @@
-# Scale release review — 2026-10-07
+# Scale release review
+
+## Current candidate — 2026-10-08
+
+The optimized candidate passes a short **local** 1,000-actor mixed workload:
+998 modeled HTTP collaborators plus two real native browser clients. The three
+observed cursor/Pencil input-to-remote-pixel upper bounds were **235.656,
+220.709 and 213.264 ms**, below the unchanged 500 ms gate. This does not certify
+1,000 production browsers, geographical latency, every editor command, a
+sustained service SLO or Figma/Canva collaboration parity. Hosted two-account
+acceptance and production capacity remain separate release gates.
+
+The original PhotoCraft engine, painting commands, document format, renderer and
+undo paths are reused. The thin web adapter now permits one GET **or** PUT per
+binding generation at a nominal 80 ms cadence; PUT also returns the authorized
+peer snapshot. A private PostgreSQL `exchange_live_v1` function consolidates
+application-to-database calls and allows internal query-plan reuse while retaining
+preauthorization, ordered locks, fresh post-lock authorization, wall-clock expiry
+and commit-before-ACK behavior. PUT still uses BEGIN/function/COMMIT; it is not a
+single round trip. No database allowance, provider credential, room/session quota
+or purchased service was changed. See the [collaboration contract](collaboration-architecture.md).
+
+### Exact artifacts and workloads
+
+All current optimized runs use backend SHA-256
+`90908c3f4eedd41373a8916fddfe65e43b9710dac9439dab437d0042b5ddc090`.
+The mixed browser run uses `photocraft-web-d3fc6e503acae4d9_bg.wasm`, SHA-256
+`c0a89fbd41e0b9d00bebf4065e440a754083739e5a84acda93cf581a48abf1a1`.
+Both hashes were unchanged before/after execution. The preserved pre-function
+exchange binary is `3c4427e6f5331c28c36604308ebff507e8eeccf3561c74f68b72c88dd391d385`.
+
+The host was macOS 26.5.1/arm64, 12 logical CPUs. An owned temporary UTF-8
+PostgreSQL cluster enforced TLS with certificate/IP verification; recorded
+connections used TLS 1.3. HTTP was loopback plaintext. Generator, workers, database
+and browsers shared this Mac; unrelated host activity was not controlled. No owned
+build or other browser workload ran during these measurements. These are short
+observations rather than isolated-host or production benchmarks.
+
+HTTP-only stages used three seconds warmup, ten active seconds, ten cooldown,
+rooms of ten, cursor payloads and one PUT lane per actor at nominal 80 ms. Eight
+workers used four pool slots each (32 total), plus one monitor. Sticky HTTP actors
+cross worker boundaries. The harness caps concurrent HTTP at 1,000 and validates
+exact accepted sequence ACKs, current revision/role and typed peer state. Every
+actor must observe every other HTTP actor in its room **during the active window**
+with a remaining lease exceeding the full request duration. Warmup errors fail
+acceptance too. Empty or skeletal HTTP 200 responses cannot pass. Bodies above the
+64 KiB semantic-validation bound fail rather than bypassing validation.
+
+### HTTP-only observations
+
+| Candidate / actors / workers × pool | Active HTTP 200 | Successful nominal schedule | PUT p50 / p95 / p99 / max (ms) | Scheduled completion p50 / p95 / p99 / max (ms) | Coalesced ticks |
+|---|---:|---:|---:|---:|---:|
+| Private function / 100 / 1 × 5 | 12,200 | 97.600% | 4.977 / 11.252 / 12.314 / 13.312 | 7.097 / 13.412 / 14.614 / 15.530 | 0 |
+| Private function / 1,000 / 8 × 4 | 117,147 | 93.718% | 4.964 / 20.259 / 26.599 / 52.099 | 7.542 / 40.365 / 51.238 / 65.735 | 0 |
+| Preserved pre-function exchange / 1,000 / 8 × 4 | 70,796 | 56.637% | See raw report | 141.666 / 201.467 / 237.358 / 361.704 | 7,281 |
+
+All three stages had zero HTTP/transport/semantic errors, and full usable room-peer
+coverage. The matched pre-function comparison uses the **same hardened harness**.
+Earlier exchange attempts measured different host conditions and an earlier
+validator; they remain separate evidence, including the 31.55%/678.711 ms stage.
+These sequential comparisons show an observed improvement, without isolating all
+host effects. Nominal opportunities are actor-count × active-seconds × 12.5,
+not requests actually transmitted. Ratios below 100% must not be described as a
+perfect sustained schedule. HTTP measurements still exclude browser rendering,
+ordinary presence, durable uploads and saves. `capacity_slo_certified` remains
+false in every HTTP report.
+
+The 1,000-actor private-function HTTP stage recorded 151,528 requests including
+warmup, 74,110,020 request bytes and 322,013,747 response bytes including headers.
+Maximum sampled connections were 33 including the monitor; aggregate worker RSS
+was 173.61 MiB. No sampled database lock waits were observed. One-second samples
+can miss short waits or peaks; PostgreSQL/browser/generator memory is not included
+in worker RSS. These byte totals are uncompressed local traffic, not production
+cost forecasts. Full peer snapshots remain a bandwidth cost.
+
+### Actual pixels under mixed load
+
+[benchmark_scale_paint.py](../tests/web/benchmark_scale_paint.py) creates exactly
+1,000 accounts and 100 projects: 998 HTTP actors and two separate browser contexts
+in installed headless Chrome 154.0.8037.98. Both native clients use worker0;
+eight HTTP actors share their room and the other HTTP rooms cross workers. This
+is not a cross-worker two-browser test or a 1,000-browser test. Native viewport is
+1440 × 960 at DPR1, with a 320 × 240 document and the original Pencil tool. The
+renderer backend was not independently recorded, so no hardware-GPU claim is made.
+
+All 998 HTTP actors had succeeded during active load before timed input. Each
+complete paint observation stayed inside the active 12-second interval while
+6,787 / 7,073 / 11,212 more HTTP requests progressed. Aggregate usable peer coverage
+was complete over that interval, with at least 114 successful active requests per
+HTTP actor; this is not proof that every actor delivered in every subsecond paint
+bracket. The HTTP stage recorded 115,553 active successful PUTs, zero errors,
+77.190% of nominal opportunities and two coalesced ticks. Scheduled completion was
+p50 49.959 / p95 93.666 / p99 111.950 / max 187.984 ms.
+
+| Trusted pointer input | Remote-pixel upper bound | Clock uncertainty |
+|---|---:|---:|
+| Cursor 1 | 235.656 ms | 5.959 ms |
+| Cursor 2 | 220.709 ms | 14.034 ms |
+| Held native Pencil | 213.264 ms | 13.115 ms |
+
+The endpoint is the first matching CDP-swapped PNG, not a physical display.
+All three samples passed the unchanged **500 ms / 15 ms uncertainty** limits with
+no missing/invalid/capture-error samples. Three observations cannot establish
+p99 tail reliability. No artificial network delay was added in this mixed run.
+
+During the held preview, receiver native pixels/history/revision and all cloud
+project revisions remained unchanged. After load drained, mouseup committed
+revision 2. The peer native pixel, actual document readiness after reload, and
+downloaded original `.pcraft` SHA-256 were verified. The resulting 5,089-byte
+archive SHA-256 was
+`50ec0246f89c71d8b5c7289c2c5675b150f4e3faf8925ad008e14eefdffca945`.
+Save/reload correctness was checked after load, not timed as a durable-save SLO.
+Every owned worker, browser, background thread, UUID database and temporary TLS
+cluster was stopped/removed; shared application rows touched were zero.
+
+### Failures retained and reproduction
+
+Evidence resides in the local `2026-10-08-release-continuation` bundle:
+`rpc-tls-100.json`, `rpc-tls-1000.json`,
+`exchange-v1-hardened-tls-1000.json`, `rpc-mixed-1000-r2.json`, their screenshots,
+`rpc-candidate-binaries.json`, and the owned temporary TLS wrappers.
+
+The initial `rpc-mixed-1000.json` retains three passing paint observations and a
+later `durable_after_load` assertion failure. Source/screenshot review identified
+a likely bridge-before-document readiness race in the fixture. The rerun reuses
+the existing successful-open barrier, asserts saved dimensions/layer identities,
+and records each safe durable checkpoint. No runtime or pixel/latency threshold
+was weakened. The initial HTTP/load/pixel receipts are not discarded or attributed
+to the later completed persistence check.
+
+The 23 pure benchmark guard tests verify no-I/O dry plans, bounded local-only
+execution, semantic response/coverage failures, active paint windows and cleanup.
+The current API/security suites separately verify private function privileges,
+fresh queued authorization, post-lock expiry and transaction-pool behavior.
+Source-grounded tests and passing samples cannot guarantee absence of all bugs.
+
+For a safe dry plan, run the mixed harness with `--output` and `--context` only.
+It performs no filesystem, network, process, browser or database I/O. Execution
+requires `--execute`, an explicit installed `--chrome`, a built WASM directory,
+and an owned password-free literal loopback maintenance `/postgres` URL. Use the
+same temporary TLS recipe below with its existing public CA. Do not point the
+harness at Tofu, Supabase or real user accounts. Complete hosted two-account,
+real invitation receipt, network/geography, larger-room, longer-duration and
+fleet quota acceptance before claiming the production 1,000-user target.
+
+## Historical stages — 2026-10-07
+
+The remaining observations retain their original binaries and validator semantics.
+They do not describe the 2026-10-08 candidate above.
 
 **The 1,000-active-user, sub-500 ms input-to-remote-paint target is not met.**
 Eight local workers completed every HTTP request they actually issued successfully,

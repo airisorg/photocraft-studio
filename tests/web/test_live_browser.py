@@ -79,6 +79,316 @@ class LiveBrowser(BrowserAcceptance):
             page.wait_for_timeout(40)
         self.fail(f'Native pixel did not converge at {point}')
 
+    def wait_live(self, page, predicate, message, timeout=2500):
+        deadline = time.monotonic()+timeout/1000
+        while not predicate() and time.monotonic() < deadline:
+            page.wait_for_timeout(10)
+        self.assertTrue(predicate(), message)
+
+    def live_trace(self, page, path):
+        """Observe browser requests, including held bodies, without changing fetch."""
+        trace = {'requests': [], 'peak_inflight': 0}
+        pending = {}
+        def started(request):
+            if request.url.split('?')[0] != path:
+                return
+            item = {'method': request.method, 'started': time.monotonic()}
+            trace['requests'].append(item)
+            pending[request] = item
+            trace['peak_inflight'] = max(trace['peak_inflight'], len(pending))
+        def finished(request):
+            item = pending.pop(request, None)
+            if item is not None:
+                item['finished'] = time.monotonic()
+        page.on('request', started)
+        page.on('requestfinished', finished)
+        page.on('requestfailed', finished)
+        return trace
+
+    def test_live_exchange_put_carries_paint_and_coalesces_single_flight(self):
+        pid, peer, owner_rect, peer_rect, _ = self.pair()
+        path = BASE+f'/api/projects/{pid}/live'
+        phase = {'value': 'hold-first-put'}
+        held, parked, snapshots = [], [], []
+        trace = self.live_trace(peer, path)
+        self.observations['receiver_transport'] = trace
+        before = self.inspect(peer)['document']
+        untouched = self.execute('document.pixel', {'x': 72, 'y': 72}, peer)
+
+        def intercept(route):
+            if route.request.method == 'GET':
+                if phase['value'] == 'active':
+                    parked.append(route)  # No GET peer data can explain the paint.
+                    return
+                response = route.fetch()
+                body = response.json()
+                body['peers'] = []
+                route.fulfill(response=response, json=body)
+            elif phase['value'] == 'hold-first-put' and not held:
+                held.append(route)
+            else:
+                if phase['value'] == 'arming':
+                    # Start cadence assertions at the first publishing cycle,
+                    # excluding the unavoidable idle-to-active GET boundary.
+                    phase['value'] = 'active'
+                    self.observations['active_started'] = time.monotonic()
+                response = route.fetch()
+                body = response.json()
+                snapshots.append({'status': response.status, 'role': body.get('role'),
+                                  'peers': body.get('peers'), 'at': time.monotonic()})
+                route.fulfill(response=response)
+
+        peer.route(path+'*', intercept)
+        try:
+            peer.mouse.move(peer_rect[0]+150, peer_rect[1]+20)
+            self.wait_live(peer, lambda: bool(held), 'No cursor PUT was intercepted')
+            started_count = len(trace['requests'])
+            for x in range(151, 166):
+                peer.mouse.move(peer_rect[0]+x, peer_rect[1]+20)
+                peer.wait_for_timeout(16)
+            self.assertEqual(len(trace['requests']), started_count,
+                             'GET or a second PUT overlapped the held exchange')
+            phase['value'] = 'warming'
+            # Fetch and release the actual server response, preserving its wire shape.
+            route = held[0]
+            response = route.fetch()
+            self.assertEqual(response.status, 200)
+            route.fulfill(response=response)
+            held.clear()
+            peer.wait_for_timeout(100)
+            with PaintObserver(peer) as observer:
+                def trigger():
+                    phase['value'] = 'arming'
+                    self.page.mouse.move(owner_rect[0]+24, owner_rect[1]+72)
+                    self.page.mouse.down()
+                    self.page.mouse.move(owner_rect[0]+128, owner_rect[1]+72)
+                    # Keep the receiver publishing during the short measured
+                    # prefix; a long synchronous burst would overflow CDP's queue
+                    # before measure() can consume frames.
+                    for index in range(12):
+                        peer.mouse.move(peer_rect[0]+150+index, peer_rect[1]+20)
+                        peer.wait_for_timeout(16)
+
+                sample = observer.measure(self.page, trigger, self.patch(peer_rect, 72, 72, (25, 197, 99)),
+                                          event_type='pointermove', target_ms=500, timeout_ms=1500)
+                self.observations['put_only_paint'] = sample
+                if observer.last_matching_png:
+                    (ARTIFACTS/(self._testMethodName+'-put-paint.png')).write_bytes(observer.last_matching_png)
+                self.assertEqual(sample['status'], 'passed', sample)
+            # Check sustained coalescing separately, with the screencast stopped.
+            # Any idle read at the end of measurement receives no peer data.
+            phase['value'] = 'warming'
+            for route in parked:
+                response = route.fetch()
+                body = response.json()
+                body['peers'] = []
+                route.fulfill(response=response, json=body)
+            parked.clear()
+            peer.wait_for_timeout(100)
+            phase['value'] = 'arming'
+            self.observations.pop('active_started', None)
+            for index in range(48):
+                peer.mouse.move(peer_rect[0]+150+index%50, peer_rect[1]+20)
+                peer.wait_for_timeout(16)
+            self.observations['active_ended'] = time.monotonic()
+            self.assertIn('active_started', self.observations, 'No publishing cycle started')
+            begin, end = self.observations['active_started'], self.observations['active_ended']
+            active = [r for r in trace['requests'] if begin <= r['started'] <= end]
+            self.assertEqual(parked, [], 'An active receiver started an unnecessary GET')
+            self.assertTrue(active and all(r['method'] == 'PUT' for r in active), active)
+            self.assertGreaterEqual(len(active), 4, 'No sustained active exchange was observed')
+            self.assertLessEqual(len(active), int((end-begin)/.08)+2, 'Exchange rate exceeded the coalesced cadence')
+            intervals = [(b['started']-a['started'])*1000 for a, b in zip(active, active[1:])]
+            self.assertTrue(all(value >= 65 for value in intervals), intervals)
+            self.assertLess(len(active)*2, 48, 'Input samples were not meaningfully coalesced')
+            self.assertEqual(trace['peak_inflight'], 1, trace)
+            self.assertTrue(any(s['status'] == 200 and s['role'] == 'edit'
+                                and any(p.get('gesture') for p in s['peers'] or []) for s in snapshots), snapshots)
+            self.assertEqual(self.inspect(peer)['document']['history'], before['history'])
+            self.assertEqual(self.inspect(peer)['document']['revision'], before['revision'])
+            self.assertEqual(self.execute('document.pixel', {'x': 72, 'y': 72}, peer), untouched)
+            self.assertEqual(self.auth_revision(pid, 1)['revision'], 1)
+            self.observations['cadence'] = {'input_moves': 48, 'active_puts': len(active), 'interval_ms': intervals}
+        finally:
+            phase['value'] = 'cleanup'
+            self.page.mouse.up()
+            for route in held+parked:
+                route.abort()
+            peer.unroute(path+'*', intercept)
+
+    def test_live_exchange_delayed_put_does_not_extend_peer_lease_or_cross_generation(self):
+        pid, peer, owner_rect, peer_rect, _ = self.pair()
+        path = BASE+f'/api/projects/{pid}/live'
+        captured, parked, published = [], [], []
+        phase = {'value': 'warming'}
+        owner_frozen = {'value': False}
+        started, finished, failed = {}, {}, {}
+        before = self.inspect(peer)['document']
+        peer.on('request', lambda request: started.setdefault(request, time.monotonic()))
+        peer.on('requestfinished', lambda request: finished.setdefault(request, time.monotonic()))
+        peer.on('requestfailed', lambda request: failed.setdefault(request, request.failure))
+
+        def owner_intercept(route):
+            if route.request.method == 'PUT' and owner_frozen['value']:
+                route.abort()  # No heartbeat may renew the lease being aged.
+                return
+            response = route.fetch()
+            route.fulfill(response=response)
+            if route.request.method == 'PUT' and response.status == 200:
+                cursor = route.request.post_data_json.get('cursor')
+                if cursor and cursor['x'] == 80 and cursor['y'] == 20:
+                    published.append(time.monotonic())
+                    owner_frozen['value'] = True
+
+        def intercept(route):
+            if phase['value'] == 'park':
+                parked.append(route)
+                return
+            response = route.fetch()
+            body = response.json()
+            if (phase['value'] == 'capture' and route.request.method == 'PUT'
+                    and any(p.get('cursor') for p in body.get('peers', []))):
+                captured.append((route, response, body, time.monotonic()))
+                phase['value'] = 'park'
+                return
+            body['peers'] = []  # Earlier GETs or PUTs cannot explain cursor pixels.
+            route.fulfill(response=response, json=body)
+
+        self.page.route(path+'*', owner_intercept)
+        peer.route(path+'*', intercept)
+        try:
+            self.page.mouse.move(owner_rect[0]+80, owner_rect[1]+20)
+            self.wait_live(peer, lambda: bool(published), 'Owner cursor was not acknowledged')
+            # Capture an aged, real server lease. The ensuing hold crosses its TTL
+            # while remaining comfortably inside the client's 2000ms deadline.
+            peer.wait_for_timeout(1100)
+            phase['value'] = 'capture'
+            peer.mouse.move(peer_rect[0]+160, peer_rect[1]+20)
+            self.wait_live(peer, lambda: bool(captured), 'PUT did not contain a real peer cursor')
+            route, response, body, received = captured[0]
+            self.assertEqual(response.status, 200)
+            ttl = max(p['ttlMs'] for p in body['peers'] if p.get('cursor'))
+            self.assertGreaterEqual(ttl, 300, body)
+            self.assertLessEqual(ttl, 1000, body)
+            peer.wait_for_timeout(ttl+150)
+            request = route.request
+            route.fulfill(response=response)
+            captured.clear()
+            self.wait_live(peer, lambda: request in finished or request in failed,
+                           'Delayed PUT never completed', timeout=500)
+            self.assertNotIn(request, failed, failed.get(request))
+            self.assertIn(request, finished)
+            elapsed = (finished[request]-started[request])*1000
+            self.assertLess(elapsed, 1800, 'Delayed body approached the 2000ms abort deadline')
+            self.observations['delayed_put'] = {
+                'ttl_ms': ttl, 'response_held_ms': (finished[request]-received)*1000,
+                'request_elapsed_ms': elapsed, 'request_finished': True, 'status': response.status}
+            # No replacement response is admitted: a ghost would persist until its
+            # incorrectly restarted lease. Inspect multiple actual rendered frames.
+            white = self.patch(peer_rect, 80, 20, (255, 255, 255))
+            for _ in range(5):
+                peer.wait_for_timeout(60)
+                self.assertTrue(white.matches(Image.open(io.BytesIO(peer.screenshot()))),
+                                'Delayed PUT restarted an expired cursor lease')
+            peer.screenshot(path=str(ARTIFACTS/(self._testMethodName+'-expired.png')))
+            self.assertEqual(self.inspect(peer)['document']['history'], before['history'])
+            self.assertEqual(self.inspect(peer)['document']['revision'], before['revision'])
+
+            # Separately renew the owner, then hold a fresh snapshot across an
+            # active-document change. Its still-valid lease must not cross scope.
+            owner_frozen['value'] = False
+            previous_publications = len(published)
+            self.page.mouse.move(0, 0)
+            self.page.mouse.move(owner_rect[0]+80, owner_rect[1]+20)
+            self.wait_live(peer, lambda: len(published) > previous_publications,
+                           'Owner did not publish the second cursor lease')
+            phase['value'] = 'capture'
+            for pending in parked:
+                pending.abort()
+            parked.clear()
+            peer.mouse.move(peer_rect[0]+190, peer_rect[1]+20)
+            self.wait_live(peer, lambda: bool(captured), 'No second peer snapshot was captured')
+            route, response, body, _ = captured[0]
+            self.new(320, 240, page=peer)
+            self.configure_pencil(peer)
+            fresh = self.inspect(peer)['document']
+            fresh_rect = canvas_rectangle(Image.open(io.BytesIO(peer.screenshot())))
+            request = route.request
+            route.fulfill(response=response)
+            captured.clear()
+            self.wait_live(peer, lambda: request in finished or request in failed,
+                           'Old-generation PUT never completed', timeout=500)
+            self.assertNotIn(request, failed, failed.get(request))
+            self.assertIn(request, finished)
+            peer.wait_for_timeout(150)
+            self.assertTrue(self.patch(fresh_rect, 80, 20, (255, 255, 255)).matches(Image.open(io.BytesIO(peer.screenshot()))))
+            self.assertEqual(self.inspect(peer)['document'], fresh)
+            self.assertEqual(self.auth_revision(pid, 1)['revision'], 1)
+            self.observations['old_generation_ignored'] = True
+        finally:
+            for route, *_ in captured:
+                route.abort()
+            for route in parked:
+                route.abort()
+            peer.unroute(path+'*', intercept)
+            self.page.unroute(path+'*', owner_intercept)
+
+    def test_live_exchange_old_ack_requires_get_before_next_put(self):
+        pid, peer, owner_rect, peer_rect, _ = self.pair()
+        path = BASE+f'/api/projects/{pid}/live'
+        legacy, fallback, parked = [], [], []
+        trace = self.live_trace(peer, path)
+        self.observations['receiver_transport'] = trace
+
+        def intercept(route):
+            if legacy:
+                (fallback if route.request.method == 'GET' else parked).append(route)
+                return
+            response = route.fetch()
+            body = response.json()
+            if route.request.method == 'PUT':
+                body.pop('peers', None)
+                body.pop('role', None)
+                legacy.append({'body': body, 'at': time.monotonic()})
+            else:
+                body['peers'] = []
+            route.fulfill(response=response, json=body)
+
+        peer.route(path+'*', intercept)
+        try:
+            peer.mouse.move(peer_rect[0]+160, peer_rect[1]+20)
+            self.wait_live(peer, lambda: bool(fallback), 'Old PUT acknowledgement did not force an authoritative GET')
+            for x in range(161, 177):
+                peer.mouse.move(peer_rect[0]+x, peer_rect[1]+20)
+                peer.wait_for_timeout(16)
+            self.assertEqual(len(fallback), 1)
+            self.assertEqual(parked, [], 'PUT overlapped or bypassed the required fallback GET')
+            with PaintObserver(peer) as observer:
+                def trigger():
+                    self.page.mouse.move(owner_rect[0]+110, owner_rect[1]+20)
+                    self.page.wait_for_timeout(120)
+                    route = fallback.pop()
+                    response = route.fetch()
+                    self.assertEqual(response.status, 200)
+                    self.observations['fallback_snapshot'] = response.json()
+                    route.fulfill(response=response)
+
+                sample = observer.measure(self.page, trigger, self.patch(peer_rect, 110, 20, (154, 107, 255)),
+                                          event_type='pointermove', target_ms=500, timeout_ms=1500)
+                self.observations['legacy_fallback_paint'] = sample
+                self.assertEqual(sample['status'], 'passed', sample)
+                if observer.last_matching_png:
+                    (ARTIFACTS/(self._testMethodName+'-fallback.png')).write_bytes(observer.last_matching_png)
+            self.assertEqual(trace['peak_inflight'], 1, trace)
+            self.assertEqual(legacy[0]['body'].get('accepted'), True)
+            self.assertTrue(self.observations['fallback_snapshot']['peers'])
+            self.assertEqual(self.auth_revision(pid, 1)['revision'], 1)
+            self.observations['legacy_ack'] = legacy[0]['body']
+        finally:
+            for route in fallback+parked:
+                route.abort()
+            peer.unroute(path+'*', intercept)
+
     def test_live_delayed_old_409_preserves_new_held_gesture(self):
         pid, peer, owner_rect, peer_rect, _ = self.pair()
         path = BASE+f'/api/projects/{pid}/live'
