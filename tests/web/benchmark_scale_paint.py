@@ -2,7 +2,8 @@
 
 Default prints a plan without opening files, sockets, browsers, workers or databases.
 Execution owns one UUID database and a bounded worker fleet. Both actual browser
-clients use worker0; HTTP actors are sticky across workers in rooms of ten. This is
+clients use worker0 by default; --cross-worker-browsers places the peer on worker1.
+HTTP actors are sticky across workers in rooms of ten. This is
 not 1000 browsers, a hosted capacity test, or a durable-save latency measurement.
 """
 import argparse
@@ -41,6 +42,7 @@ def arguments(argv=None):
     p.add_argument('--output', type=Path, required=True)
     p.add_argument('--context', required=True)
     p.add_argument('--workers', type=int, choices=[1, 2, 4, 8], default=8)
+    p.add_argument('--cross-worker-browsers', action='store_true', help='Route the actual native pair directly to worker0 and worker1')
     p.add_argument('--db-pool-size', type=int, choices=range(1, 9), default=4)
     p.add_argument('--duration', type=float, default=12)
     p.add_argument('--warmup', type=float, default=3)
@@ -58,6 +60,8 @@ def arguments(argv=None):
         p.error('Exceeds bounded duration/concurrency/request/byte limits')
     if a.workers*a.db_pool_size > 32:
         p.error('Worker database pool budget must not exceed32')
+    if a.cross_worker_browsers and a.workers < 2:
+        p.error('Cross-worker browsers require at least two workers')
     return a
 
 
@@ -65,7 +69,9 @@ def plan(a):
     return {'total_actors': TOTAL_ACTORS, 'http_actors': HTTP_ACTORS, 'native_browser_clients': 2,
         'rooms': 100, 'actors_per_room': 10, 'workers': a.workers,
         'database_pool_per_worker': a.db_pool_size, 'worker_database_pool_budget': a.workers*a.db_pool_size,
-        'browser_routing': 'Both independent browser contexts use worker0; no cross-worker browser claim',
+        'browser_routing': ('Independent browser contexts use worker0 and worker1 directly; no request proxy'
+                            if a.cross_worker_browsers else 'Both independent browser contexts use worker0; no cross-worker browser claim'),
+        'native_client_workers': [0, 1] if a.cross_worker_browsers else [0, 0],
         'http_routing': 'Sticky actor index modulo workers; eight HTTP actors share the native pair room',
         'http_pacing': 'exchange', 'http_put_ms': 80, 'http_nominal_requests_per_actor_second': 12.5,
         'http_snapshot_validation_limit_bytes': 65536,
@@ -85,6 +91,33 @@ def asset_hashes(directory):
     if not 0 < files[0].stat().st_size <= 64*1024*1024:
         raise ValueError('Built WASM exceeds the64MiB artifact read bound')
     return {f.name: hashlib.sha256(f.read_bytes()).hexdigest() for f in [directory/'index.html', files[0]]}
+
+
+def verify_worker_assets(origin, expected):
+    """Untimed proof that an alternate worker serves this immutable web build."""
+    observed = {}
+    with scale.requests.Session() as client:
+        client.trust_env = False
+        for name, digest in expected.items():
+            hasher, size = hashlib.sha256(), 0
+            with client.get(origin+'/'+name, stream=True, timeout=5, allow_redirects=False) as response:
+                if response.status_code != 200:
+                    raise RuntimeError('Browser worker did not serve the expected public asset')
+                for chunk in response.iter_content(65536):
+                    size += len(chunk)
+                    if size > 64*1024*1024:
+                        raise ValueError('Browser worker asset exceeded the64MiB read bound')
+                    hasher.update(chunk)
+            if hasher.hexdigest() != digest:
+                raise RuntimeError('Browser worker served a different public artifact')
+            observed[name] = digest
+    return observed
+
+
+def load_native_peer(bench, page, origin, query, expected_document=None):
+    page.goto(origin+'/'+query, wait_until='domcontentloaded', timeout=90000)
+    page.wait_for_function('typeof window.photocraftCommand === "function"', timeout=60000)
+    bench.wait_opened_document(page, expected_document or bench.inspect()['document'])
 
 
 class Background:
@@ -246,9 +279,27 @@ def mixed_browser(a, base, db, workers, report, data, info):
     from test_live_browser import LiveBrowser
     from paint_latency import PaintObserver, summarize_results
 
+    peer_worker = 1 if a.cross_worker_browsers else 0
+    peer_origin = workers[peer_worker].get('origin', base)
+    if a.cross_worker_browsers and peer_origin == base:
+        raise ValueError('Cross-worker browser origin must be distinct')
+    report['environment']['native_client_workers'] = [0, peer_worker]
+    report['environment']['native_client_origins'] = [base, peer_origin]
+    if a.cross_worker_browsers:
+        with checkpoint(report, 'verify_peer_worker_public_artifacts'):
+            report['environment']['peer_worker_web_sha256'] = verify_worker_assets(peer_origin, report['environment']['web_before'])
+
     class NativePair(LiveBrowser):
         def runTest(self):
             pass
+
+        def load(self, page, query='', expected_document=None):
+            if a.cross_worker_browsers and query.startswith('?project='):
+                # Cookie domains cover the literal loopback host on either port;
+                # each account still has its own independent browser context.
+                load_native_peer(self, page, peer_origin, query, expected_document)
+            else:
+                super().load(page, query, expected_document=expected_document)
 
     artifacts.mkdir(parents=True, exist_ok=True)
     bench = NativePair()
@@ -267,6 +318,7 @@ def mixed_browser(a, base, db, workers, report, data, info):
             bench.setUp()
             setup_complete = True
             pid, peer, owner_rect, peer_rect, _ = bench.pair()
+            bench.assertEqual(peer.evaluate('location.origin'), peer_origin)
             native_ids = list(bench.accounts)
             if len(native_ids) != 2:
                 raise RuntimeError('Expected exactly two independent native accounts')
@@ -291,7 +343,6 @@ def mixed_browser(a, base, db, workers, report, data, info):
             report['fixture'] = {'http_document': info, 'native_document': {'width':320, 'height':240},
                                  'account_count':count, 'project_count':len(projects), 'mixed_room_http_actors':8}
             report['environment']['browser'] = browser.version
-            report['environment']['native_client_workers'] = [0, 0]
             report['environment']['viewport'] = [1440, 960]
             report['environment']['device_scale_factor'] = 1
             native_peers = [{'id':ident,'tab':tab,'project':pid} for ident,tab in zip(native_ids,native_tabs)]
@@ -420,7 +471,8 @@ def main(argv=None):
             'context':a.context, 'binary_sha256':binary_hash, 'web_before':hashes,
             'process_fd_limit':{'soft':soft,'hard':hard,'changed_by_harness':False}})
     try:
-        with scale.isolated(a,report,public_dir=a.public_dir) as (base,db,workers):
+        browser_workers = (0, 1) if a.cross_worker_browsers else (0,)
+        with scale.isolated(a,report,public_dir=a.public_dir,browser_workers=browser_workers) as (base,db,workers):
             mixed_browser(a,base,db,workers,report,data,info)
     except Exception as error:
         report['status']='error'

@@ -5,7 +5,10 @@
 The optimized candidate passes a short **local** 1,000-actor mixed workload:
 998 modeled HTTP collaborators plus two real native browser clients. The three
 observed cursor/Pencil input-to-remote-pixel upper bounds were **235.656,
-220.709 and 213.264 ms**, below the unchanged 500 ms gate. This does not certify
+220.709 and 213.264 ms** with both browsers on one worker. A later direct worker0→worker1
+run observed **197.587, 209.369 and 143.335 ms**, also below the unchanged 500 ms gate.
+The deployed `a17cea25` guest editing/file check separately passed with matching WASM.
+This does not certify
 1,000 production browsers, geographical latency, every editor command, a
 sustained service SLO or Figma/Canva collaboration parity. Hosted two-account
 acceptance and production capacity remain separate release gates.
@@ -73,7 +76,7 @@ can miss short waits or peaks; PostgreSQL/browser/generator memory is not includ
 in worker RSS. These byte totals are uncompressed local traffic, not production
 cost forecasts. Full peer snapshots remain a bandwidth cost.
 
-### Actual pixels under mixed load
+### Actual pixels under mixed load — same-worker run
 
 [benchmark_scale_paint.py](../tests/web/benchmark_scale_paint.py) creates exactly
 1,000 accounts and 100 projects: 998 HTTP actors and two separate browser contexts
@@ -113,11 +116,69 @@ Save/reload correctness was checked after load, not timed as a durable-save SLO.
 Every owned worker, browser, background thread, UUID database and temporary TLS
 cluster was stopped/removed; shared application rows touched were zero.
 
+### Direct worker0→worker1 confirmation
+
+The additive `rpc-cross-worker-1000.json` run at 10:09:46–10:10:09 UTC used the exact same
+optimized `90908c3f` backend and `c0a89fbd` WASM. Its two independent native contexts
+connected directly to different loopback worker origins, without a request proxy; the
+receiver worker's index/WASM hashes were checked before input. The 998 background HTTP
+actors retained sticky distribution across eight workers, with eight sharing the native
+pair's room. Counts, native/HTTP fixtures, three-second warmup, twelve-second active period,
+8×4 worker pool, local verified database TLS and strict 500 ms / 15 ms paint gates remained
+the same. This closes the earlier local cross-worker browser evidence gap, not a hosted
+routing or 1,000-browser acceptance gap.
+
+| Trusted pointer input | Remote-pixel upper bound | Clock uncertainty |
+|---|---:|---:|
+| Cursor 1 | 197.587 ms | 6.415 ms |
+| Cursor 2 | 209.369 ms | 3.970 ms |
+| Held native Pencil | 143.335 ms | 12.839 ms |
+
+All three observations passed without invalid/missing/capture-error samples. Descriptive
+p50 was 197.587 ms and p95/p99/maximum 209.369 ms; this small sample does not establish tail
+reliability. Installed headless Chrome 154.0.8037.98 used 1440×960/DPR1. The GPU backend was
+not recorded, and no physical display or WAN latency claim is made.
+
+The HTTP stage completed 138,718 active PUT 200s, **92.6640%** of 149,700 nominal
+opportunities, with zero errors including warmup and no coalesced ticks. PUT p50/p95/p99/max
+was 7.195/23.454/31.326/51.840 ms; scheduled completion was
+11.885/42.255/55.023/82.057 ms. Each HTTP actor completed at least 138 successful active
+requests, and all 998 observed their room's HTTP peers over the full active window.
+The three timed brackets contained 5,705 / 6,237 / 9,638 further HTTP requests. Neither
+aggregate coverage nor those counts prove every actor's delivery within every bracket.
+The nominal ratio remains below 100%, and `capacity_slo_certified` remains false.
+
+Receiver native preview invariants passed. After load, canonical revision 2, peer native
+pixels/reload and the 5,089-byte archive were verified against the same `50ec0246` SHA-256
+above. These persistence checks were untimed. Owned cleanup passed with zero shared rows
+touched, and artifact hashes stayed unchanged. Host load was 2.79/2.37/2.64 →
+9.63/3.91/3.18; the lower observed values do not isolate a cross-worker performance benefit.
+
+### Current deployment and guest evidence
+
+Tofu deployment `dpl_5crMQxccD2ZaNAMi951jJ2jVQ43d` is recorded ready/serving source
+`a17cea25d9dfcc84f68313b3e2d1e6e6beaa3cfb`. All 1,855 expected ZIP files matched stored
+source in the retained round-trip comparison. The ZIP SHA-256
+`2bbaef0b5b88c46b3bc3288cf964c508b8cb401a290d157d8f1fcdbf2e5a10a6` and Tofu source
+snapshot identifier `9e9f67ba869e30965daac3a087c8825da7beabdaddb5486d4b300cd788b02f2b`
+cover different representations; they must not be called identical hashes.
+
+`hosted-guest-a17cea25/report.json` passed a fresh guest workspace/Create check, local
+320×240 document, trusted Pencil gesture, complete exported-PNG pixel checks through native
+undo/redo, and actual `.pcraft` picker reopen with preserved dimensions/layers/pixels.
+Served WASM matched `c0a89fbd`; the fixture closed its own browser. Dialog fields/confirmation
+and menu operations used the original command bridge. There was no sign-in, cloud write,
+invitation or existing project access; mutation requests were blocked and none occurred.
+This is hosted guest-functionality evidence, not hosted two-person latency, production
+capacity, all-command parity or hardware-GPU acceptance. Exact receipt names and scope are
+also recorded in [collaboration performance](collaboration-performance.md#deployed-guest-scope--source-a17cea25).
+
 ### Failures retained and reproduction
 
 Evidence resides in the local `2026-10-08-release-continuation` bundle:
 `rpc-tls-100.json`, `rpc-tls-1000.json`,
-`exchange-v1-hardened-tls-1000.json`, `rpc-mixed-1000-r2.json`, their screenshots,
+`exchange-v1-hardened-tls-1000.json`, `rpc-mixed-1000-r2.json`,
+`rpc-cross-worker-1000.json`, their screenshots,
 `rpc-candidate-binaries.json`, and the owned temporary TLS wrappers.
 
 The initial `rpc-mixed-1000.json` retains three passing paint observations and a
