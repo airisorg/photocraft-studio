@@ -28,6 +28,7 @@ git log --oneline 3a3984075a1fd06d1af3e660aa376ee5368c4f73..HEAD -- crates/engin
 | `apps/photocraft-cloud/examples/fixture.rs` | Synthetic native-document fixture for tests |
 | `tests/web/` | Local API, authentication, browser, recovery, live-preview, visual, security and performance checks |
 | `packaging/web/stage-tofu.sh`, `tofu-package.py` | Container source/asset staging and release provenance |
+| `packaging/web/build-release.py` | Existing Trunk release build with compiler path remapping; no editor replacement |
 | `packaging/web/upstream-release.py` | Candidate import and tested-release promotion support |
 | `packaging/web/rust-notices.py`, `runtime-notices.py`, `packaging/licenses/` | Verified dependency/runtime notice collection and pinned upstream supplements |
 | `.github/workflows/web-cloud.yml`, `update-and-release.yml` | Fork-specific acceptance and guarded upstream-update jobs |
