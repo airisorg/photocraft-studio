@@ -1,14 +1,208 @@
 # Collaboration latency measurements
 
 This report separates HTTP/state measurements from calibrated input-to-remote-paint
-measurements. The 2026-10-08 private RPC candidate passed three local paint observations
-during each of two mixed workloads of 998 modeled HTTP actors and two actual native browser
-clients. The largest uncertainty-inclusive upper bound was 235.656 ms with both browsers
-on one worker and 209.369 ms with the browsers on separate workers. A separate matched
-HTTP-only comparison and 19-observation browser profiles remain distinct evidence below.
-The preferred 150 ms target was not met. These are bounded local observations, not hosted
-capacity, 1,000 browsers, physical-device latency or a production service-level objective. See
-[collaboration architecture](collaboration-architecture.md) for the transport and limits.
+measurements. The latest combined Preferences/cursor-label artifact (`9f7d4c64`) passed
+63 browser checks, 19 local paint-profile observations and three paint observations in a
+cross-worker workload of 998 modeled HTTP actors plus two native browser clients, followed
+by one unchanged-artifact diagnostic. Its
+largest uncertainty-inclusive upper bounds were 318.257 ms in the profiles and 301.302 ms
+under mixed load. Mixed HTTP completion was 73.6286% of nominal opportunities, below the
+earlier artifact's result; the diagnostic completed 86.3641% but had a higher scheduled
+maximum. Both runs and all earlier measurements retain their own scopes below.
+The preferred 150 ms target was not met across the runs. These are bounded local
+observations, not hosted capacity, 1,000 browsers, physical-device latency or a production
+service-level objective. See [collaboration architecture](collaboration-architecture.md)
+for the transport and limits.
+
+## Optional native cursor-label candidate — 2026-10-08 UTC
+
+The first results below are intermediate **label-only** evidence for `87f2d3d8`. The
+combined Preferences/cursor-label build and its separate focused/profile evidence follow;
+its incomplete release acceptance does not inherit the intermediate artifact's results.
+
+The native overlay candidate keeps the existing **32-peer** display cap and exact pointer
+positions. Only name plates are packed: stable peer-key ordering, at most 64 placement
+candidates per label, opaque native theme tokens, a single truncated line and viewport
+containment. A label that cannot fit is omitted while its pointer remains. There is no
+animated repacking or prior-position cache: unchanged inputs are deterministic, but moving
+neighbors can change a label's slot. No live-presence roster or full-name access for omitted
+or truncated labels has been verified.
+
+Native library tests passed **693 cases**, with zero failures and three existing ignored
+cases; strict UI Clippy and formatting checks passed. The release build produced
+`photocraft-web-c2973cf20bfb356a_bg.wasm`, 25,989,865 bytes, SHA-256
+`87f2d3d80f78030e47b6230978372d4e13c26124707689f0144e3c41da89e376`.
+The recorded built-artifact home-path scan found zero matches.
+
+The same rendered regression failed against the retained `c0a89fbd` baseline and passed
+against `87f2d3d8`, using the unchanged `85de649c` debug backend. The baseline failure was
+`Expected 8 separate opaque cursor labels, got []`; this is a failure of the new plate
+readability contract, not a latency measurement. The passing run took 8.121 seconds and
+published eight authenticated synthetic peers in three phases: coincident positions,
+a closely spaced cluster and the viewport edge. Actual native plate/glyph pixels verified
+eight separate labels, visible bounded long-name rendering, retained pointer anchors and
+viewport containment. The measured `proMedium` glyph/plate contrast was 6.63:1. It did not
+perform semantic OCR or use eight independent browsers. Native revision/history and the
+canonical revision/content hash remained unchanged. Both runs retained matching before/
+after WASM hashes, stopped their owned server and removed their own database, touching no
+shared application rows.
+
+Evidence is under `outputs/verification/2026-10-08-cursor-labels/`:
+`native-r2/native-gates.json`, its unit/lint logs, `wasm-build-receipt.json`, and
+`label-old/` / `label-new/` receipts, logs and screenshots. The intermediate `87f2d3d8`
+artifact subsequently passed **61 checks**: four renderer-startup cases, 50 browser
+journeys and seven live cases (`browser/receipt.json`), with unchanged WASM bytes and
+completed owned server/database cleanup. Screenshot review nevertheless exposed clipped
+phone Preferences controls; this suite did not prove complete internal-control reachability.
+The new focused Preferences case 51 failed against that same artifact in 7.102 seconds:
+the pixel oracle could not find two complete aligned General checkboxes. The retained
+`pref-old/` receipt, log and screenshot establish the failure without a setup timeout.
+
+### Combined Preferences/label native checkpoint
+
+The narrow Preferences source change reuses the original widgets, working copy and
+commands, as identified in the [fork code map](fork-code-map.md). The full touched native
+UI crate now passes **746 tests: 695 unit and 51 integration**, with three existing ignored
+tests. Formatting, strict UI and web Clippy, layering and the full WASM package/feature
+gate pass in `final-native-r2/receipt.json`. The first `final-native/` attempt remains
+retained: 693 units passed, but two new shape fixtures failed because the named semibold
+font was not bound. The native theme/font fixture was corrected before the passing rerun.
+
+The seventh native check, `cargo xtask perf --quick`, completed with exit 0 in 413.867
+seconds. This is **smoke-only evidence**: the baseline machine class was
+`macos-aarch64-apple-m4-pro-apple-m4-pro`, while this run reported
+`macos-aarch64-apple-m4-pro`, so regression comparison was skipped. Quick mode used small
+documents and did not apply the budgets intended for full-size documents. The receipt and
+`final-native-r2/perf_quick.log` do not establish a performance-budget or regression pass.
+
+### Combined browser build and focused profiles
+
+The combined release build completed in 130.434 seconds. Its 25,990,054-byte
+`photocraft-web-82c5fd67d775421e_bg.wasm` has SHA-256
+`9f7d4c646abeb1b13f4f502040757c1ef5312c800773713d97b250349fe06c19`; index SHA-256 is
+`046d5586c40e376ca865486ebddd8bd6eb5cc30d55c18ca1b0b955e8b1e3e890`.
+The built-artifact home-path scan found zero matches. `combined-wasm-receipt.json` and
+`exchange-wasm-build.json` identify this build separately from the older artifacts.
+
+Focused Preferences cases 51 and 52 passed in 9.422 seconds (`pref-new-r2/`). Case 51
+retains the complete-row assertion that failed on the old artifact. Case 52 clicks the
+actual compact native selector through Interface → General, verifies the pending working
+copy survives both selections, then verifies Cancel discards it without changing native
+document state. The first `pref-new/` run remains failed evidence: its selector helper
+expected a workspace control at least 29px high, while the native ComboBox was 24px.
+The corrected native-control oracle still requires a complete visible frame, bounded
+width/height, viewport inset and unique painted menu captions; runtime bytes did not change.
+
+At 11:08:37–11:08:59 UTC, the same combined WASM and `85de649c` debug backend passed
+**19/19** calibrated paint observations using two independent local synthetic accounts,
+installed Chrome 154.0.8037.98, 1440×960/DPR1 and a 320×240 native document. No owned
+build, load test or additional test browser ran concurrently; unrelated Mac activity
+remained uncontrolled. Each ordinary profile used three cursor movements and three held
+native Pencil prefixes. CDP supplied minimum HTTP delays on both pages, without packet
+loss or bandwidth simulation. The GPU backend was not recorded.
+
+| Configured delay | Observed identity-request RTT | Samples | Paint upper-bound p50 | p95 / p99 / maximum |
+|---|---:|---:|---:|---:|
+| 0 ms | 0.8–1.3 ms | 6 | 118.163 ms | 233.030 ms |
+| 50 ms | 51.5–61.6 ms | 6 | 248.217 ms | 273.512 ms |
+| 100 ms | 101.2–110.8 ms | 6 | 289.790 ms | 318.257 ms |
+
+A further held Pencil observation after sender reload passed at 183.906 ms; the same tab
+identity persisted and its sequence advanced 82→83 while the receiver stayed open. All
+samples passed the unchanged strict **500 ms / 15 ms uncertainty** gates, with maximum
+uncertainty 3.397 ms and zero missing/invalid/timed-out samples or capture errors. The
+preferred 150 ms target did not pass across the run. These small-sample percentiles end
+at the first matching CDP-swapped PNG; they do not establish physical-display latency,
+WAN behavior, production capacity or reliable tails.
+
+Untimed native convergence and reload passed at revision 11 with native SHA-256
+`1cfa1cce1107c25f6dd54bffd11fd72435f3f1f2a1354875f3d1ebc7fba120a2`.
+`profiles/paint.json` and its receipt retain all rows. Both focused and profile receipts
+record unchanged before/after WASM, stopped owned servers, removed owned databases and
+zero shared rows touched; the profile removed both synthetic accounts.
+
+The combined artifact subsequently passed **63 browser checks** at 11:09:29–11:21:19 UTC:
+four renderer-startup cases (8.228 s), 52 full browser journeys (649.663 s), and seven live
+cases (50.919 s). `browser-final/receipt.json` records the same `9f7d4c64` WASM and
+`85de649c` debug backend, unchanged browser bytes before/after, stopped owned server,
+removed owned database and zero shared rows touched. These correctness checks remain
+separate from the timed profiles.
+
+### Combined artifact: cross-worker mixed workload
+
+At 11:22:09–11:22:32 UTC, `9f7d4c64` and the unchanged optimized backend SHA-256
+`90908c3f4eedd41373a8916fddfe65e43b9710dac9439dab437d0042b5ddc090` passed a separate
+bounded local mixed run. Exactly 998 modeled HTTP cursor actors plus two native browser
+clients occupied 100 rooms of ten. Sender and receiver used worker 0 and worker 1 directly,
+without a request proxy; eight workers each had four database pool slots and shared an
+owned PostgreSQL TLS cluster. Warmup was three seconds and active load twelve seconds.
+Installed Chrome 154 used 1440×960/DPR1 and a 320×240 native document; the GPU backend was
+not recorded. HTTP was loopback, without an added network delay.
+
+| Trusted input | Paint upper bound | Clock uncertainty | Result |
+|---|---:|---:|---|
+| Cursor movement 1 | 301.302 ms | 4.746 ms | Passed |
+| Cursor movement 2 | 179.907 ms | 9.049 ms | Passed |
+| Held native Pencil prefix | 281.391 ms | 9.469 ms | Passed |
+
+All three observations passed the unchanged strict **500 ms / 15 ms** gates with no
+missing/invalid/timed-out samples or capture errors. None met the preferred 150 ms target.
+All 998 HTTP actors had active successes before input, and each complete observation stayed
+inside the active interval while 6,554 / 6,338 / 9,688 background requests progressed.
+Full usable peer coverage for all 998 actors was established over the whole twelve-second
+window, not for every actor in each paint bracket; each completed at least 109 successful
+active requests.
+
+The background completed **110,222 active HTTP 200s / 149,700 nominal opportunities**
+(**73.62859%**), with zero HTTP/semantic errors including warmup and 1,158 coalesced nominal
+ticks. PUT p50/p95/p99/maximum was 30.223/77.226/154.956/270.436 ms; scheduled completion
+was 61.043/117.403/164.400/274.325 ms. Completion and observed delays were worse than the
+earlier `c0a89fbd` cross-worker run (92.6640%, 209.369 ms maximum paint upper bound,
+82.057 ms maximum scheduled completion). These sequential runs shared a Mac with different
+host conditions; they do not isolate causality or establish a UI performance regression.
+This result is not full nominal delivery or a production capacity certificate.
+
+Held-preview native state and all HTTP-room canonical revisions remained unchanged.
+After load, pointer release reached revision 2; peer native pixels, reload and the native
+archive download matched SHA-256
+`50ec0246f89c71d8b5c7289c2c5675b150f4e3faf8925ad008e14eefdffca945`, the same bytes as
+the earlier fixture. These persistence checks were untimed and outside active load.
+`combined-cross-worker-1000.json` and its adjacent screenshots/wrapper log retain the
+rows and checks. Backend and web artifact hashes were unchanged, both browser workers
+served matching web hashes, all eight workers stopped, the own database was dropped,
+the temporary TLS cluster/directory were removed,
+and zero shared application rows were touched.
+
+#### One unchanged-artifact diagnostic
+
+One additional run at 11:30:51–11:31:14 UTC kept the same `9f7d4c64`/`90908c3f` bytes,
+worker0→worker1 routing, 998 HTTP actors plus two browsers, three-second warmup and
+twelve-second active window. Its cursor/cursor/held-Pencil upper bounds were
+**154.147 / 171.021 / 163.949 ms**, with **3.487 / 5.497 / 14.764 ms** uncertainty.
+All three passed the unchanged 500 ms / 15 ms gate without capture errors; none met
+150 ms. The first 301.302 / 179.907 / 281.391 ms observations remain recorded above.
+
+The diagnostic completed **129,287 / 149,700** active HTTP opportunities (**86.36406%**),
+with zero errors including warmup, full usable coverage for all 998 HTTP actors over the
+active window, and at least 128 successful active requests per actor. Background progress
+during its three paint brackets was 6,902 / 8,141 / 9,447 requests, not proof of every actor's
+delivery in each bracket. PUT p50/p95/p99/maximum was 7.146/67.495/173.001/347.585 ms;
+scheduled completion was 10.916/96.307/175.662/349.607 ms, with **1,948 coalesced ticks**.
+Its higher completion and lower paint bounds coexist with worse maximum HTTP/scheduled
+latency and more coalescing. This single repeat neither erases the first 73.62859% result
+nor isolates its cause, certifies capacity or establishes a reliable tail distribution.
+
+Untimed native state, revision-2 archive SHA-256 `50ec0246…` (the full digest above), peer
+pixels and reload checks passed. `combined-cross-worker-1000-diagnostic.json` and its wrapper
+log record unchanged artifacts, all eight owned workers stopped, own database and temporary
+TLS cluster/directory removed, and zero shared rows touched. Both runs remain local
+observations; neither supplies a hosted or 1,000-browser result.
+
+Hosted deployment acceptance is recorded separately in operator receipts outside source.
+This section makes no hosted claim and does not close CI container execution, real
+two-account/email, WAN, production-capacity or public-history release holds. The three
+mixed observations also do not establish tail reliability, all-command collaboration,
+1,000 browsers or a sub-500 ms durable-save objective.
 
 ## Private RPC exchange measurements — 2026-10-08 UTC
 

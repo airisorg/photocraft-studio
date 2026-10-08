@@ -23,6 +23,8 @@ git log --oneline 3a3984075a1fd06d1af3e660aa376ee5368c4f73..HEAD -- crates/engin
 | `apps/photocraft-web/src/cloud.rs` | Stateful workspace, project/recovery/account/sharing UI, authenticated HTTP calls, native save/load integration, versions and synchronization |
 | `apps/photocraft-web/src/live.rs` | Ephemeral cursor and native gesture transport; no separate painting engine |
 | `crates/ui-egui/src/collaboration.rs` | Temporary remote view state around the existing native canvas and compositor |
+| `crates/ui-egui/src/prefs_ui.rs` | Modified upstream Preferences view: compact native section selector and stacked, width-bounded fields on narrow viewports; reuses the existing widgets, working copy and preference commands |
+| `crates/ui-egui/src/dialogs.rs` | Modified upstream dialog shell: bounds the Preferences body to the available viewport while preserving its existing Apply/OK/Cancel path |
 | `apps/photocraft-cloud/src/` | HTTP service, authorization, invitations, document merge/validation and bounded live previews |
 | `apps/photocraft-cloud/migrations/` | Versioned, re-runnable application-schema migrations |
 | `apps/photocraft-cloud/examples/fixture.rs` | Synthetic native-document fixture for tests |

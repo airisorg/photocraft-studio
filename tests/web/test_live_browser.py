@@ -7,15 +7,18 @@ import hashlib
 import io
 import json
 import secrets
+import threading
 import time
 import unittest
 import uuid
 
 from PIL import Image
+import requests
 
 from benchmark_paint_collaboration import canvas_rectangle
 from paint_latency import PaintObserver, PixelOracle
 from test_browser import ARTIFACTS, BASE, BrowserAcceptance
+from visual_assertions import flat_native_canvas_bounds, native_cursor_label_measurements
 
 
 class LiveBrowser(BrowserAcceptance):
@@ -546,6 +549,89 @@ class LiveBrowser(BrowserAcceptance):
         self.assertEqual(self.execute('document.pixel', point, peer), pixel)
         self.assertEqual(self.auth_revision(pid, 1)['revision'], 1)
         self.observations['reconnect_native_unchanged'] = True
+
+    def test_live_clustered_cursor_labels_are_readable_and_keep_native_anchors(self):
+        pid,peer,_,_,_=self.pair()
+        self.command('ui.set',{'theme':'proMedium'},peer)
+        peer.wait_for_timeout(300)
+        clean=Image.open(io.BytesIO(peer.screenshot())).convert('RGB')
+        document_rect=canvas_rectangle(clean)
+        viewport=flat_native_canvas_bounds(clean,document_rect)
+        before=self.inspect(peer)['document']
+        before_meta=self.context.request.get(BASE+f'/api/projects/{pid}').json()
+        actors=[]
+        for index in range(8):
+            ident,token=str(uuid.uuid4()),secrets.token_hex(32)
+            self.accounts.append(ident)
+            email=ident+'@example.invalid'
+            name=f'Peer {index+1:02}' if index<7 else 'M'*32
+            self.db.execute('INSERT INTO photocraft.accounts(id,email,name) VALUES(%s,%s,%s)',(ident,email,name))
+            self.db.execute('INSERT INTO photocraft.sessions(hash,account_id) VALUES(%s,%s)',(hashlib.sha256(token.encode()).hexdigest(),ident))
+            grant=self.context.request.put(BASE+f'/api/projects/{pid}/members',headers={'Origin':BASE},data={'email':email,'role':'edit'})
+            self.assertTrue(grant.ok,grant.text())
+            actors.append({'id':ident,'token':token,'tab':str(uuid.uuid4())})
+        stop=threading.Event();lock=threading.Lock()
+        state={'generation':0,'positions':[(160,120)]*8,'acknowledged':-1,'errors':[]}
+        def publish():
+            sessions=[]
+            try:
+                for actor in actors:
+                    session=requests.Session();session.trust_env=False
+                    session.headers.update({'Origin':BASE,'X-Photocraft-Account':actor['id']})
+                    session.cookies.set('pc_session',actor['token']);sessions.append(session)
+                sequence=0
+                while not stop.is_set():
+                    with lock:
+                        generation,positions=state['generation'],list(state['positions'])
+                    sequence+=1
+                    for actor,session,(x,y) in zip(actors,sessions,positions):
+                        if stop.is_set(): return
+                        response=session.put(BASE+f'/api/projects/{pid}/live',json={'tab':actor['tab'],'seq':sequence,
+                            'baseRevision':1,'cursor':{'x':x,'y':y},'gesture':None},timeout=1)
+                        if response.status_code!=200 or response.json().get('accepted') is not True or response.json().get('seq')!=sequence:
+                            raise AssertionError(f'Fixture cursor publication failed: HTTP{response.status_code}')
+                    with lock: state['acknowledged']=generation
+                    stop.wait(.4)
+            except Exception as error:
+                with lock: state['errors'].append(type(error).__name__)
+            finally:
+                for session in sessions: session.close()
+        worker=threading.Thread(target=publish,name='owned-cursor-label-fixture',daemon=True)
+        worker.start()
+        phases=[('coincident',[(160,120)]*8),('clustered',[(160,90+7*i) for i in range(8)]),
+                ('viewport-edge',[(viewport[2]-document_rect[0]-9,viewport[3]-document_rect[1]-9)]*8)]
+        self.observations['cursor_labels']={'theme':'proMedium','viewport':viewport,'phases':[],
+            'scope':'Actual native plates and glyph pixels; bounded long name, no semantic OCR assertion.'}
+        try:
+            for generation,(label,positions) in enumerate(phases,1):
+                with lock: state.update(generation=generation,positions=positions)
+                self.wait_live(peer,lambda:state['acknowledged']>=generation or bool(state['errors']),
+                               'Authenticated cursor fixture did not publish',timeout=5000)
+                self.assertEqual(state['errors'],[])
+                anchors=[(document_rect[0]+x,document_rect[1]+y) for x,y in positions]
+                deadline=time.monotonic()+5;last=None
+                while time.monotonic()<deadline:
+                    picture=peer.screenshot()
+                    try:
+                        measured=native_cursor_label_measurements(Image.open(io.BytesIO(picture)),viewport,anchors)
+                        break
+                    except AssertionError as error:
+                        last=str(error);peer.wait_for_timeout(50)
+                else:
+                    (ARTIFACTS/(self._testMethodName+'-'+label+'-failed.png')).write_bytes(picture)
+                    self.fail(last)
+                (ARTIFACTS/(self._testMethodName+'-'+label+'.png')).write_bytes(picture)
+                self.assertTrue(any(row['rect'][2]-row['rect'][0]>=150 for row in measured),'Long native label was not visibly bounded/truncated')
+                self.observations['cursor_labels']['phases'].append({'name':label,'labels':measured,'anchor_count':len(set(anchors))})
+                self.assertEqual(self.inspect(peer)['document']['history'],before['history'])
+                self.assertEqual(self.inspect(peer)['document']['revision'],before['revision'])
+                self.assertEqual(state['errors'],[])
+            after=self.context.request.get(BASE+f'/api/projects/{pid}').json()
+            self.assertEqual((after['revision'],after['content']['sha256']),(1,before_meta['content']['sha256']))
+        finally:
+            stop.set();worker.join(timeout=3)
+            self.observations['cursor_labels']['fixture_thread_stopped']=not worker.is_alive()
+            self.assertFalse(worker.is_alive(),'Owned cursor fixture did not stop')
 
 
 def load_tests(loader, tests, pattern):

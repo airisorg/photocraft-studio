@@ -23,7 +23,9 @@ from visual_assertions import (assert_header_geometry, assert_dialog_inside, ass
                                workspace_controls, workspace_quick_actions, workspace_focus_changed,
                                workspace_template_previews, workspace_project_card, workspace_recovery_controls,
                                sharing_invitation_controls, assert_invitation_feedback_geometry, native_overlay_actions,
-                               recovery_warning_action, session_auth_controls)
+                               recovery_warning_action, session_auth_controls, preferences_general_paint,
+                               assert_preferences_glyphs_complete, preferences_section_references,
+                               compact_preferences_selector, native_preference_menu_choice)
 
 BASE = os.environ.get('PHOTOCRAFT_TEST_ORIGIN', 'http://127.0.0.1:8876')
 DATABASE = os.environ.get('PHOTOCRAFT_TEST_DATABASE_URL', 'postgresql://photocraft_test@127.0.0.1:55438/postgres')
@@ -3140,6 +3142,149 @@ class BrowserAcceptance(unittest.TestCase):
         (ARTIFACTS/'session-merged-ack.json').write_text(json.dumps({'revision':3,'merged':True,
             'uploaded_sha256':attempts[0]['sha256'],'saved_sha256':saved['content']['sha256'],
             'upload_attempts':len(attempts),'layer_names':sorted(names)}, indent=2))
+
+
+    def test_51_narrow_preferences_keeps_complete_rows_and_native_cancel(self):
+        self.new(640,480)
+        document=self.inspect()['document']
+        evidence={'scope':'Native General row pixels at1440 and390px; trusted checkbox input and native Cancel.'}
+
+        def opened(width,stacked):
+            self.page.set_viewport_size({'width':width,'height':960 if width>390 else 844})
+            self.page.mouse.move(0,0)
+            self.page.wait_for_timeout(150)
+            before=Image.open(io.BytesIO(self.page.screenshot()))
+            self.command('ui.menu.invoke',{'id':'edit.preferences.general'})
+            deadline=time.monotonic()+3;last=None
+            while time.monotonic()<deadline:
+                self.page.wait_for_timeout(50)
+                picture=self.page.screenshot()
+                after=Image.open(io.BytesIO(picture))
+                try:
+                    bounds=assert_dialog_inside(self,before,after)
+                    bounds=(bounds[0],bounds[1]+64,bounds[2],bounds[3]+64)
+                    controls=preferences_general_paint(after,bounds,stacked=stacked)
+                    break
+                except AssertionError as error:
+                    last=str(error)
+            else:
+                (ARTIFACTS/f'preferences-rows-{width}-failed.png').write_bytes(picture)
+                self.fail(last)
+            (ARTIFACTS/f'preferences-rows-{width}.png').write_bytes(picture)
+            dialogs=self.inspect()['dialogs']
+            self.assertEqual(len(dialogs),1)
+            self.assertEqual(dialogs[0]['fields']['section'],'general')
+            evidence[str(width)]={'bounds':bounds,'checkboxes':controls['checkboxes'],'dropdown':controls['dropdown'],
+                'glyph_sizes':{name:mask.size for name,mask in controls['masks'].items()}}
+            return controls,dialogs[0]
+
+        try:
+            reference,wide=opened(1440,False)
+            values=wide['fields']['values']
+            self.command('ui.dialog.cancel',{'dialog':wide['id']})
+            narrow,dialog=opened(390,True)
+            assert_preferences_glyphs_complete(self,reference,narrow)
+            self.assertEqual(dialog['fields']['values'],values)
+            x0,y0,x1,y1=narrow['checkboxes'][0]
+            self.page.mouse.click((x0+x1)/2,(y0+y1)/2)
+            self.page.wait_for_timeout(100)
+            pending=self.inspect()['dialogs'][0]
+            expected=dict(values['general'])
+            expected['zoomWithScrollWheel']=not expected['zoomWithScrollWheel']
+            self.assertEqual(pending['fields']['values']['general'],expected,
+                             'Visible native checkbox did not edit exactly its pending preference')
+            self.page.keyboard.press('Escape')
+            self.page.wait_for_timeout(100)
+            self.assertEqual(self.inspect()['dialogs'],[])
+            self.command('ui.menu.invoke',{'id':'edit.preferences.general'})
+            self.page.wait_for_timeout(100)
+            reopened=self.inspect()['dialogs'][0]
+            self.assertEqual(reopened['fields']['values'],values,'Cancel committed a pending preference')
+            self.command('ui.dialog.cancel',{'dialog':reopened['id']})
+            for key in ('layers','history','revision'):
+                self.assertEqual(self.inspect()['document'][key],document[key])
+            evidence['complete_rows_and_native_cancel']=True
+        finally:
+            for dialog in self.inspect()['dialogs']:
+                self.command('ui.dialog.cancel',{'dialog':dialog['id']})
+            (ARTIFACTS/'preferences-rows.json').write_text(json.dumps(evidence,indent=2)+'\n')
+
+
+    def test_52_compact_preferences_section_selector_preserves_pending_copy(self):
+        self.new(640,480)
+        document=self.inspect()['document']
+        evidence={'scope':'Trusted clicks on rendered native section-menu glyphs; no dialog field setter.','choices':[]}
+
+        def bounds(before,after):
+            box=assert_dialog_inside(self,before,after)
+            return box[0],box[1]+64,box[2],box[3]+64
+
+        try:
+            self.page.mouse.move(0,0)
+            wide_before=Image.open(io.BytesIO(self.page.screenshot()))
+            self.command('ui.menu.invoke',{'id':'edit.preferences.general'})
+            self.page.wait_for_timeout(250)
+            wide=Image.open(io.BytesIO(self.page.screenshot()))
+            references=preferences_section_references(wide,bounds(wide_before,wide))
+            values=self.inspect()['dialogs'][0]['fields']['values']
+            self.page.keyboard.press('Escape')
+            self.page.set_viewport_size({'width':390,'height':844})
+            self.page.wait_for_timeout(150)
+            clean=Image.open(io.BytesIO(self.page.screenshot()))
+            self.command('ui.menu.invoke',{'id':'edit.preferences.general'})
+            self.page.wait_for_timeout(250)
+            narrow=Image.open(io.BytesIO(self.page.screenshot()))
+            controls=preferences_general_paint(narrow,bounds(clean,narrow),stacked=True)
+            x0,y0,x1,y1=controls['checkboxes'][0]
+            self.page.mouse.click((x0+x1)/2,(y0+y1)/2)
+            self.page.wait_for_timeout(100)
+            pending=self.inspect()['dialogs'][0]['fields']['values']
+            self.assertNotEqual(pending['general']['zoomWithScrollWheel'],values['general']['zoomWithScrollWheel'])
+
+            for section in ('interface','general'):
+                self.page.mouse.move(0,0)
+                self.page.wait_for_timeout(100)
+                before=Image.open(io.BytesIO(self.page.screenshot()))
+                selector=compact_preferences_selector(before,bounds(clean,before))
+                x0,y0,x1,y1=selector
+                self.page.mouse.click((x0+x1)/2,(y0+y1)/2)
+                self.page.mouse.move(0,0)
+                deadline=time.monotonic()+3;last=None
+                while time.monotonic()<deadline:
+                    self.page.wait_for_timeout(50)
+                    picture=self.page.screenshot()
+                    try:
+                        choice=native_preference_menu_choice(before,Image.open(io.BytesIO(picture)),selector,references[section])
+                        break
+                    except AssertionError as error:
+                        last=str(error)
+                else:
+                    (ARTIFACTS/f'preferences-menu-{section}-failed.png').write_bytes(picture)
+                    self.fail(last)
+                (ARTIFACTS/f'preferences-menu-{section}.png').write_bytes(picture)
+                x0,y0,x1,y1=choice['rect']
+                self.page.mouse.click((x0+x1)/2,(y0+y1)/2)
+                self.page.wait_for_timeout(100)
+                fields=self.inspect()['dialogs'][0]['fields']
+                self.assertEqual(fields['section'],section,'Painted native menu row did not select its section')
+                self.assertEqual(fields['values'],pending,'Section selection lost/changed the pending native working copy')
+                self.page.screenshot(path=str(ARTIFACTS/f'preferences-section-{section}.png'))
+                evidence['choices'].append({'section':section,'selector':selector,**choice})
+            self.page.keyboard.press('Escape')
+            self.page.wait_for_timeout(100)
+            self.assertEqual(self.inspect()['dialogs'],[])
+            self.command('ui.menu.invoke',{'id':'edit.preferences.general'})
+            self.page.wait_for_timeout(100)
+            reopened=self.inspect()['dialogs'][0]
+            self.assertEqual(reopened['fields']['values'],values,'Cancel after section switching committed pending preferences')
+            self.command('ui.dialog.cancel',{'dialog':reopened['id']})
+            for key in ('layers','history','revision'):
+                self.assertEqual(self.inspect()['document'][key],document[key])
+            evidence['pending_survived_switch_and_cancel_discarded']=True
+        finally:
+            for dialog in self.inspect()['dialogs']:
+                self.command('ui.dialog.cancel',{'dialog':dialog['id']})
+            (ARTIFACTS/'preferences-section-selector.json').write_text(json.dumps(evidence,indent=2)+'\n')
 
 
 if __name__ == '__main__':

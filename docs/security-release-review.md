@@ -18,7 +18,12 @@ The original 2026-10-07 review covers the independent PhotoCraft Studio fork, ba
 
 A 128-request ordinary admission trial shed 131 requests at 100 simulated clients. The limit was adjusted to 256 using measured concurrency; the rerun completed 36,770 active requests with zero errors. This measured adjustment preserves a finite bound. It does not justify arbitrary pool or room-cap increases.
 
-## Candidate exchange security validation — 2026-10-08
+## Earlier RPC transport security snapshot — 2026-10-08
+
+The receipts here identify the earlier `c0a89fbd` browser artifact. The later combined
+Preferences/cursor-label build's [UI and local performance evidence](collaboration-performance.md#combined-browser-build-and-focused-profiles)
+is recorded separately; neither set of local checks closes the publication, CI or hosted
+acceptance boundaries below.
 
 This candidate combines a live PUT acknowledgment with the authorized peer snapshot,
 reducing separate browser read requests. The native editor, durable document format,
