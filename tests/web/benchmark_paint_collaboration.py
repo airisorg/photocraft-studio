@@ -14,7 +14,6 @@ from pathlib import Path
 import platform
 import re
 import secrets
-import time
 import unittest
 from urllib.parse import urlparse
 import uuid
@@ -72,9 +71,9 @@ def main():
             'browser_launch_flags': ['--enable-unsafe-webgpu', '--enable-unsafe-swiftshader'],
             'gpu_adapter': 'not measured; headless browser is not physical-device GPU evidence',
             'network': 'loopback; no configured network delay; RTT not separately measured'},
-        'target_ms': 500, 'samples': [], 'cursor_delivery': {'status': 'not_measured',
-            'reason': 'This journey measures Pencil pixels; benchmark_live_collaboration.py measures cursor delivery.'},
-        'timing_policy': 'Trusted pointerdown to first matching swapped pixels, including a transient preview when enabled. Native persistence is verified separately outside this visual timer; runtime timer values are not inferred.',
+        'target_ms': 500, 'samples': [], 'cursor_delivery': {'status': 'unsupported',
+            'reason': 'Current presence does not transmit cursor coordinates; no cursor latency sample can pass.'},
+        'nominal_autosave_delay_ms': 3500, 'nominal_peer_poll_ms': 1500,
         'quantiles': 'Small bounded sample; nearest-rank p95/p99 are maxima, not stable tail estimates.'}
 
     class PaintLatency(BrowserAcceptance):
@@ -109,47 +108,38 @@ def main():
             report['fixture']['owner_canvas_rect'] = owner_rect
             report['fixture']['peer_canvas_rect'] = peer_rect
 
-            for index in range(args.samples):
-                x, y = 40+60*(index % 4), 40+35*(index // 4)
-                ox, oy = owner_rect[0]+x, owner_rect[1]+y
-                px, py = peer_rect[0]+x, peer_rect[1]+y
-                oracle = PixelOracle.solid((px-3, py-3, px+4, py+4), (25, 197, 99), tolerance=3)
+            with PaintObserver(peer) as observer:
+                for index in range(args.samples):
+                    x, y = 40+60*(index % 4), 40+35*(index // 4)
+                    ox, oy = owner_rect[0]+x, owner_rect[1]+y
+                    px, py = peer_rect[0]+x, peer_rect[1]+y
+                    oracle = PixelOracle.solid((px-3, py-3, px+4, py+4), (25, 197, 99), tolerance=3)
 
-                def pencil_click():
-                    self.page.mouse.click(ox, oy)
-                    self.page.mouse.move(0, 0)
+                    def pencil_click():
+                        self.page.mouse.click(ox, oy)
+                        self.page.mouse.move(0, 0)
 
-                # Capture only this sample; canonical waits below must not fill the frame queue.
-                with PaintObserver(peer) as observer:
                     sample = observer.measure(self.page, pencil_click, oracle,
                         event_type='pointerdown', target_ms=500, timeout_ms=12000)
-                sample.update(sample=index+1, document_point=[x, y], cloud_revision=index+2)
-                report['samples'].append(sample)
-                print(json.dumps({'sample': index+1, 'status': sample['status'],
-                    'latency_upper_ms': sample.get('latency_upper_ms')}), flush=True)
-                # Correctness checks are outside the timed path. A timeout/invalid capture
-                # is retained, never converted into a fast timing result by state polling.
-                self.wait_revision(index+2)
-                expected = self.execute('document.pixel', {'x': x, 'y': y})
-                self.assertEqual(len(expected), 4)
-                self.assertGreater(expected[1], expected[0]+.1)
-                self.assertGreater(expected[1], expected[2]+.1)
-                # A live preview can paint before either peer adopts the committed
-                # native archive. Owner commit is not receiver canonical readiness.
-                started = time.monotonic()
-                deadline = started+10
-                pixel = self.execute('document.pixel', {'x': x, 'y': y}, peer)
-                while pixel != expected and time.monotonic() < deadline:
-                    peer.wait_for_timeout(40)
+                    sample.update(sample=index+1, document_point=[x, y], cloud_revision=index+2)
+                    report['samples'].append(sample)
+                    print(json.dumps({'sample': index+1, 'status': sample['status'],
+                        'latency_upper_ms': sample.get('latency_upper_ms')}), flush=True)
+                    # Correctness checks are outside the timed path. A timeout/invalid capture
+                    # is retained, never converted into a fast timing result by state polling.
+                    self.wait_revision(index+2)
+                    expected = self.execute('document.pixel', {'x': x, 'y': y})
+                    self.assertEqual(len(expected), 4)
+                    self.assertGreater(expected[1], expected[0]+.1)
+                    self.assertGreater(expected[1], expected[2]+.1)
                     pixel = self.execute('document.pixel', {'x': x, 'y': y}, peer)
-                sample['native_convergence_wait_ms'] = (time.monotonic()-started)*1000
-                self.assertEqual(pixel, expected, 'Peer native composite pixel did not converge within10s')
-                sample['native_pixel'] = expected
-                self.assertEqual(self.inspect(peer)['document']['width'], 320)
-                self.assertEqual(len(self.inspect(peer)['document']['layers']), 1)
-                if observer.last_matching_png:
-                    (artifacts/f'peer-match-{index+1:02}.png').write_bytes(observer.last_matching_png)
-                self.page.wait_for_timeout(100)
+                    self.assertEqual(pixel, expected, 'Peer native composite pixel differs')
+                    sample['native_pixel'] = expected
+                    self.assertEqual(self.inspect(peer)['document']['width'], 320)
+                    self.assertEqual(len(self.inspect(peer)['document']['layers']), 1)
+                    if observer.last_matching_png:
+                        (artifacts/f'peer-match-{index+1:02}.png').write_bytes(observer.last_matching_png)
+                    self.page.wait_for_timeout(100)
 
             latest = self.auth_revision(project['id'], args.samples+1)
             manifest = self.auth_cloud_document(project['id'])
