@@ -1,9 +1,17 @@
 # Collaboration: current behavior, gaps and acceptance
 
-Source audit, 2026-10-07. Collaboration is a priority immediately after reliability and UI
-defects. This document separates implemented behavior, measured evidence and proposed work.
+Source audit, 2026-10-07; live exchange update, 2026-10-08. Collaboration is a priority
+immediately after reliability and UI defects. This document separates implemented behavior, measured evidence and proposed work.
 PhotoCraft's document model, command registry, compositor, native format and editor remain
 the foundation; a second editor or a replacement document model is unnecessary.
+
+The single-exchange HTTP protocol below describes the locally built source candidate reviewed
+on 2026-10-08. The private RPC candidate has bounded local HTTP-only and mixed-workload
+measurements: 998 modeled HTTP actors plus two actual native browser clients, with three
+passing paint observations. See [the measured evidence](collaboration-performance.md) for
+exact artifacts, completion ratios and retained failed attempts. This does not establish
+1,000-browser or production capacity; deployment and hosted acceptance remain separate gates.
+Earlier pre-RPC measurements retain their own backend/browser artifact and workload scope.
 
 ## What exists today
 
@@ -11,8 +19,8 @@ The browser edits locally through the original Rust engine. After the first clou
 the adapter waits for 150 ms of idle time, with the pointer released, before autosaving. It serializes a complete
 native `.pcraft` document, uploads sequential 512 KiB chunks, and commits a version under a
 project row lock. A checksum and expected revision protect the commit. Another browser
-reads authorized live state/revision every 80 ms while visible, with at most one pending read,
-and downloads the committed document when its
+receives authorized live state/revision through the candidate's 80 ms GET-or-PUT exchange
+while visible, and downloads the committed document when its
 own document is unchanged and it is not actively interacting. Applying that remote version
 replaces the local document state and resets its undo history; older work remains in cloud
 version history. Continuous editing can defer autosave. Supported cursor and gesture previews
@@ -59,19 +67,69 @@ separate from the real Session, document revision and undo. Only one remote draw
 is shown at a time; receiver-local work takes precedence. Unsupported channels, symmetry,
 duplicate moves and expensive or oversized strokes explicitly use saved-version updates.
 
-The Rust web adapter in `apps/photocraft-web/src/live.rs` coalesces writes at 40 ms, sends
-cumulative ordered gesture events, and keeps only one pending request per direction. Cookie
-and expected-account guards remain unchanged. Persisted tab/transport identities survive
-reload; wire gesture IDs continue increasing even when native counters restart. Hidden,
-unbound, signed-out and unavailable editors stop live transport. Acknowledged cancellation
-clears its payload; late previous-base rejection does not delay a newer admitted gesture.
+The candidate Rust web adapter in `apps/photocraft-web/src/live.rs` uses one 80 ms exchange
+cadence and sends cumulative ordered gesture events. Changed state takes a PUT slot; when
+there is no change or due heartbeat it uses GET. An unchanged published cursor/gesture gets
+a PUT heartbeat after 500 ms instead of another GET. Request duration and browser scheduling
+can slow either path. Only one GET or PUT is pending within the current document/account
+generation. Reset rejects old replies but does not immediately abort an old fetch, so a
+switch can briefly overlap an old request with the new generation; each fetch has a two-second
+abort deadline. This is not a global semaphore across switches.
 
-`apps/photocraft-cloud/src/live.rs` and the additive `002_live.sql` migration keep latest
-transient state shared across workers. Every request freshly admits its session, account,
-project state and role in the data statement. Revoked/expired publishers are filtered from
-new reads. Viewers may publish cursors but not drawing gestures. State expires after two
-seconds; duplicate/stale sequences do not extend the lease. Clients subtract the request
-elapsed time from the remaining lease and expire individual peers. A response admitted
+A new generation starts with GET. A successful PUT supplies the same authorized role and
+peer snapshot as GET, so active clients need no independent read loop. A legacy PUT ACK
+without that snapshot forces GET before another PUT. A current-base 409 blocks previews
+for that base until the saved version advances; a delayed previous-base 409 preserves newer
+gesture events and forces prompt reconciliation without the ordinary network-error backoff.
+PUT 403 pauses gesture emission and reads the current role before deciding whether view
+access remains. These forced reads and retry paths are separate from ordinary cadence.
+
+Cookie and expected-account guards remain unchanged. Persisted tab/transport identities
+survive reload; wire gesture IDs continue increasing even when native counters restart.
+Hidden, unbound, signed-out and unavailable editors stop live transport. Acknowledged
+cancellation clears only its matching gesture payload; an old ACK cannot clear a newer one.
+The canonical save, native rendering and undo paths are unchanged by this transport candidate.
+
+`apps/photocraft-cloud/src/live.rs` and the additive `002_live.sql` / `003_scale.sql`
+migrations keep latest transient state shared across workers. Startup installs the private
+`photocraft.exchange_live_v1` PL/pgSQL function through `live::migration()` under the existing
+`ready_db` setup transaction and advisory lock. It is `VOLATILE`, `SECURITY INVOKER`, fixes
+`search_path` to `pg_catalog`, and revokes `PUBLIC` execution. The HTTP service invokes it
+with bound arguments and its existing database privileges; this is not a public browser or
+Supabase PostgREST RPC and requires no new provider token or signing key.
+
+The function first denies unauthorized callers before acquiring private project locks.
+It then takes ordered session/project advisory locks and runs a separate authorization,
+lease/admission, conditional write and peer-snapshot statement. `VOLATILE` permits fresh
+internal query snapshots, so authorization after the lock wait is not the caller's earlier
+admission snapshot. This relies on PostgreSQL's normal `READ COMMITTED` behavior; a deployment
+changing transaction isolation must revalidate the queued-revocation contract.
+See [PostgreSQL function volatility](https://www.postgresql.org/docs/current/xfunc-volatility.html).
+
+Lease eligibility uses a materialized `clock_timestamp()` observed in that post-lock
+statement. The outer function call's `statement_timestamp()` would predate its lock wait;
+using it could wrongly treat an expired renewal as active. Session expiry and returned TTLs
+also use wall-clock time. Shared project locks permit active renewals; session locks remain
+exclusive. A new, expired or rebound slot rolls back the shared attempt and retries exclusive
+admission in a new transaction; it never upgrades a held shared lock. Durable access/revision
+changes and logout retain their coordinating project/session barriers.
+
+GET and successful PUT share the same fresh authorization and peer filter. PUT awaits the
+transaction commit before returning `{accepted, seq, revision, role, peers}`. The write
+statement's pre-write peer snapshot is sufficient because the sender's own session/tab row
+is excluded. Duplicate/stale sequence ACKs can return a fresh authorized snapshot without
+updating that sender's sequence or lease. No separate post-commit peer-read transaction is added.
+
+The private function consolidates application-to-database calls; it does not make the whole
+exchange one database round trip. PUT still uses explicit `BEGIN`, function invocation and
+awaited `COMMIT` (or rollback/retry), and the function executes internal statements. GET also
+retains an explicit short transaction: SQLx's unnamed prepare/bind exchange must not cross
+an idle transaction-pool boundary. Fresh authorization and awaited write commits remain intact.
+Revoked/expired publishers are filtered from both response paths. Viewers may publish cursors
+but not drawing gestures. State expires after two seconds; duplicate/stale sequences do not
+extend the lease. For both GET and PUT, clients conservatively subtract the full elapsed time
+from request start through response handling from each peer's remaining lease. Expired peers
+are not admitted, and a network failure does not restart a previous lease. A response admitted
 before revocation cannot be recalled from the network.
 
 Bounds are 64 KiB per update, 256 events, 1,024 points, eight active tabs per session,
@@ -94,15 +152,19 @@ must be established before enabling that path.
   capacity. Browser throttling and request latency can alter the actual rate.
 - A warm presence request currently executes five SQL statements: session lookup, role
   lookup, presence upsert, active-name lookup, and revision lookup. The example above would
-  imply roughly 3,333 SQL statements/second. Each worker has up to five database connections;
-  more workers do not make the shared database or connection pool unlimited.
-- The new 80 ms live read interval adds up to 12.5 reads/second per visible bound client,
-  depending on request duration and browser scheduling. A moving client can publish up to
-  25 coalesced writes/second; unchanged active state heartbeats every 500 ms. Reads transfer
-  current cumulative peer state and writes acquire bounded per-session/project transaction
-  locks. This is a latency improvement with an explicit coordination cost; it is not the
-  final high-capacity transport. Provider push/streaming and incremental native persistence
-  remain necessary before claiming optimized large-room scalability.
+  imply roughly 3,333 SQL statements/second. Each worker defaults to five database connections;
+  `PHOTOCRAFT_DB_POOL_SIZE` accepts 1–32 per worker. There is no application-wide fleet pool
+  cap: the local load harness's aggregate 32-connection budget is a test constraint. More
+  workers do not make the shared database or provider connection allowance unlimited.
+- The candidate's ordinary 80 ms live cadence implies up to 12.5 GET-or-PUT exchanges/second
+  per visible bound client, before forced reconciliation/legacy fallback and alongside
+  existing presence/save requests. It replaces the previous independent 80 ms read and
+  40 ms write schedules. Idle clients still poll; unchanged published state heartbeats
+  after 500 ms. Both response types transfer cumulative authorized peer state, while PUT
+  also acquires bounded per-session/project transaction locks. Fewer requests do not prove
+  reduced database time, bounded hot-room bandwidth or 1,000-user capacity. Measure the
+  candidate's exact workload and errors before changing the recorded capacity conclusion;
+  provider push/streaming and incremental native persistence remain later transport work.
 - Full-document transfers and full version blobs scale with document size and save frequency.
   Commits serialize per project, and the quota check sums retained version sizes. Raster
   uploads and merge work can dominate both latency and memory even when HTTP handlers are fast.
@@ -230,7 +292,9 @@ The first prototype should deliver **committed revision invalidations only**:
 Before enabling this adapter, prove two real identities, wrong-user/anonymous denial,
 logout and membership revocation on an already-open socket, rollback silence, reconnect
 catch-up, worker replacement, and exact native-document recovery. Measure commit-to-peer
-state separately from edit-to-peer paint. Revision push removes polling delay; it cannot
-meet the proposed 250 ms edit target while the 3.5-second autosave delay and whole-document
-transfer remain. No Realtime implementation, hosted probe or infrastructure change was
-performed in this source check.
+state separately from edit-to-peer paint. At the time of this Realtime source check, the
+3.5-second autosave delay alone exceeded the proposed 250 ms edit target. The current native
+save path described above uses a shorter idle delay, but whole-document transfer and apply
+still require separate measurement; revision push alone does not establish that target.
+No Realtime implementation, hosted probe or infrastructure change was performed in this
+source check.

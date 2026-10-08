@@ -139,6 +139,7 @@ async fn ready_db(s: &App) -> Result<&PgPool> {
         sqlx::Executor::execute(&mut *tx, include_str!("../migrations/001_cloud.sql")).await?;
         sqlx::Executor::execute(&mut *tx, include_str!("../migrations/002_live.sql")).await?;
         sqlx::Executor::execute(&mut *tx, include_str!("../migrations/003_scale.sql")).await?;
+        sqlx::Executor::execute(&mut *tx, live::migration().as_str()).await?;
         tx.commit().await?;
         s.ready.store(true, Ordering::Release);
         Ok::<(), sqlx::Error>(())

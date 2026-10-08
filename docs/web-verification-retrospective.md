@@ -30,6 +30,7 @@ it through the UI, persisted state, runtime, and deployment.
 | Email confirmation rejects a normal Continue click | HTTP tests manually supplied the correct Origin header | The delivered page policy determines the browser-generated POST Origin, cookie acceptance and redirect | Render the served form in Chromium and WebKit, click Continue without injected headers, verify identity and token privacy, reject replay and foreign/null/missing origins |
 | Browser recovery accumulates old documents | Individual snapshots could be written and recovered | The requested policy is one latest-visited recovery copy, including real eviction | Visit clean A/B/A documents, reload, migrate old rows, preserve account isolation, reject stale writes and prevent multi-tab work loss on sign-in |
 | Collaboration takes several seconds | Native state eventually converged and HTTP requests were fast | Trusted input must produce matching pixels on another user's visible canvas during the gesture | Calibrate input/frame clocks; reject stale or frozen pixels; measure cursors and held native strokes under declared network profiles; verify committed bytes and reload separately |
+| Release-image execution was untested | Debug-service/browser suites and package identity checks passed | The exact ZIP's Dockerfile must build/start the release service, serve tested bytes and connect with verified database TLS | Fresh Linux exact-package image job, trusted API/live/lock suites and a hash-bound receipt required before promotion |
 
 The test for the saved CPU preference failed before the adapter fix: it observed GPU still
 active after restart. The original header failed the pixel geometry check. These are useful
@@ -361,10 +362,43 @@ the deployment and real-account journeys require their own evidence.
 
 See [upstream updates](upstream-updates.md). The scheduled workflow preserves the original
 Git history, merges upstream into a candidate, calls the existing native and web suites at
-that exact commit, and promotes both main and a prebuilt deployment branch only on success.
+that exact commit, and requires an exact-package container receipt before promoting both
+main and a prebuilt deployment branch.
 Conflicts, unavailable CI, a newer main revision, or a mismatched artifact prevent promotion.
 The six-hour schedule is a polling interval, not an instantaneous update promise. GitHub
 may delay scheduled jobs. Tofu GitHub authorization and Actions billing must be working.
+
+### Close the package-to-runtime verification gap — 2026-10-08
+
+The earlier web job ran the debug service with `CLOUD_LOCAL_DEV=1` and then packaged source
+plus tested WASM. It did not execute the ZIP's Linux release image or prove the image's
+TLS trust/configuration path. A passed ZIP checksum or a passing macOS service cannot
+replace that deployment transition. This was missing coverage, not evidence that the
+container had already failed.
+
+The new `container-package` job follows acceptance on a fresh Linux runner. Its helper and
+three contract suites come from the trusted PR base/caller revision, not Python code taken
+from the candidate ZIP. The candidate Dockerfile builds its locked Rust release inside the
+image. An owned local PostgreSQL cluster, temporary CA and UUID database exercise TLS
+`verify-full` without `CLOUD_LOCAL_DEV` or provider credentials. After real schema readiness,
+the gate checks served index/WASM bytes and runs `test_api.py`, `test_live.py` and
+`test_live_scale.py` against the image. Browser/auth/archive suites and paint measurements
+remain separate; this job does not claim a second full browser run or capacity test.
+
+Before the write-permission promotion command, the trusted verifier must accept the
+receipt's candidate/package/browser/fixture and QA-script hashes, image identity, Linux
+execution, TLS setting, three successful suites and complete owned-resource cleanup.
+Missing or mismatched evidence fails closed. Logs and the receipt are retained even on
+failure. Later Tofu builds can still differ through base tags/system packages, so this
+does not prove bit-for-bit container reproducibility or hosted readiness.
+
+The first introduction needs a reviewed trusted-branch bootstrap because an older PR
+base lacks the new helper. Keep the QA checkout trusted, then run a fresh candidate after
+bootstrap; do not substitute candidate test code or a fabricated receipt. The actual Linux
+Docker/TLS execution remains **unverified while GitHub's billing/spending hold prevents
+runners from starting**. Mocked gate/cleanup tests verify orchestration contracts only.
+No container pass or promotion is established by the existing local browser/load evidence.
+See [the exact gate and activation boundary](upstream-updates.md#exact-package-container-gate).
 
 ## Display-test correction
 
@@ -417,3 +451,53 @@ and Tofu packaging rejects retained home paths before opening the archive. Keep
 failed artifacts and receipts, rebuild rather than patch binary strings, and run
 browser/paint acceptance against the replacement artifact's exact hash. A clean
 source tree or earlier binary's passing tests cannot stand in for this check.
+
+
+## Exchange transport verification — 2026-10-08
+
+The first exchange candidate combined active writes and peer reads at 80 ms. Its
+local pixel gates passed, but the 1,000-actor TLS HTTP stage still coalesced much
+of its nominal schedule and exceeded 500 ms before rendering. Keep these
+results separate; a two-browser latency result cannot close a capacity gate.
+
+Three test weaknesses surfaced during the candidate review and execution:
+
+- A row-lock observer searched SQL text beyond PostgreSQL's normal activity-text
+  truncation. It now observes the exact blocking backend and active lock wait in
+  the owned database. The real barrier, snapshot and commit assertions remain.
+- A long synchronous input burst filled the bounded frame-capture queue, and a
+  fresh lease held beyond two seconds tested request cancellation rather than
+  elapsed-lease subtraction. Time a short input separately from sustained cadence;
+  age a real admitted lease and prove the delayed HTTP response actually finishes.
+  Keep the original 500 ms latency and 15 ms uncertainty limits. Invalid captures
+  remain failures, rather than acquiring an invented finite latency.
+- A load response could report HTTP 200 while omitting usable collaboration state.
+  Validate the submitted sequence/acceptance, peer identity, state, lease and
+  deterministic fixture coordinates. Require every HTTP actor to observe its
+  room's other HTTP actors during the active interval, with enough remaining lease
+  for receipt. Reject responses beyond the declared validation byte bound.
+
+The private server-side exchange experiment retains explicit transactions and
+ordered locks. Its internal authorization query needs a fresh post-lock snapshot;
+lease eligibility also needs a clock captured after waiting. Merely combining the
+operations in an ordinary CTE, or retaining the outer call's statement timestamp,
+would break those contracts. Catalog, queued-revocation, expiry, replay, capacity
+and rotating-pool checks precede any performance claim.
+
+The mixed paint harness uses 998 modeled HTTP actors plus two real native browser
+clients, rather than claiming 1,000 browsers. It requires progress from the active
+HTTP load during timed input and reports paint and HTTP statistics separately.
+Both browser clients use one worker; background actors span the simulated fleet.
+Only an executed, exact-artifact passing receipt establishes its local result.
+Hosted independent accounts, real inbox delivery and sustained production load
+remain separate acceptance boundaries.
+
+The first mixed 998-HTTP/two-browser run passed all three pixel timings but failed
+a later reload assertion. A command bridge can precede asynchronous native document
+opening. Successful reload fixtures now reuse the existing dimension/layer/active-layer
+readiness barrier before checking the original native pixel, and retain safe per-step
+checkpoints plus download status/hash checks. The original failed receipt remains.
+The rerun passed all pixel, native preview, save/reload and archive assertions without
+changing runtime code or the 500 ms / 15 ms gates. Aggregate peer coverage over the
+12-second load and HTTP progress during each paint bracket are reported separately;
+neither is a per-actor delivery trace for every bracket or production capacity proof.

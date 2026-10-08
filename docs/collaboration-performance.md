@@ -1,14 +1,265 @@
 # Collaboration latency measurements
 
-This report separates historical HTTP/state measurements from calibrated input-to-remote-paint
-measurements. The latest privacy-remapped security-remediation run passed all 19 hardware-browser observations,
-with a 104.581 ms upper-bound p50 with no configured delay and a 274.060 ms largest upper bound
-across simulated HTTP-delay profiles. The older measurements below remain historical evidence.
-These are local two-account observations, not hosted capacity, physical-device latency or
-a production service-level objective. See [collaboration architecture](collaboration-architecture.md)
-for the transport, current limits, and optimization decisions.
+This report separates HTTP/state measurements from calibrated input-to-remote-paint
+measurements. The 2026-10-08 private RPC candidate passed three local paint observations
+during a mixed workload of 998 modeled HTTP actors and two actual native browser clients;
+the largest uncertainty-inclusive upper bound was 235.656 ms. A separate matched HTTP-only
+comparison and the earlier 19-observation browser profile remain distinct evidence below.
+The preferred 150 ms target was not met. These are bounded local observations, not hosted
+capacity, 1,000 browsers, physical-device latency or a production service-level objective. See
+[collaboration architecture](collaboration-architecture.md) for the transport and limits.
 
-## Latest security-remediation sample
+## Private RPC exchange measurements — 2026-10-08 UTC
+
+The server consolidates its authorized PUT exchange in the private
+`photocraft.exchange_live_v1` function. It is `VOLATILE`, `SECURITY INVOKER`, with fresh
+post-lock authorization and a post-lock wall clock for lease/admission checks. The service
+still awaits an explicit transaction commit; this is not one database round trip or a new
+browser-accessible provider RPC. The web protocol remains the 80 ms GET-or-PUT exchange
+described below. See the [architecture](collaboration-architecture.md) for its authority,
+expiry, native-preview and database-pool boundaries.
+
+The measured optimized backend SHA-256 was
+`90908c3f4eedd41373a8916fddfe65e43b9710dac9439dab437d0042b5ddc090`.
+The mixed run used `photocraft-web-d3fc6e503acae4d9_bg.wasm`, SHA-256
+`c0a89fbd41e0b9d00bebf4065e440a754083739e5a84acda93cf581a48abf1a1`.
+These are separate from the earlier debug-backend browser profile below. All new runs used
+macOS 26.5.1 ARM64, 12 logical CPUs, loopback HTTP, and PostgreSQL TLS with `verify-full`.
+Eight application workers each had a four-connection pool, an aggregate worker budget of
+32, plus the harness monitor connection. No hosted provider was exercised.
+
+### Matched HTTP-only comparison
+
+Both runs used the same hardened semantic harness: 1,000 synthetic cursor actors in 100
+rooms of ten, sticky routing across eight workers, nominal PUT every 80 ms, three seconds
+of warmup and ten active seconds. Each successful response had to acknowledge the exact
+submitted sequence and return valid authorized peer state. Every actor had to observe every
+other HTTP actor in its room with a usable lease during the active interval. Both runs had
+zero HTTP/semantic errors, including warmup, complete 1,000-actor coverage, and no native
+document mutation. These HTTP fixtures omit browser rendering, ordinary presence polling,
+and durable saves/uploads.
+
+| Optimized backend | Active HTTP 200s / 125,000 nominal opportunities | Completion ratio | PUT p50 / p95 / p99 / maximum | Scheduled-completion p50 / p95 / p99 / maximum | Coalesced nominal ticks |
+|---|---:|---:|---|---|---:|
+| Pre-RPC exchange, `3c4427e6` | 70,796 | 56.6368% | 119.416 / 180.863 / 228.105 / 359.621 ms | 141.666 / 201.467 / 237.358 / 361.704 ms | 7,281 |
+| Private RPC exchange, `90908c3f` | 117,147 | 93.7176% | 4.964 / 20.259 / 26.599 / 52.099 ms | 7.542 / 40.365 / 51.238 / 65.735 ms | 0 |
+
+Scheduled completion includes delay from the actor's nominal scheduling time; it is not
+input-to-paint latency. The RPC run preceded the retained pre-RPC comparison: 09:15:20–
+09:15:43 UTC versus 09:17:23–09:17:46 UTC. This is a matched workload comparison, not a
+randomized repeated experiment. Host load was not identical: respective start/end 1/5/15-minute
+load averages were 2.86/3.44/4.83 → 6.45/4.31/5.11 and 4.38/4.36/5.05 → 7.45/5.17/5.33.
+The full pre-RPC binary SHA-256 is
+`3c4427e6f5331c28c36604308ebff507e8eeccf3561c74f68b72c88dd391d385`.
+Neither result certifies a sustained offered-rate or production capacity SLO.
+
+### Native paint during the mixed 1,000-actor workload
+
+The passing rerun at 09:20:59–09:21:21 UTC used **998 modeled HTTP cursor actors and two
+independent native browser clients**, totaling 1,000 synthetic accounts in 100 rooms. Both
+actual browsers used worker 0; the HTTP actors crossed workers, and eight shared the native
+pair's room. This does not prove cross-worker browser delivery. Headless installed Chrome
+154.0.8037.98 used
+1440×960 viewports at DPR1 with a 320×240 native document. Background HTTP fixtures were
+64×48 and 1,586 bytes. Warmup lasted three seconds, active load twelve seconds. All 998
+HTTP actors had successful active requests before the first timed input; each observation
+started and finished inside the active interval with background request progress. The three
+observation intervals contained 6,787 / 7,073 / 11,212 HTTP requests respectively; this is
+aggregate progress, not proof that all 998 actors published in each subsecond interval.
+The report does not identify the browser GPU backend.
+
+| Trusted native input | Uncertainty-inclusive paint upper bound | Clock uncertainty | Result |
+|---|---:|---:|---|
+| Cursor movement 1 | 235.656 ms | 5.959 ms | Passed |
+| Cursor movement 2 | 220.709 ms | 14.034 ms | Passed |
+| Held native Pencil prefix | 213.264 ms | 13.115 ms | Passed |
+
+The unchanged gate requires an upper bound **strictly below 500 ms** and rejects clock
+uncertainty above **15 ms**. The endpoint is the first matching CDP-swapped PNG, not a
+physical display. There were no invalid, missing or timed-out samples or capture errors.
+The three-sample descriptive p50 is 220.709 ms and p95/p99/maximum is 235.656 ms; this is
+too small a sample to establish tail reliability. None met the preferred 150 ms threshold.
+
+The background completed 115,553 active HTTP 200s out of 149,700 nominal opportunities
+(77.1897%), with zero errors including warmup and usable peer coverage for all 998 HTTP
+actors over the full twelve-second active period, not within each paint interval. Every
+HTTP actor completed at least 114 active successful requests. Two nominal ticks were
+coalesced. PUT p50/p95/p99/maximum was
+26.370/56.893/73.748/184.302 ms; scheduled completion was
+49.959/93.666/111.950/187.984 ms. The ratio is below the HTTP-only RPC result and must not
+be presented as full nominal delivery. Start/end host load was 3.11/4.01/4.78 →
+8.31/5.09/5.15. Browser work and load generation shared this host.
+
+While the pointer remained held, receiver native pixel/history/revision checks passed;
+after HTTP load and before release, every project still had canonical revision 1. After
+load ended, pointer release committed revision 2; receiver native pixel convergence and
+reload passed, and the downloaded 5,089-byte native archive had SHA-256
+`50ec0246f89c71d8b5c7289c2c5675b150f4e3faf8925ad008e14eefdffca945` with 320×240 dimensions.
+Those durable checks were untimed and outside active load. They establish correctness for
+this fixture, not a sub-500 ms durable-save SLO or concurrent-save scale result.
+
+The first mixed attempt remains failed evidence. Its three paint upper bounds were
+141.705/154.226/144.386 ms and its HTTP checks passed, but the untimed durable phase raised
+an `AssertionError`. The retained peer screenshot showed the saved stroke after reload.
+Source inspection identified a likely fixture readiness race: the command bridge can exist
+before asynchronous project opening finishes. The rerun added the existing native-document
+readiness helper before querying reloaded pixels, plus safe named checkpoints around each
+durable assertion/download. No runtime code or timing gate changed. All durable checkpoints
+passed in the rerun; the earlier broad-stage error alone does not prove its exact cause.
+
+Evidence under `outputs/verification/2026-10-08-release-continuation/`:
+
+- `exchange-v1-hardened-tls-1000.json` and `rpc-tls-1000.json`: matched HTTP samples,
+  complete semantic coverage, exact binaries, environment and cleanup.
+- `rpc-mixed-1000-r2.json` and `rpc-mixed-1000-r2-screenshots/`: passing input/frame
+  observations, active-load brackets, HTTP coverage, native invariants and durable checks.
+- `rpc-mixed-1000.json`, its screenshots and `mixed-fixture-diagnosis.md`: retained initial
+  failure and the readiness correction.
+
+Every run stopped its eight owned workers, dropped its own UUID database and touched zero
+shared application rows. The passing mixed run verified unchanged backend/WASM bytes
+before and after. This bounded local evidence does not cover 1,000 browsers, large native
+documents, arbitrary commands, sustained failure/reconnect workloads, physical devices,
+hosted geographic latency or production capacity. Hosted acceptance remains a separate gate.
+
+### RPC debug browser acceptance and latency profiles
+
+A separate local browser gate at 09:22:05–09:33:37 UTC passed four renderer-startup cases
+(8.238 s), all 50 browser acceptance journeys (639.390 s), and six focused live-exchange
+cases (44.130 s). It used the current RPC **debug** backend SHA-256
+`85de649cfcafb160eef07cd9de772f19b68566642735c4ba57e63d9784eeb0a1` and the same `c0a89fbd`
+WASM identified above. These correctness runs are separate from the optimized-backend
+HTTP and mixed-load measurements.
+
+The subsequent two-account profile ran at 09:33:59–09:34:21 UTC on that debug backend and
+installed Chrome 154.0.8037.98, with no concurrent owned build, load or other test browser.
+Each delay profile included three trusted cursor movements and three held native Pencil
+prefixes at 1440×960/DPR1. CDP configured a minimum HTTP delay on both pages; it did not
+simulate packet loss or bandwidth limits. The profile receipt does not identify the GPU
+backend. Unrelated host activity was uncontrolled; start/end load averages were
+3.21/4.32/4.72 → 3.57/4.33/4.71.
+
+| Configured HTTP delay per page | Observed `/api/me` RTT range | Samples | Upper-bound p50 | Upper-bound p95 / p99 / maximum |
+|---|---:|---:|---:|---:|
+| 0 ms | 0.50–1.40 ms | 6 | 120.901 ms | 180.950 ms |
+| 50 ms | 52.40–58.40 ms | 6 | 187.286 ms | 235.412 ms |
+| 100 ms | 101.30–110.20 ms | 6 | 302.941 ms | 316.380 ms |
+
+A further held-pencil observation after a real sender reload passed at 150.608 ms; the
+receiver stayed open, tab identity was retained, and the sender sequence advanced 81→82.
+All **19/19** samples passed the unchanged strict 500 ms / 15 ms uncertainty gates, with
+zero missing/invalid/timed-out samples or capture errors. Uncertainty ranged from 2.368 to
+3.322 ms. The preferred 150 ms target still failed. The pooled descriptive p50 was
+187.286 ms, with p95/p99/maximum 316.380 ms; six observations per ordinary profile and one
+reload do not establish reliable tail latency or a speed advantage over earlier profiles.
+
+Canonical native convergence and receiver reload passed separately at revision 11 with
+native SHA-256 `1cfa1cce1107c25f6dd54bffd11fd72435f3f1f2a1354875f3d1ebc7fba120a2`.
+The profile recorded 256 live GET 200s and 89 PUT 200s including setup/idle periods, and
+removed both synthetic accounts. `browser/receipt.json` plus its three logs, and
+`rpc-profiles/paint.json` / `rpc-profiles/receipt.json` under the evidence directory above
+retain the exact artifacts, observations and cleanup. Both wrappers stopped their owned
+server, dropped their own UUID database, touched zero shared rows and verified unchanged
+WASM before/after. These runs did not deploy the candidate or exercise hosted accounts.
+
+## Earlier single-request exchange candidate — 2026-10-08 UTC
+
+This candidate uses one live GET **or** PUT at a nominal 80 ms cadence per active binding,
+with at most one request in flight. Active input is coalesced into PUTs whose successful
+responses include the freshly authorized role, current revision and peer snapshot. An idle
+reader uses GET. A 403/409 or a successful older-server acknowledgement without peer data
+requires an authoritative GET before another PUT. Both response paths subtract the entire
+request elapsed time from peer leases; delayed responses do not restart expired leases.
+Stale project/auth generations are ignored. This changes the transient HTTP exchange;
+it does not turn preview acknowledgements into durable document commits or remove the
+supported-gesture, saved-base and room limits described below.
+
+The frozen assets were:
+
+- WASM `photocraft-web-d3fc6e503acae4d9_bg.wasm`, SHA-256
+  `c0a89fbd41e0b9d00bebf4065e440a754083739e5a84acda93cf581a48abf1a1`.
+- Debug backend SHA-256
+  `e00870cc2fee7526404348fc6b693affd40bd6845f239aaa7f2e669c79aebe00`.
+
+The profile ran at 08:48:42–08:49:05 UTC with two independent synthetic accounts on
+macOS 26.5.1 ARM64, 12 logical CPUs and installed Chrome 154.0.8037.98. The native fixture
+was 320×240, one layer and 4,769 bytes; viewport 1440×960, DPR1. There was no concurrent
+owned build, load test or other test browser. Unrelated host activity was not controlled;
+start/end load averages were 5.21/6.71/5.76 and 4.93/6.52/5.72. CDP imposed a minimum HTTP
+request delay on both pages, without packet loss or a bandwidth cap. The measured
+`/api/me` round trips below are separate identity-checked probes, not a physical network RTT.
+
+Each ordinary profile contains three trusted cursor inputs and three original native Pencil
+prefixes observed while the pointer remains held. Timing ends at the first observed matching
+CDP-swapped PNG, including clock uncertainty; it does not measure a physical display.
+
+| Configured HTTP delay per page | Observed `/api/me` RTT range | Samples | Upper-bound p50 | Upper-bound p95 / p99 / maximum |
+|---|---:|---:|---:|---:|
+| 0 ms | 0.80–2.30 ms | 6 | 121.029 ms | 201.179 ms |
+| 50 ms | 51.40–59.70 ms | 6 | 234.390 ms | 271.917 ms |
+| 100 ms | 101.50–112.10 ms | 6 | 300.224 ms | 339.305 ms |
+
+A separate held-pencil observation after a real sender reload passed at 138.748 ms;
+the receiver remained open, the sender retained its tab identity and its sequence advanced
+from 81 to 82. All **19/19** observations passed, with zero invalid, missing or timed-out
+samples and zero capture errors. Clock uncertainty ranged from 2.538 to 3.187 ms. The
+unchanged acceptance gate requires the uncertainty-inclusive upper bound to be strictly
+below 500 ms and rejects uncertainty above 15 ms. The preferred 150 ms threshold did not
+pass, including across the six samples with no configured delay.
+
+Pooling the different profiles and the reload sample gives a descriptive p50 of 234.390 ms
+and p95/p99/maximum of 339.305 ms. With these small samples, each profile's p95 and p99 is
+its maximum; the mixed distribution is not a production latency distribution or a reliable
+tail estimate. These data do not establish a speed advantage over the historical candidate.
+
+The run recorded 261 successful live GETs and 89 successful live PUTs, including idle/setup
+periods. Canonical native convergence and receiver reload passed separately at revision 11,
+with exact final native SHA-256
+`1cfa1cce1107c25f6dd54bffd11fd72435f3f1f2a1354875f3d1ebc7fba120a2`.
+Both synthetic accounts were removed. The wrapper stopped its own server, dropped its UUID
+fixture database, touched zero shared rows and verified the same WASM hash before/after.
+
+### Focused exchange correctness
+
+Six rendered browser cases passed in 44.196 s on the same candidate at 08:47:09–08:47:54 UTC:
+
+1. Cursor lease expiry and reconnect preserve the real native document.
+2. A delayed previous-base 409 does not clear a newer held gesture; its observed paint
+   upper bound was 216.899 ms with 2.943 ms uncertainty.
+3. A delayed successful PUT cannot extend an expired peer lease or cross an active-document
+   generation. An aged real lease of 780 ms was held for 942.474 ms; the HTTP 200 request
+   finished successfully in 947.294 ms, below the 2,000 ms client abort deadline. No ghost
+   appeared in the subsequent rendered frames. A separate fresh response was ignored after
+   opening a new native document.
+4. An older-server PUT acknowledgement forces one GET before another PUT, even during
+   continued input. The resulting cursor upper bound was 164.173 ms with 2.845 ms uncertainty.
+5. Active peer paint arrives through PUT responses while GET peer data is withheld, with
+   unchanged receiver native pixels, history and revision. Its upper bound was 251.922 ms
+   with 3.068 ms uncertainty. A separate sustained burst coalesced 48 trusted pointer moves
+   into 18 PUTs, 79.562–86.306 ms apart; observed maximum in-flight requests was one.
+6. An edit-to-view downgrade clears the drawing preview while preserving cursor access and
+   local native pixels.
+
+The first focused attempt is retained as failed evidence: a long synchronous input burst
+overflowed the bounded CDP frame queue. Its timing sample was **invalid**, despite matching
+pixels under 500 ms. The fixture now uses a short timed prefix and a separate sustained
+cadence burst after capture stops. The observer, 500 ms limit and 15 ms uncertainty cap
+were unchanged. The lease fixture also explicitly proves successful body completion, so an
+aborted request cannot satisfy its negative-pixel assertion.
+
+Local evidence is under `outputs/verification/2026-10-08-release-continuation/`:
+
+- `profiles/paint.json`, its adjacent screenshots and `profiles/receipt.json` retain the
+  19 samples, clock bounds, input/frame evidence, exact artifacts, correctness and cleanup.
+- `focus/live.log`, `focus/receipt.json` and `focus/screenshots/*.json` / `*.png` retain all
+  six cases, request cadence and rendered output.
+- `focus-attempt1-capture-overflow/` retains the initial invalid-capture run.
+
+These local tests do not establish hosted two-person latency, 1,000-client capacity,
+all-command preview support or sub-500 ms durable persistence. Capacity and hosted
+acceptance remain separate gates; see [the scale review](scale-release-review.md).
+
+## Historical security-remediation sample
 
 The frozen browser artifact `6ecd9aae` and debug backend `53c0126` passed the
 hardware Chrome 154 lane with two independent local accounts. Ordinary profiles
