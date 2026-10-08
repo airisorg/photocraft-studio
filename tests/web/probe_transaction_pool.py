@@ -11,6 +11,8 @@ Run from the repository with tests/web/requirements.txt installed:
 The output's all_routes_ok is the application result; the default process exit
 only means the diagnostic completed. Add --expect-success for red/green testing.
 This opt-in fixture is separate from the normal API/auth/startup release suites.
+Use --live-suite to run live-state authority, ordering and expiry tests through
+the same backend-switching fixture; it can also be combined with --api-suite.
 """
 import argparse
 import hashlib
@@ -52,14 +54,14 @@ def message(sock):
     return header + exact(sock, size-4)
 
 
-def probe(database, binary, output, api_suite=False):
+def probe(database, binary, output, api_suite=False, live_suite=False):
     host = local_database(database)
     target = urlparse(database)
     if target.password:
         raise ValueError('Use the disposable trust-authenticated fixture, without a password')
     counts = {'idle_backend_swaps': 0, 'idle_parse_swaps': 0, 'named_parses': 0, 'sqlstates': []}
-    if api_suite and not Path(os.environ.get('PHOTOCRAFT_FIXTURE', '')).is_file():
-        raise ValueError('--api-suite requires PHOTOCRAFT_FIXTURE pointing to the native test document')
+    if (api_suite or live_suite) and not Path(os.environ.get('PHOTOCRAFT_FIXTURE', '')).is_file():
+        raise ValueError('--api-suite/--live-suite requires PHOTOCRAFT_FIXTURE pointing to the native test document')
 
     def connect(startup):
         upstream = socket.create_connection((host, target.port or 5432), timeout=5)
@@ -137,6 +139,7 @@ def probe(database, binary, output, api_suite=False):
     http.cookies.set('pc_session', token)
     rows = []
     api_exit_code = None
+    live_exit_code = None
     with Proxy(('127.0.0.1', 0), Forward) as proxy:
         thread = threading.Thread(target=proxy.serve_forever, daemon=True)
         thread.start()
@@ -157,12 +160,17 @@ def probe(database, binary, output, api_suite=False):
                             response = http.get(base+path, timeout=20, allow_redirects=False)
                             rows.append({'path': path, 'status': response.status_code,
                                          'ms': round((time.perf_counter()-started)*1000, 3)})
-                        if api_suite:
+                        if api_suite or live_suite:
                             env = {**os.environ, 'PHOTOCRAFT_TEST_ORIGIN': base,
                                    'PHOTOCRAFT_TEST_DATABASE_URL': database}
+                        if api_suite:
                             with output.with_suffix('.api.log').open('w') as log:
                                 api_exit_code = subprocess.run([sys.executable, str(ROOT/'tests/web/test_api.py'), '-f'],
                                                                env=env, stdout=log, stderr=subprocess.STDOUT).returncode
+                        if live_suite:
+                            with output.with_suffix('.live.log').open('w') as log:
+                                live_exit_code = subprocess.run([sys.executable, str(ROOT/'tests/web/test_live.py'), '-f', '-v'],
+                                                                env=env, stdout=log, stderr=subprocess.STDOUT).returncode
                     finally:
                         db.execute('DELETE FROM photocraft.sessions WHERE account_id=%s', (ident,))
                         db.execute('DELETE FROM photocraft.accounts WHERE id=%s', (ident,))
@@ -171,9 +179,11 @@ def probe(database, binary, output, api_suite=False):
             proxy.shutdown()
             thread.join(timeout=5)
     result = {'fixture': 'backend swap after each completed idle protocol batch; not actual Supavisor',
-              'all_routes_ok': all(row['status'] == 200 for row in rows) and api_exit_code in (None, 0),
+              'all_routes_ok': all(row['status'] == 200 for row in rows) and api_exit_code in (None, 0) and live_exit_code in (None, 0),
               'api_suite_exit_code': api_exit_code,
               'results': rows, **counts}
+    if live_suite:
+        result['live_suite_exit_code'] = live_exit_code
     output.write_text(json.dumps(result, indent=2)+'\n')
     return result
 
@@ -187,8 +197,10 @@ if __name__ == '__main__':
     parser.add_argument('--expect-success', action='store_true')
     parser.add_argument('--api-suite', action='store_true',
                         help='Run full API suite through swaps; set PHOTOCRAFT_FIXTURE and PUBLIC_DIR=dist/web')
+    parser.add_argument('--live-suite', action='store_true',
+                        help='Run live API suite through swaps; set PHOTOCRAFT_FIXTURE and PUBLIC_DIR=dist/web')
     args = parser.parse_args()
-    result = probe(args.database, args.binary.resolve(), args.output.resolve(), args.api_suite)
+    result = probe(args.database, args.binary.resolve(), args.output.resolve(), args.api_suite, args.live_suite)
     print(json.dumps(result, indent=2))
     if args.expect_success and not result['all_routes_ok']:
         raise SystemExit(1)

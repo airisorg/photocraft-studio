@@ -258,6 +258,7 @@ fn feed_live_stroke(app: &mut PhotocraftApp) {
         Ok(r) => l.damage.push(r),
         Err(_) => app.live_stroke = None,
     }
+    crate::collaboration::progress(app, None);
 }
 
 /// Tools whose gesture follows a freehand path (a polyline of the input points), so every pointer
@@ -486,6 +487,9 @@ fn display_doc(app: &mut PhotocraftApp, idx: usize) -> (std::sync::Arc<Document>
         let key = 1 + params.to_string().bytes().fold(0u64, |h, b| h.wrapping_mul(31).wrapping_add(b as u64));
         return (std::sync::Arc::new(doc), key);
     }
+    if let Some(shown) = crate::collaboration::display_doc(app, idx) {
+        return shown;
+    }
     // Duotone documents display through their inks.
     if let Some(shown) = photocraft_engine::mode_cmds::display_document(&st.doc) {
         return (std::sync::Arc::new(shown), 1 << 41);
@@ -639,6 +643,12 @@ fn damage_since(app: &PhotocraftApp, idx: usize, seen: (u64, u64), now: (u64, u6
     if seen.0 == now.0
         && let Some(st) = app.session.documents().get(idx)
         && let Some(r) = crate::patch_preview::damage(app, st.doc.id, now.0, seen.1 ^ display_key, now.1)
+    {
+        return Some(if r.is_empty() { r } else { r.inflate(effect_reach(&st.doc.layers)) });
+    }
+    if seen.0 == now.0
+        && let Some(st) = app.session.documents().get(idx)
+        && let Some(r) = crate::collaboration::damage(app, st.doc.id, now.0, seen.1 ^ display_key, now.1)
     {
         return Some(if r.is_empty() { r } else { r.inflate(effect_reach(&st.doc.layers)) });
     }
@@ -1904,6 +1914,7 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
             crate::stroke_constraint::draw_line_preview(app, &painter, &xf, p, tool, held.shift);
         }
     }
+    crate::collaboration::canvas(app, ui, &xf, doc.id, primary);
     // Scrollbars (scrollbars.rs): drawn over the canvas edges, they take the pointer there.
     let t0 = crate::gpu_canvas::now_ms();
     let before = view.center;
@@ -2238,10 +2249,16 @@ fn tool_move(app: &mut PhotocraftApp, x: f64, y: f64, pressure: f32, mods: egui:
             app.stylus.record_point();
         }
     }
+    if tool == Tool::Move {
+        crate::collaboration::progress(app, None);
+    }
 }
 
 /// Tool state machine. Shared by mouse input and automation.
 pub fn tool_event(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers) {
+    if matches!(ev, ToolEvent::Down { .. }) {
+        crate::collaboration::prepare_down(app);
+    }
     // An Alt+right-drag armed for this press (`paint_mouse`): taken before anything else can
     // consume the event, so it never outlives the press it was armed for (#297).
     let armed = std::mem::take(&mut app.brush_resize_armed);
@@ -2379,6 +2396,13 @@ pub fn tool_event(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers)
                 app.stylus.record_point();
             }
             app.live_stroke = if strokes_live(tool) { begin_live_stroke(app) } else { None };
+            let preview_params = app.live_stroke.as_ref().map(|live| {
+                let points = app.drag.as_ref().map(|d| app.stylus.stroke_points(&d.points)).unwrap_or_default();
+                let mut params = stroke_params(app, tool, erase, &points);
+                params["seed"] = json!(live.stroke.seed);
+                params
+            });
+            crate::collaboration::begin(app, preview_params);
         }
         ToolEvent::Move { x, y, pressure } => {
             tool_move(app, x, y, pressure, mods);
@@ -2407,13 +2431,18 @@ pub fn tool_event(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers)
             if d.tool == Tool::Move && d.points.len() < 2 && matches!(raw, ToolEvent::Up { x, y } if [x, y] == d.start) {
                 app.move_preview = None;
                 crate::move_mods::finish(app);
+                crate::collaboration::finish(app, false);
                 return;
             }
             if d.points.last().is_none_or(|p| p[0] != x || p[1] != y) {
                 d.points.push([x, y, d.points.last().map_or(1.0, |p| p[2])]);
                 app.stylus.record_point();
             }
+            crate::collaboration::progress(app, Some(&d));
+            let before = app.session.active().map(|st| st.revision);
             finish_gesture(app, d);
+            let committed = app.session.active().map(|st| st.revision) != before;
+            crate::collaboration::finish(app, committed);
             crate::move_mods::finish(app);
         }
     }

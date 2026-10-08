@@ -28,6 +28,7 @@ it through the UI, persisted state, runtime, and deployment.
 | Delayed Open or project list can override a later action | Cards were opened and modified one at a time | The latest navigation/refresh owns its result; stale success and failure must be ignored | Hold and reorder real card requests, duplicate-click Open, and complete an old list after a Trash/Restore refresh |
 | Email confirmation rejects a normal Continue click | HTTP tests manually supplied the correct Origin header | The delivered page policy determines the browser-generated POST Origin, cookie acceptance and redirect | Render the served form in Chromium and WebKit, click Continue without injected headers, verify identity and token privacy, reject replay and foreign/null/missing origins |
 | Browser recovery accumulates old documents | Individual snapshots could be written and recovered | The requested policy is one latest-visited recovery copy, including real eviction | Visit clean A/B/A documents, reload, migrate old rows, preserve account isolation, reject stale writes and prevent multi-tab work loss on sign-in |
+| Collaboration takes several seconds | Native state eventually converged and HTTP requests were fast | Trusted input must produce matching pixels on another user's visible canvas during the gesture | Calibrate input/frame clocks; reject stale or frozen pixels; measure cursors and held native strokes under declared network profiles; verify committed bytes and reload separately |
 
 The test for the saved CPU preference failed before the adapter fix: it observed GPU still
 active after restart. The original header failed the pixel geometry check. These are useful
@@ -112,16 +113,26 @@ Each row needs a UI journey and server authorization evidence; API coverage alon
 | Shared projects | Matching signed-in email sees authorized projects | Browser 16; API 6/7 | New invitee, wrong real account, expired session and removed member |
 | Public view link | Anonymous view/download, rotation, revocation | Browser 8/22/45; API 15/22 | Hosted separate-browser flow; downloaded copies cannot be recalled |
 | Comments | Authorized comments and resolution | Browser 22/37; API 18 | Duplicate pending submission, partial-success feedback and two-user UI receipt |
-| Presence and sync | Names and committed-revision polling | Browser 16/47; API 19 | Hosted independent accounts, reconnect, stale presence and remote-paint latency |
+| Presence and sync | Names, 80 ms authorized live-state reads and committed native checkpoints | Browser 16/47; API 19; live API suite | Hosted independent accounts, reconnect, stale presence and remote-paint latency |
 | Concurrent changes | Conservative manifest merge; conflicts preserve a copy | Browser 13/16/40; API 13/14/32/33 | Complete delete/edit matrix, hosted interruption and recovery |
 | Version history | Saved native revisions and opening earlier versions | Browser 22 opens history; API 8 checks versions | Actual restore UI, resulting pixels/layers, undo contract and stale collaborator |
 | Sign-out and local work | Download/recovery protection and account-scoped eviction | Browser 6/17/41/44/46/47; API logout | Every hosted sign-out choice and account transition with pending writes |
-| Live cursors / simultaneous stroke merging | Not implemented | No implementation acceptance test | Explicit product gap; committed-revision sync is not operation streaming or a CRDT |
+| Live cursors / native previews | Authenticated cursors and one remote Brush/Pencil/Eraser/Move preview using the original engine; separate from document/history | `test_live.py`, `test_live_browser.py`, native collaboration tests, calibrated `benchmark_live_collaboration.py` | Hosted two-account pixel timing, physical-device GPU behavior, larger-room capacity and unsupported gestures |
+| Simultaneous same-object stroke merging | Conservative saved-document conflict handling; local gestures take precedence over a remote preview | Existing merge tests preserve conflicting copies | Shared undo and unrestricted concurrent painting remain explicit product gaps |
 
 Numbers refer to `tests/web/test_browser.py` and `tests/web/test_api.py`. The table maps
 contracts to tests; only an exact-artifact passing run establishes the corresponding local
 evidence. Synthetic accounts and provider fixtures do not establish real two-person or
 inbox delivery, and one successful interaction does not cover all states in its row.
+
+The fast adapter changed autosave from 3,500 ms to 150 ms after pointer release. Browser
+case 41 had prepared unsaved recovery by waiting 2,300 ms before the old deadline. Its first
+run then correctly observed an automatic save, invalidating the fixture's revision-1
+assumption. The fixture now explicitly fails only the original project's upload while
+preparing recovery, proves the failed attempt and unchanged original checksum, and removes
+the fault before saving the recovered copy. All original pixel, new-project and
+closed-original protection assertions remain. Preserve the initial failure and focused
+passing rerun; a test's timing assumption must not become a product constraint.
 
 ## Ordered execution plan
 

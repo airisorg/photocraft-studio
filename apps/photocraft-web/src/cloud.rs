@@ -17,6 +17,9 @@ use std::{
 };
 use wasm_bindgen::JsValue;
 
+#[path = "live.rs"]
+mod live;
+
 const CHUNK: usize = 524_288;
 type Queue = Rc<RefCell<Vec<(u64, Message)>>>;
 enum Message {
@@ -102,6 +105,7 @@ impl Binding {
     }
 }
 pub struct Cloud {
+    live: live::Live,
     queue: Queue,
     epoch: u64,
     auth_generation: Rc<Cell<u64>>,
@@ -357,6 +361,7 @@ async fn download_project(http: &CloudHttp, path: String, revision: Option<i64>)
 impl Cloud {
     pub fn new(ctx: &egui::Context) -> Self {
         let mut s = Self {
+            live: live::Live::default(),
             queue: Rc::default(),
             epoch: 0,
             auth_generation: Rc::new(Cell::new(0)),
@@ -1314,7 +1319,8 @@ impl Cloud {
                 && !self.session_paused()
                 && !self.busy
                 && !self.error
-                && now() - self.last_change > 3500.
+                && !ctx.input(|i| i.pointer.any_down())
+                && now() - self.last_change > 150.
             {
                 self.save(app, ctx, false);
             }
@@ -1334,6 +1340,25 @@ impl Cloud {
             }
             if !self.sign_in && self.user.is_none() {
                 self.refresh_config(ctx);
+            }
+        }
+        let http = self.http(ctx);
+        let binding = self.binding(app).filter(|b| !self.home && b.revision > 0 && !self.is_trashed(&b.id) && self.user.is_some() && !self.session_paused());
+        if let Some(update) = self.live.update(app, ctx, binding.clone(), http) {
+            if let Some(id) = app.session.active().map(|d| d.doc.id)
+                && let Some(current) = self.bindings.get_mut(&id)
+            {
+                current.role = update.role;
+            }
+            if let Some(b) = binding
+                && update.revision > b.revision
+                && !self.busy
+                && !ctx.egui_wants_keyboard_input()
+                && !ctx.input(|i| i.pointer.any_down())
+                && let Some(d) = app.session.active().filter(|d| d.revision == b.saved_local)
+            {
+                self.newer = true;
+                self.sync(ctx, d.doc.id, d.revision, b.id);
             }
         }
         ctx.request_repaint_after(std::time::Duration::from_millis(500));
@@ -1841,8 +1866,8 @@ impl Cloud {
             ui.spacing_mut().button_padding = Vec2::new(6., 2.);
             ui.horizontal(|ui| {
                 ui.set_max_width((ui.available_width() - 110.).max(100.));
-                ui.add(egui::Label::new(RichText::new(&self.status).small().color(if self.error { t.warning } else { t.text_dim })).truncate())
-                    .on_hover_text(&self.status);
+                let status = if self.error { &self.status } else { self.live.notice.as_ref().unwrap_or(&self.status) };
+                ui.add(egui::Label::new(RichText::new(status).small().color(if self.error { t.warning } else { t.text_dim })).truncate()).on_hover_text(status);
                 if self.error && ui.small_button("Dismiss").clicked() {
                     self.error = false;
                 }

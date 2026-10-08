@@ -5,6 +5,13 @@ This is an implementation and acceptance plan, not a claim that the deployed app
 already provides live multiplayer editing. Keep the original Rust/WASM editor, native
 document model, brush engine, GPU/CPU compositor, history and `.pcraft` format.
 
+Implementation update, 2026-10-07: the first bounded original-native preview adapter is
+implemented using the existing cookie-authenticated HTTP/PostgreSQL stack. It avoids
+putting whole-document saves on the cursor/gesture path. The provider private Broadcast
+bridge below remains planned. See [current architecture](collaboration-architecture.md)
+for exact scope and bounds, and [paint measurements](collaboration-performance.md) for
+observed results. The bottleneck section below records the pre-change baseline.
+
 ## The current bottleneck
 
 `apps/photocraft-web/src/cloud.rs:1317` waits for 3,500 ms of idle time before saving.
