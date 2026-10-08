@@ -57,6 +57,7 @@ jobs:
         run: |
           python -m unittest discover -s tests/web -p test_upstream_release.py
           python -m unittest discover -s tests/web -p test_publication.py
+          python -m unittest discover -s tests/web -p test_discovery.py
           python -m unittest discover -s tests/web -p test_benchmark_scale.py
           python -m unittest discover -s tests/web -p test_rust_notices.py
           python -m unittest discover -s tests/web -p test_runtime_notices.py
@@ -101,6 +102,7 @@ jobs:
           PHOTOCRAFT_CLOUD_BIN=target/debug/photocraft-cloud python tests/web/test_security_auth.py
           python tests/web/test_archive_security.py
           python tests/web/test_renderer_startup.py
+          python tests/web/test_discovery_browser.py
           python tests/web/test_browser.py
           PHOTOCRAFT_PAINT_CALIBRATION=1 python -m unittest discover -s tests/web -p test_paint_latency.py
           python tests/web/test_live_browser.py

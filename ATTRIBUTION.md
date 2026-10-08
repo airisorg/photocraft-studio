@@ -91,6 +91,16 @@ the actual WASM producer before packaging; the cloud build checks the matching
 Rust release and source commit. This supplements the Cargo inventory. It does
 not certify every native installer, operating-system image or linked system library.
 
+## PhotoCraft Studio presentation
+
+| Path | Title | Author | Source | License |
+|---|---|---|---|---|
+| `docs/media/editor.png`, `docs/media/workspace.png` | Actual hosted editor and guest workspace screenshots with an original starter design | PhotoCraft Studio contributors; editor UI by the ArtCraft team and PhotoCraft contributors | Captured from the deployed PhotoCraft Studio guest session; [capture notes](docs/media/README.md) | MIT OR Apache-2.0; underlying assets retain the notices above |
+| `docs/media/native-editing-demo.gif` | Native layer move, Undo and Redo recording | PhotoCraft Studio contributors; editor engine and UI by the ArtCraft team and PhotoCraft contributors | Actual frames from the same guest session, encoded with FFmpeg | MIT OR Apache-2.0; underlying assets retain the notices above |
+| `docs/media/social-preview.png`, `docs/media/deployed-on-tofu.svg` | Original social card and deployment badge | PhotoCraft Studio contributors | Original HTML/SVG composition using the real editor screenshot and plain-text deployment acknowledgment | MIT OR Apache-2.0; no trademark rights granted |
+
+The presentation uses plain text to identify Tofu as the hosting platform. It does not incorporate a Tofu logo or proprietary third-party design assets.
+
 ## Test data (not committed, not shipped)
 
 `corpus/` is gitignored; these fetched corpus fixtures are not committed or shipped.

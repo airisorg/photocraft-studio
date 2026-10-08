@@ -166,7 +166,7 @@ The artwork and one historical home-path-containing file originated in already-p
 
 `packaging/web/check-publication.py` reports counts and fails closed on retained restricted artwork or home paths. Author consent, unavailable refs, issues and external services need separate review. The repository remains private pending this decision.
 
-The README credits upstream first and states the fork is independent. NOTICE preserves original copyright and adds a fork modification notice; modified upstream text files carry change notices. The code map separates original crates from added adapters. Asset license terms remain separate from the MIT OR Apache-2.0 code choice. Tofu is acknowledged as the deployment platform, with no sponsorship implication.
+The README credits upstream prominently and states the fork is independent. NOTICE preserves original copyright and adds a fork modification notice; modified upstream text files carry change notices. The code map separates original crates from added adapters. Asset license terms remain separate from the MIT OR Apache-2.0 code choice. Tofu is acknowledged as the deployment platform, with no sponsorship implication.
 
 ## Dependencies, CI and remaining gates
 
