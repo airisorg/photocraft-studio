@@ -143,6 +143,80 @@ tiny-document, two-account, contended local run. They are not hosted latency, a 
 collaborator count, evidence of remote paint timing, or a promise for larger files. The ten
 samples' p95/p99 are their maximum. No transport or runtime optimization was applied.
 
+## Observed input-to-remote-paint baseline — 2026-10-07
+
+`tests/web/benchmark_paint_collaboration.py` adds a separate, opt-in visual gate while keeping
+the historical state benchmark intact. It uses two synthetic accounts in independent
+Chromium contexts, a 320×240 native document at 100% zoom/DPR1, and the original Pencil tool.
+Setup sets a hard 24-pixel green pencil before timing. Five real browser mouse clicks produce
+distinct dots. The endpoint is the first observed remote CDP swapped PNG containing the
+expected green pixels in the matching canvas region; each region is white beforehand.
+Input is captured passively as a trusted pointer-down event. Neither command completion,
+API acknowledgment, document inspection nor `requestAnimationFrame` satisfies the paint gate.
+
+`paint_latency.py` calibrates input and frame clocks to the same host timeline, retains
+uncertainty, bounds capture queues, and fails invalid timestamps/captures. This measures a
+conservative observed compositor-frame upper bound, not physical display photon latency.
+Chrome may omit frames. Test-side observation itself adds work. Native structure/pixels,
+committed archive SHA and peer reload are checked separately outside the timed path.
+
+```sh
+PHOTOCRAFT_CHROME='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' \
+python tests/web/benchmark_paint_collaboration.py \
+  --origin http://127.0.0.1:8876 --samples 5 \
+  --output test-results/native-paint-baseline.json \
+  --context 'Describe concurrent host activity and the exact runtime/assets'
+```
+
+At native source `8309d1f`, cloud binary SHA
+`a0730644fe554733fae9d255c9d8eed079d69826ac699dea6bc8dfae6f87c106`, and web assets
+`photocraft-web-c5269eac07ccf586`, Chrome 154.0.8037.98 produced:
+
+| Input → observed matching peer pixels | Samples | Median | Maximum |
+|---|---:|---:|---:|
+| Initial calibrated upper bound including uncertainty | 5 | 4,476.828 ms | 4,505.683 ms |
+| Final observer with explicit acknowledged capture readiness | 5 | 4,500.469 ms | 4,957.469 ms |
+
+The five upper bounds were 4,326.423, 4,472.316, 4,476.828, 4,505.683 and 4,496.090 ms.
+Clock uncertainty was 2.57–3.30 ms; all captures had zero reported errors. Every sample
+failed the strict 500 ms gate, and the benchmark exited 1. All five native pixels converged,
+the committed version reached revision 6, and peer reload preserved them. Both synthetic
+accounts were removed with zero remaining. Cursor delivery is explicitly unsupported,
+because the current presence payload has no coordinates; it is not represented by a zero
+latency sample.
+
+This was a bounded loopback test on macOS 26.5.1 ARM64, without configured network delay or
+a separately measured RTT. Host start/end load averages were 5.24/6.32/6.04 and 4.96/6.17/6.00.
+It does not establish hosted latency, separate-device performance, tail reliability or
+capacity. No runtime optimization or deployment occurred. Raw evidence lives at
+`outputs/verification/2026-10-07-realtime-latency/native-paint-baseline.json` in the workspace,
+with the adjacent `native-paint-baseline-screenshots` directory.
+
+The final independent rerun used an acknowledged CDP baseline before each trusted input,
+avoiding a capture-start race found by Chrome calibration. It also failed all five 500 ms
+gates: 4,812.301, 4,500.469, 4,957.469, 4,474.091 and 4,445.914 ms, with 2.50–3.08 ms clock
+uncertainty and zero capture errors. Native pixels, revision 6, reload and both-account
+cleanup passed again. The final native SHA was identical between runs:
+`061515bf91217475c0e86a604e19451dd9916092ea8d8216b9ba08aa3972a5e5`.
+This rerun had higher uncontrolled host load, starting at 9.04/8.36/7.13 and ending at
+7.15/7.94/7.03. Its raw report is
+`outputs/verification/2026-10-07-realtime-latency/native-paint-baseline-verified.json`.
+The reported 1440×960 capture surface matched the pinned browser viewport. The GPU adapter
+was not measured; this headless test is not physical-device GPU evidence.
+
+The observer's unit/browser calibration tests reject preexisting pixels, frozen output,
+untrusted/missing input, invalid clocks and capture overflow; an injected 600 ms delayed
+paint is over budget. In-memory calibration times are measurement-oracle evidence, not
+PhotoCraft collaboration performance. See [the implementation and release plan](sub500-collaboration-plan.md).
+
+Ten final oracle/calibration tests passed on independently selected Chrome 154 in 3.481 s.
+The observer waits at most two seconds for initial acknowledged capture, before dispatching
+input, and reports unavailable readiness as invalid. Three additional fresh Chrome 154
+launches passed the same tests. Small emulated Chrome viewports can produce a different
+screencast surface: the 320×240 calibration page produced 500×153. Reports retain actual
+PNG dimensions; an out-of-surface oracle or a geometry change is invalid. No timed repaint
+is forced to manufacture capture evidence.
+
 ## Transaction compatibility fix: matched workload — 2026-10-07
 
 The service now wraps formerly unprotected SQL query groups in short explicit transactions.
