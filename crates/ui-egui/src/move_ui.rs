@@ -2,6 +2,8 @@
 //! the moving layers already at the pointer, exactly as `layer.translate` will leave them, and
 //! recomposites only where they were and where they are. Releasing commits one `layer.translate`
 //! (one history step) whose damage rect refreshes the same area.
+// PhotoCraft Studio modification (2026-10-08): retain each preview's actual painted bounds
+// so edge-clipped vector shapes do not leave stale pixels as they move into the canvas.
 
 use std::sync::Arc;
 
@@ -19,31 +21,36 @@ pub(crate) struct MovePreview {
     revision: u64,
     /// Layers that move ([`photocraft_engine::layer_multi_cmds::move_targets`]).
     ids: Vec<LayerId>,
-    /// What moving them can change at offset (0, 0), not clipped to the canvas: a layer larger
-    /// than the canvas brings its pixels from beyond the edge into view (`None` = anything).
-    bounds: Option<Rect>,
-    canvas: Rect,
-    /// Offsets shown so far, by preview key (`BASE + index`).
-    offsets: Vec<(i32, i32)>,
+    /// What the original moving layers can change (`None` = anything).
+    original_area: Option<Rect>,
+    /// Actual offsets and painted areas, by preview key (`BASE + index`).
+    frames: Vec<MoveFrame>,
     /// The document at the latest offset.
     shown: Option<Arc<Document>>,
 }
 
+struct MoveFrame {
+    offset: (i32, i32),
+    area: Option<Rect>,
+}
+
 impl MovePreview {
     fn key(&self) -> u64 {
-        BASE + self.offsets.len() as u64
+        BASE + self.frames.len() as u64
     }
-    fn offset_of(&self, key: u64) -> Option<(i32, i32)> {
+    fn area_of(&self, key: u64) -> Option<Rect> {
         if key == 0 {
-            return Some((0, 0));
+            return self.original_area;
         }
         let i = usize::try_from(key.checked_sub(BASE + 1)?).ok()?;
-        self.offsets.get(i).copied()
+        self.frames.get(i)?.area
     }
-    fn area(&self, d: (i32, i32)) -> Option<Rect> {
-        let b = self.bounds?;
-        Some(if b.is_empty() { b } else { b.translate(d.0, d.1).inflate(1).intersect(&self.canvas) })
-    }
+}
+
+fn painted_area(doc: &Document, ids: &[LayerId]) -> Option<Rect> {
+    let canvas = doc.bounds();
+    let b = ids.iter().try_fold(Rect::EMPTY, |acc, id| Some(acc.union(&photocraft_compose::change_bounds(doc.layer(*id)?, canvas)?)))?;
+    Some(if b.is_empty() { b } else { b.inflate(1).intersect(&canvas) })
 }
 
 /// The whole-pixel offset of the current Move drag on document `idx`, if one is under way.
@@ -75,23 +82,24 @@ pub(crate) fn display_doc(app: &mut PhotocraftApp, idx: usize) -> Option<(Arc<Do
         if ids.is_empty() {
             return None;
         }
-        let all = Rect::new(i32::MIN / 2, i32::MIN / 2, i32::MAX / 2, i32::MAX / 2);
-        let bounds = ids.iter().try_fold(Rect::EMPTY, |acc, id| Some(acc.union(&photocraft_compose::change_bounds(doc.layer(*id)?, all)?)));
-        let canvas = doc.bounds();
-        app.move_preview = Some(MovePreview { doc: doc_id, revision, ids, bounds, canvas, offsets: Vec::new(), shown: None });
+        let original_area = painted_area(&doc, &ids);
+        app.move_preview = Some(MovePreview { doc: doc_id, revision, ids, original_area, frames: Vec::new(), shown: None });
     }
     let p = app.move_preview.as_mut()?;
-    if offset == (0, 0) && p.offsets.is_empty() {
+    if offset == (0, 0) && p.frames.is_empty() {
         return None;
     }
-    if p.offsets.last() != Some(&offset) {
+    if p.frames.last().is_none_or(|f| f.offset != offset) {
         let t0 = crate::gpu_canvas::now_ms();
         match photocraft_engine::layer_multi_cmds::moved(&doc, &p.ids, offset.0, offset.1) {
             Ok(d) => {
+                // Moving inward can reveal vector pixels absent from the original clipped
+                // cache. Translating its original bounds would miss those pixels next frame.
+                let area = painted_area(&d, &p.ids);
                 // Duotone documents display through their inks.
                 let d = photocraft_engine::mode_cmds::display_document(&d).unwrap_or(d);
                 p.shown = Some(Arc::new(d));
-                p.offsets.push(offset);
+                p.frames.push(MoveFrame { offset, area });
             }
             Err(_) => {
                 p.shown = None;
@@ -112,7 +120,7 @@ pub(crate) fn damage(app: &PhotocraftApp, doc: DocId, revision: u64, seen: u64, 
     if seen == now || (seen < BASE && seen != 0) || (now < BASE && now != 0) {
         return None;
     }
-    let (a, b) = (p.area(p.offset_of(seen)?)?, p.area(p.offset_of(now)?)?);
+    let (a, b) = (p.area_of(seen)?, p.area_of(now)?);
     Some(if a.is_empty() {
         b
     } else if b.is_empty() {
@@ -137,7 +145,7 @@ pub(crate) fn is_preview_key(key: u64) -> bool {
 pub(crate) fn finish(app: &mut PhotocraftApp, dx: f64, dy: f64) {
     // Only when the canvas shows this very offset (else it recomposites everything once).
     let at = (dx.clamp(-1e7, 1e7) as i32, dy.clamp(-1e7, 1e7) as i32);
-    let shown = app.move_preview.take().filter(|p| p.shown.is_some() && p.offsets.last() == Some(&at));
+    let shown = app.move_preview.take().filter(|p| p.shown.is_some() && p.frames.last().is_some_and(|f| f.offset == at));
     if dx == 0.0 && dy == 0.0 {
         return;
     }
@@ -156,6 +164,68 @@ mod tests {
     use crate::PhotocraftApp;
     use crate::canvas::ToolEvent;
     use crate::state::Tool;
+
+    #[test]
+    fn edge_clipped_shape_move_damage_reconstructs_every_held_frame_without_trails() {
+        // A cached vector shape is clipped to the original canvas. Moving it inward reveals
+        // pixels which translating that clipped cache's bounds cannot describe.
+        for (rect, start, direction) in [
+            ([48, 16, 32, 32], [56.0, 32.0], [-1.0, 0.25]),
+            ([-16, 16, 32, 32], [8.0, 32.0], [1.0, 0.25]),
+            ([16, 48, 32, 32], [32.0, 56.0], [0.25, -1.0]),
+            ([16, -16, 32, 32], [32.0, 8.0], [0.25, 1.0]),
+        ] {
+            let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+            app.session.execute("file.new", json!({"width": 64, "height": 64})).unwrap();
+            app.session.execute("shape.create", json!({"kind": "ellipse", "rect": rect, "fill": "#fa9974"})).unwrap();
+            app.sync_views();
+            app.ui.tool = Tool::Move;
+            app.ui.extras.snap = false;
+            app.ui.view.show.smart_guides = false;
+            let modifiers = egui::Modifiers::NONE;
+            crate::canvas::tool_event(&mut app, ToolEvent::Down { x: start[0], y: start[1], pressure: 1.0 }, modifiers);
+            let st = app.session.active().unwrap();
+            let (id, revision, history, original) = (st.doc.id, st.revision, st.history.entries().len(), st.doc.clone());
+            let mut screen = photocraft_compose::flatten(&original);
+            let mut seen = 0;
+            let mut last = None;
+            for step in 1..=6 {
+                let offset = [direction[0] * f64::from(step * 4), direction[1] * f64::from(step * 4)];
+                crate::canvas::tool_event(&mut app, ToolEvent::Move { x: start[0] + offset[0], y: start[1] + offset[1], pressure: 1.0 }, modifiers);
+                let (shown, key) = super::display_doc(&mut app, 0).unwrap();
+                let st = app.session.active().unwrap();
+                assert_eq!(st.revision, revision, "held preview must not edit the document");
+                assert_eq!(st.history.entries().len(), history);
+                assert!(std::sync::Arc::ptr_eq(&st.doc, &original));
+                // A skipped paint must still redraw everything since the last displayed key.
+                if step == 3 {
+                    continue;
+                }
+                let damage = super::damage(&app, id, revision, seen, key).unwrap();
+                let patch = photocraft_compose::render(&shown, damage);
+                for y in damage.y0..damage.y1 {
+                    for x in damage.x0..damage.x1 {
+                        screen.px[(y * 64 + x) as usize] = patch.get(x, y);
+                    }
+                }
+                let expected = photocraft_compose::flatten(&shown);
+                let different = screen.px.iter().zip(&expected.px).filter(|(a, b)| a != b).count();
+                assert_eq!(different, 0, "stale pixels at edge {rect:?}, held step {step}");
+                seen = key;
+                last = Some((shown, offset));
+            }
+            let (shown, offset) = last.unwrap();
+            crate::canvas::tool_event(&mut app, ToolEvent::Up { x: start[0] + offset[0], y: start[1] + offset[1] }, modifiers);
+            let st = app.session.active().unwrap();
+            assert_eq!(st.history.entries().len(), history + 1, "one release, one undo entry");
+            let committed = photocraft_compose::flatten(&st.doc);
+            assert_eq!(committed.px, photocraft_compose::flatten(&shown).px);
+            app.session.execute("edit.undo", json!({})).unwrap();
+            assert_eq!(photocraft_compose::flatten(&app.session.active().unwrap().doc).px, photocraft_compose::flatten(&original).px);
+            app.session.execute("edit.redo", json!({})).unwrap();
+            assert_eq!(photocraft_compose::flatten(&app.session.active().unwrap().doc).px, committed.px);
+        }
+    }
 
     #[test]
     fn dragging_a_layer_larger_than_the_canvas_redraws_what_comes_in_from_beyond_the_edge() {

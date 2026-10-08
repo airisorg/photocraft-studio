@@ -2322,7 +2322,11 @@ pub fn tool_event(app: &mut PhotocraftApp, ev: ToolEvent, mods: egui::Modifiers)
             if app.ui.tool_options.move_auto_select != mods.command {
                 let target = app.ui.tool_options.move_target.clone();
                 let mode = if mods.shift { "add" } else { "replace" };
-                let _ = app.run("layer.pickAt", json!({"x": x, "y": y, "target": target, "mode": mode}));
+                if app.run("layer.pickAt", json!({"x": x, "y": y, "target": target, "mode": mode})).is_ok() {
+                    // PhotoCraft Studio fix: the initial snap gesture used the previous
+                    // selection. Its bounds and excluded targets must follow Auto-Select.
+                    crate::snap_ui::begin(app, [x, y]);
+                }
             }
         }
         ToolEvent::Move { x, y, .. } => {

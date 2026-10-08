@@ -361,25 +361,38 @@ def native_preference_menu_choice(before,after,selector,reference):
     if difference is None:
         raise AssertionError('Native section menu did not paint below its selector')
     left,top,right,bottom=difference
-    bounds=(left+3,top+area[1]+3,right-3,bottom+area[1]-3)
+    # A popup can have the same background as the dialog beneath it, making
+    # the first changed pixel a caption rather than the popup's frame. Never
+    # inset that difference box: it would cut General's top glyph rows off.
+    bounds=(min(left,selector[0]),area[1],max(right,selector[2]),bottom+area[1])
     rows=_native_text_rows(after,bounds)
     scored=[]
     for row in rows:
         mask=row['mask']
-        if not (.75<=mask.width/reference.width<=1.3 and .7<=mask.height/reference.height<=1.3):
+        if abs(mask.width-reference.width)>3 or abs(mask.height-reference.height)>2:
             continue
         mask=mask.resize(reference.size,Image.Resampling.NEAREST)
-        misses=[]
-        for a,b in [(mask,reference),(reference,mask)]:
-            count=sum(v>0 for v in a.getdata())
-            misses.append(sum(v>0 for v in ImageChops.subtract(a,b.filter(ImageFilter.MaxFilter(3))).getdata())/max(1,count))
-        scored.append((max(misses),row['rect']))
-    scored.sort()
+        expected=Image.new('L',(reference.width+2,reference.height+2))
+        expected.paste(reference,(1,1))
+        best=0
+        # Align a whole caption by at most one pixel. Dilating every stroke
+        # erased the distinguishing gaps in short words (General vs Cursors).
+        for dy in (-1,0,1):
+            for dx in (-1,0,1):
+                observed=Image.new('L',expected.size)
+                observed.paste(mask,(1+dx,1+dy))
+                intersection=sum(v>0 for v in ImageChops.darker(expected,observed).getdata())
+                union=sum(v>0 for v in ImageChops.lighter(expected,observed).getdata())
+                best=max(best,intersection/max(1,union))
+        scored.append((best,row['rect']))
+    scored.sort(reverse=True)
     # Sidebar is native medium12.5; popup is native regular13. Require a unique
     # near silhouette, never a guessed row index or a fixed source coordinate.
-    if not scored or scored[0][0]>.15 or (len(scored)>1 and scored[1][0]-scored[0][0]<.02):
+    if not scored or scored[0][0]<.55 or (len(scored)>1 and scored[0][0]-scored[1][0]<.08):
         raise AssertionError(f'No unique painted section-caption match: {scored}')
-    return {'rect':scored[0][1],'glyph_mismatch':scored[0][0],'popup_bounds':bounds}
+    return {'rect':scored[0][1],'glyph_iou':scored[0][0],
+            'caption_candidates':[{'glyph_iou':score,'rect':rect} for score,rect in scored],
+            'popup_bounds':bounds}
 
 
 def sharing_invitation_controls(image):

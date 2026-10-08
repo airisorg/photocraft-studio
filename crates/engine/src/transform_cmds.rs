@@ -18,12 +18,93 @@ fn bad(msg: impl Into<String>) -> EngineError {
     EngineError::BadParams { cmd: "edit.transform".into(), msg: msg.into() }
 }
 
+// Bounds inspection runs even while the Move tool is idle. Admit only bounded geometry
+// work here; unusual stored metadata keeps the already-available raster-cache bounds.
+fn shape_bounds_work_is_bounded(shape: &photocraft_doc::ShapeLayer) -> bool {
+    const MAX_KNOTS: usize = 1024;
+    const MAX_WORK: f64 = 4096.0;
+    if shape.path.subpaths.len() > 64 || shape.path.subpaths.iter().flat_map(|s| &s.knots).take(MAX_KNOTS + 1).count() > MAX_KNOTS {
+        return false;
+    }
+    let stroke = shape.stroke.as_ref().filter(|s| s.width > 0.0 && s.opacity > 0.0);
+    if shape.stroke.as_ref().is_some_and(|s| s.dashes.len() > 64) {
+        return false;
+    }
+    let tol = stroke.map_or(photocraft_vector::DEFAULT_TOLERANCE, |s| photocraft_vector::DEFAULT_TOLERANCE.min((f64::from(s.width).max(0.01) * 0.1).max(1e-3)));
+    let mut length = 0.0;
+    let mut work = shape.path.subpaths.len() as f64;
+    for subpath in &shape.path.subpaths {
+        for segment in subpath.segments() {
+            let [a, b, c, d] = segment;
+            let control_length = (b.x - a.x).hypot(b.y - a.y) + (c.x - b.x).hypot(c.y - b.y) + (d.x - c.x).hypot(d.y - c.y);
+            length += control_length;
+            // A cubic's second-difference magnitude cannot exceed its control-polygon
+            // length. This overestimates native flattening (including straight segments).
+            let tolerance = tol.min(control_length * 1e-3).max(1e-4);
+            work += (0.75 * control_length / tolerance).sqrt().ceil().clamp(1.0, 65536.0);
+            if !length.is_finite() || !work.is_finite() || work > MAX_WORK {
+                return false;
+            }
+        }
+    }
+    if let Some(stroke) = stroke {
+        let doubled = if stroke.dashes.len().is_multiple_of(2) { 1.0 } else { 2.0 };
+        let cycle: f64 = stroke.dashes.iter().map(|d| f64::from(d.max(0.0)) * f64::from(stroke.width)).sum::<f64>() * doubled;
+        if !cycle.is_finite() {
+            return false;
+        }
+        if cycle > 1e-9 {
+            // Each subpath restarts the dash phase. Include zero entries and the two
+            // partial cycles; inside/outside strokes still use the original dash width.
+            work += stroke.dashes.len() as f64 * doubled * ((length / cycle).ceil() + 2.0 * shape.path.subpaths.len() as f64);
+        }
+    }
+    work.is_finite() && work <= MAX_WORK
+}
+
+// Fork modification (2026-10-08): retain full vector extents when a shape cache is
+// clipped by the document, using the original vector compiler without rasterizing pixels.
+fn unclipped_shape_bounds(shape: &photocraft_doc::ShapeLayer) -> Option<Rect> {
+    if !shape_bounds_work_is_bounded(shape) {
+        return None;
+    }
+    // A stored raster cache can outlive malformed vector metadata. Bounds inspection must
+    // not feed non-finite/overflowing geometry into the vector rasterizer's integer bounds.
+    let limit = f64::from(i32::MAX) / 4.0;
+    let mut coordinates = shape.path.subpaths.iter().flat_map(|s| &s.knots).flat_map(|k| [k.anchor, k.in_ctrl, k.out_ctrl]);
+    if !coordinates.all(|p| p.x.is_finite() && p.y.is_finite() && p.x.abs() < limit && p.y.abs() < limit) {
+        return None;
+    }
+    if shape.stroke.as_ref().is_some_and(|s| {
+        !s.width.is_finite()
+            || !s.miter_limit.is_finite()
+            || !s.dash_offset.is_finite()
+            || f64::from(s.width).abs() * f64::from(s.miter_limit).abs().max(2.0) >= limit
+            || s.dashes.iter().any(|d| !d.is_finite())
+    }) {
+        return None;
+    }
+    let bounds = photocraft_vector::CompiledShape::new(shape, photocraft_vector::DEFAULT_TOLERANCE).bounds()?;
+    // The compiler includes coarse stroke extents (including native RGB bytes with
+    // zero encoded alpha). Preserve that contract, but never use extreme miters as a frame.
+    if [bounds.x0, bounds.y0, bounds.x1, bounds.y1].iter().any(|v| f64::from(*v).abs() >= limit) { None } else { Some(bounds) }
+}
+
 /// Document-space bounds a transform of `layer` starts from (what Free Transform frames).
 /// Content scans are cached per tile: snapping asks for every layer's bounds per Move drag.
 pub fn transform_bounds(doc: &Document, layer: &Layer) -> Rect {
     let content = match &layer.content {
         LayerContent::Group(g) => g.children.iter().map(|l| transform_bounds(doc, l)).fold(Rect::EMPTY, |a, b| a.union(&b)),
         _ => layer.surface().map_or(Rect::EMPTY, photocraft_compose::bounds::content_bounds),
+    };
+    let content = if let LayerContent::Shape(shape) = &layer.content
+        && !shape.path.inverted
+        && !content.is_empty()
+        && (content.x0 <= 0 || content.y0 <= 0 || content.x1 >= doc.bounds().x1 || content.y1 >= doc.bounds().y1)
+    {
+        unclipped_shape_bounds(shape).map_or(content, |bounds| content.union(&bounds))
+    } else {
+        content
     };
     let content =
         if content.is_empty() { layer.mask.as_ref().map_or(Rect::EMPTY, |m| photocraft_compose::bounds::content_bounds(&m.surface)) } else { content };
@@ -481,6 +562,178 @@ mod tests {
         assert_eq!(surf.pixel(15, 65)[3], 1.0, "moved pixels land");
         let sel = st.doc.selection.as_ref().unwrap().content_bounds();
         assert_eq!((sel.y0, sel.y1), (60, 70), "selection moves too");
+    }
+
+    #[test]
+    fn clipped_vector_transform_bounds_enclose_full_fill_and_stroke_on_all_edges() {
+        for (rect, delta) in [([48, 16, 32, 32], [-32, 0]), ([-16, 16, 32, 32], [32, 0]), ([16, 48, 32, 32], [0, -32]), ([16, -16, 32, 32], [0, 32])] {
+            for stroke_align in [None, Some("center"), Some("inside"), Some("outside")] {
+                let mut s = Session::new();
+                s.execute("file.new", json!({"width":64,"height":64})).unwrap();
+                s.execute(
+                    "shape.create",
+                    json!({"kind":"ellipse","rect":rect,"fill":"#fa9974",
+                    "stroke":stroke_align.map(|align| json!({"width":6,"color":"#123456","align":align})).unwrap_or(Value::Null)}),
+                )
+                .unwrap();
+                let st = s.active().unwrap();
+                let doc = st.doc.clone();
+                let id = st.active_layer.unwrap();
+                let layer = doc.layer(id).unwrap();
+                let LayerContent::Shape(shape) = &layer.content else { panic!() };
+                // Independent rendered oracle uses a larger clip than the document cache.
+                let full = photocraft_vector::render_shape(shape, doc.pixel_format(), Rect::new(-64, -64, 128, 128));
+                let painted = photocraft_compose::bounds::content_bounds(&full);
+                let cached = photocraft_compose::bounds::content_bounds(layer.surface().unwrap());
+                assert!(!cached.contains_rect(&painted), "fixture must reveal clipped pixels");
+                let before = transform_bounds(&doc, layer);
+                assert!(before.contains_rect(&painted), "{rect:?}, stroke={stroke_align:?}: {before:?} misses {painted:?}");
+                // Native inside strokes retain coarse doubled-stroke bounds and can
+                // store RGB outside the visible alpha extent; do not tighten that contract.
+                if stroke_align == Some("inside") {
+                    let stroke_envelope = Rect::from_xywh(rect[0], rect[1], rect[2] as u32, rect[3] as u32).inflate(6 + 2);
+                    assert!(stroke_envelope.contains_rect(&before), "native stroke extent exceeded its width plus tessellation/rounding envelope: {before:?}");
+                } else {
+                    assert!(
+                        before.width().abs_diff(painted.width()) <= 2 && before.height().abs_diff(painted.height()) <= 2,
+                        "{rect:?}, {stroke_align:?}: {before:?} versus {painted:?}"
+                    );
+                }
+                assert_eq!(crate::snap::layer_rect(&doc, id), Some([before.x0 as f64, before.y0 as f64, before.x1 as f64, before.y1 as f64]));
+                assert!(std::sync::Arc::ptr_eq(&doc, &s.active().unwrap().doc), "measuring geometry mutated the document");
+                s.execute("edit.transform", json!({"matrix":[1,0,0,1,delta[0],delta[1]]})).unwrap();
+                let st = s.active().unwrap();
+                let moved_layer = st.doc.layer(id).unwrap();
+                let after = transform_bounds(&st.doc, moved_layer);
+                let LayerContent::Shape(moved_shape) = &moved_layer.content else { panic!() };
+                let moved_full = photocraft_vector::render_shape(moved_shape, st.doc.pixel_format(), Rect::new(-64, -64, 128, 128));
+                assert!(after.contains_rect(&photocraft_compose::bounds::content_bounds(&moved_full)));
+                if stroke_align == Some("inside") {
+                    assert_eq!(after, photocraft_compose::bounds::content_bounds(moved_layer.surface().unwrap()), "interior stroke cache bounds remain native");
+                } else {
+                    assert!((after.x0 + after.x1 - before.x0 - before.x1 - 2 * delta[0]).abs() <= 2);
+                    assert!((after.y0 + after.y1 - before.y0 - before.y1 - 2 * delta[1]).abs() <= 2);
+                }
+                s.undo();
+                let st = s.active().unwrap();
+                assert_eq!(transform_bounds(&st.doc, st.doc.layer(id).unwrap()), before);
+                s.redo();
+                let st = s.active().unwrap();
+                assert_eq!(transform_bounds(&st.doc, st.doc.layer(id).unwrap()), after);
+            }
+        }
+    }
+
+    #[test]
+    fn clipped_vector_bounds_preserve_selection_inversion_and_empty_mask_fallback() {
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width":64,"height":64})).unwrap();
+        s.execute("shape.create", json!({"kind":"ellipse","rect":[48,16,32,32],"fill":"#fa9974"})).unwrap();
+        let st = s.active().unwrap();
+        let id = st.active_layer.unwrap();
+        let full = transform_bounds(&st.doc, st.doc.layer(id).unwrap());
+        s.execute("select.rect", json!({"x":50,"y":20,"width":8,"height":10})).unwrap();
+        let st = s.active().unwrap();
+        assert_eq!(transform_bounds(&st.doc, st.doc.layer(id).unwrap()), full.intersect(&Rect::new(50, 20, 58, 30)));
+        let mut doc = (*st.doc).clone();
+        doc.selection = None;
+        let mut layer = doc.layer(id).unwrap().clone();
+        if let LayerContent::Shape(shape) = &mut layer.content {
+            shape.path.inverted = true;
+        }
+        assert_eq!(transform_bounds(&doc, &layer), photocraft_compose::bounds::content_bounds(layer.surface().unwrap()));
+        if let LayerContent::Shape(shape) = &mut layer.content {
+            shape.path.inverted = false;
+            shape.cache = Some(Surface::new(doc.pixel_format()));
+        }
+        assert_eq!(transform_bounds(&doc, &layer), Rect::EMPTY);
+        let mut mask = Surface::new(PixelFormat::GRAY8);
+        mask.fill_rect(Rect::new(3, 4, 9, 11), &[1.0]);
+        layer.mask = Some(photocraft_doc::LayerMask { surface: mask, ..photocraft_doc::LayerMask::hide_all() });
+        assert_eq!(transform_bounds(&doc, &layer), Rect::new(3, 4, 9, 11));
+    }
+
+    #[test]
+    fn malformed_vector_metadata_keeps_cached_transform_bounds_without_panicking() {
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width":64,"height":64})).unwrap();
+        s.execute("shape.create", json!({"kind":"ellipse","rect":[48,16,32,32],"fill":"#fa9974"})).unwrap();
+        let st = s.active().unwrap();
+        let layer = st.doc.layer(st.active_layer.unwrap()).unwrap();
+        let cached = photocraft_compose::bounds::content_bounds(layer.surface().unwrap());
+        for coordinate in [f64::NAN, f64::INFINITY, f64::from(i32::MAX)] {
+            let mut bad = layer.clone();
+            if let LayerContent::Shape(shape) = &mut bad.content {
+                shape.path.subpaths[0].knots[0].anchor.x = coordinate;
+            }
+            assert_eq!(transform_bounds(&st.doc, &bad), cached);
+        }
+        let mut bad = layer.clone();
+        if let LayerContent::Shape(shape) = &mut bad.content {
+            shape.stroke = Some(photocraft_doc::ShapeStroke { width: f32::MAX, ..Default::default() });
+        }
+        assert_eq!(transform_bounds(&st.doc, &bad), cached);
+    }
+
+    #[test]
+    fn cached_shape_bounds_reject_large_stroke_curved_cusp_without_panicking() {
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width":64,"height":64})).unwrap();
+        s.execute("shape.create", json!({"kind":"ellipse","rect":[48,16,32,32],"fill":"#fa9974"})).unwrap();
+        let st = s.active().unwrap();
+        let mut layer = st.doc.layer(st.active_layer.unwrap()).unwrap().clone();
+        let cached = photocraft_compose::bounds::content_bounds(layer.surface().unwrap());
+        let LayerContent::Shape(shape) = &mut layer.content else { panic!() };
+        let mut start = photocraft_doc::Knot::corner(0.0, 0.0);
+        start.out_ctrl = photocraft_geom::Point::new(1.0, 0.0);
+        let mut end = photocraft_doc::Knot::corner(0.0, 1e-5);
+        end.in_ctrl = photocraft_geom::Point::new(-1.0, 1e-5);
+        shape.path = photocraft_doc::Path::new(vec![photocraft_doc::Subpath { closed: false, knots: vec![start, end], op: photocraft_doc::PathOp::Combine }]);
+        shape.stroke = Some(photocraft_doc::ShapeStroke { width: 1_000_000.0, miter_limit: 1.0, ..Default::default() });
+        assert!(shape_bounds_work_is_bounded(shape), "fixture isolates stroke extent from work admission");
+        assert_eq!(transform_bounds(&st.doc, &layer), cached);
+    }
+
+    #[test]
+    fn cached_shape_bounds_reject_pathological_dash_work_but_keep_normal_dashes() {
+        let mut s = Session::new();
+        s.execute("file.new", json!({"width":64,"height":64})).unwrap();
+        s.execute("shape.create", json!({"kind":"ellipse","rect":[48,16,32,32],"fill":"#fa9974"})).unwrap();
+        let st = s.active().unwrap();
+        let mut layer = st.doc.layer(st.active_layer.unwrap()).unwrap().clone();
+        let cached = photocraft_compose::bounds::content_bounds(layer.surface().unwrap());
+        let LayerContent::Shape(shape) = &mut layer.content else { panic!() };
+        shape.stroke = Some(photocraft_doc::ShapeStroke { width: 1.0, dashes: vec![1e-6, 1e-6], ..Default::default() });
+        assert!(!shape_bounds_work_is_bounded(shape), "finite tiny dashes must not compile millions of pieces while idle");
+        assert_eq!(transform_bounds(&st.doc, &layer), cached);
+        let LayerContent::Shape(shape) = &mut layer.content else { panic!() };
+        shape.stroke.as_mut().unwrap().dashes = vec![2.0, 0.0, 1.0];
+        assert!(shape_bounds_work_is_bounded(shape), "ordinary odd and zero dash entries remain supported");
+        let full = photocraft_vector::render_shape(shape, st.doc.pixel_format(), Rect::new(-64, -64, 128, 128));
+        let painted = photocraft_compose::bounds::content_bounds(&full);
+        assert!(!cached.contains_rect(&painted));
+        assert!(transform_bounds(&st.doc, &layer).contains_rect(&painted));
+        let LayerContent::Shape(shape) = &mut layer.content else { panic!() };
+        shape.path.subpaths[0].knots = vec![shape.path.subpaths[0].knots[0]; 1025];
+        assert!(!shape_bounds_work_is_bounded(shape));
+        assert_eq!(transform_bounds(&st.doc, &layer), cached);
+    }
+
+    #[test]
+    fn interior_vector_raster_and_text_transform_bounds_keep_cached_content() {
+        let mut s = session();
+        for create in [
+            None,
+            Some(("shape.create", json!({"kind":"ellipse","rect":[20,20,30,30],"fill":"#fa9974"}))),
+            Some(("type.create", json!({"x":10,"y":50,"text":"Hi","size":20}))),
+        ] {
+            if let Some((command, params)) = create {
+                s.execute(command, params).unwrap();
+            }
+            let st = s.active().unwrap();
+            let layer = st.doc.layer(st.active_layer.unwrap()).unwrap();
+            assert_eq!(transform_bounds(&st.doc, layer), photocraft_compose::bounds::content_bounds(layer.surface().unwrap()));
+        }
     }
 
     #[test]
