@@ -34,6 +34,30 @@ SHA-256 `3c65885b6eaf0e7dd16a2dca8d8bcc9ea7d4a5607b94c5468f1fe52e4eed2ddc`.
 
 The final 20 live/concurrency tests pass. The optimized TLS load results are in [the scale review](scale-release-review.md); the 1,000-client target is not met. Final browser acceptance is recorded separately. No code-coverage percentage or production security certification is inferred from test counts.
 
+The final hardware-browser collaboration lane passes three regressions and all 19
+input-to-observed-pixel samples using two independent synthetic accounts on loopback.
+Installed Chrome 154.0.8037.98 uses the native WebGPU backend, with two visible
+1440 × 960 clients on macOS 26.5.1 / arm64. The six ordinary samples per configured
+HTTP-delay profile have the following nearest-rank statistics, including clock
+uncertainty in the upper bound:
+
+| Minimum request delay | Upper-bound p50 | Largest upper bound |
+|---|---:|---:|
+| 0 ms | 105.764 ms | 142.529 ms |
+| 50 ms | 185.734 ms | 204.208 ms |
+| 100 ms | 285.676 ms | 304.150 ms |
+
+The additional reload sample has an 83.976 ms upper bound. Measurement ends at a
+matching CDP-swapped PNG, not a physical display. These small samples cover cursor
+input and a supported native Pencil preview, not every editor operation or tail
+reliability. The delay is a CDP HTTP simulation, not measured Internet latency.
+No owned builds or load tests ran concurrently; ordinary macOS and unrelated user
+work remained active. The bundled software-renderer timing run and one bounded
+repeat produced matching pixels but exceeded the unchanged 15 ms clock-uncertainty
+limit (29.58 ms and 17.283 ms). Both remain invalid timing evidence rather than
+passes or demonstrated latency failures. Full functional browser acceptance uses
+the bundled browser independently of the hardware timing lane.
+
 ## Publication boundary
 
 Gitleaks inspected 412 reachable commits and found zero secrets before remediation. A separate object scan found eight historical restricted brand paths, three home-path-containing blob revisions across two repository paths, and 53 author email identities requiring manual review. The current restricted artwork was already removed; the current fork checkpoint path is now redacted. History remains unchanged.

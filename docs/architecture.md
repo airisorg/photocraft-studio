@@ -1,6 +1,6 @@
 # Photocraft Architecture
 
-Status: draft v1 (2026-09-30). This plan does not assume a final UI toolkit. The candidates are discussed in [`rust-framework-options.md`](rust-framework-options.md).
+Status: upstream draft v1 (2026-09-30). This plan does not assume a final UI toolkit. Its historical `rust-framework-options.md` companion is not included in this checkout; the current editor uses egui. This fork corrects unavailable documentation references without changing the plan below.
 
 This plan sets out:
 - the Cargo workspace,
@@ -526,7 +526,7 @@ Versions get pinned when we scaffold, using the numbers in `rust-framework-optio
 
 ## 15. Phased roadmap
 
-Each phase ends with a demoable build and green CI on all targets. Phases 8–10 (colour/print pro, photographer/designer pro, frontier) and the per-feature phase assignments are in [`photoshop-parity.md`](photoshop-parity.md).
+Each phase ends with a demoable build and green CI on all targets. The historical `photoshop-parity.md` companion for phases 8–10 is not included in this checkout. See the maintained [roadmap](roadmap.md) and [menu parity inventory](parity.md) for current implementation tracking.
 
 | Phase | Scope | Done when |
 |---|---|---|

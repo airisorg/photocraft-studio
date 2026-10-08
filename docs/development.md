@@ -21,7 +21,7 @@ Image code is slow at `opt-level 0`, so the workspace profile builds dependencie
 
 ## Fonts (craft-fonts)
 
-Font assets shared by the Crafting Apps live in [storytold/craft-fonts](https://github.com/storytold/craft-fonts), never in this repo: don't commit font files here (Inter and JetBrains Mono in `assets/fonts/` are the only exceptions; new fonts go to craft-fonts). The rules are in [`craftrules/standards/fonts.md`](../../craftrules/standards/fonts.md) ([on GitHub](https://github.com/storytold/craftrules/blob/main/standards/fonts.md)).
+Font assets shared by the Crafting Apps live in [storytold/craft-fonts](https://github.com/storytold/craft-fonts), never in this repo: don't commit font files here (Inter and JetBrains Mono in `assets/fonts/` are the only exceptions; new fonts go to craft-fonts). Upstream refers to `../craftrules/standards/fonts.md`; that separate checkout is unavailable in this fork's verified environment. This fork documents bundled font terms in [ATTRIBUTION.md](../ATTRIBUTION.md) and preserves this optional-input boundary.
 
 craft-fonts is an **optional build input**, never a Cargo dependency:
 
