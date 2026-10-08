@@ -26,7 +26,7 @@ next to them.
 
 ### Optional build input: craft-fonts (not files in this repo)
 
-Builds made with `CRAFT_FONTS_DIR` (all official releases) embed fonts from
+Builds made with `CRAFT_FONTS_DIR` (upstream's official native releases) embed fonts from
 [storytold/craft-fonts](https://github.com/storytold/craft-fonts) at a pinned commit; no font file
 from it is committed here. Per-file authors, sources and licences:
 [craft-fonts `ATTRIBUTION.md`](https://github.com/storytold/craft-fonts/blob/main/ATTRIBUTION.md).
@@ -94,9 +94,10 @@ not certify every native installer, operating-system image or linked system libr
 ## Test data (not committed, not shipped)
 
 `corpus/` is gitignored; these fetched corpus fixtures are not committed or shipped.
-`cargo xtask corpus --all` fetches every corpus at the pinned commits in `xtask/src/corpus_pins.rs`
-and verifies each file against the sha256 lists in `xtask/*.sha256`, with the upstream licence
-next to the files:
+`cargo xtask corpus --all` fetches the manifest-backed corpora at the pinned commits in
+`xtask/src/corpus_pins.rs` and verifies their files against `xtask/*.sha256`, with the
+upstream licence next to the files. PngSuite uses a minimum existing PNG count rather
+than a SHA-256 manifest; that check does not establish its per-file integrity.
 
 | Path (fetched) | Title | Author | Source | License |
 |---|---|---|---|---|

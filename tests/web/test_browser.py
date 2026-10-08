@@ -66,7 +66,7 @@ class BrowserAcceptance(unittest.TestCase):
             self.db.execute('DELETE FROM photocraft.accounts WHERE id=ANY(%s::uuid[])', (self.accounts,))
         self.assertEqual(self.errors, [], 'Uncaught browser errors')
 
-    def context_page(self, query='', viewport=None, token=None, browser=None, device_scale_factor=1):
+    def context_page(self, query='', viewport=None, token=None, browser=None, device_scale_factor=1, expected_document=None):
         ctx = (browser or self.browser).new_context(viewport=viewport or {'width': 1440, 'height': 960}, accept_downloads=True, device_scale_factor=device_scale_factor)
         self.contexts.append(ctx)
         if token:
@@ -75,7 +75,7 @@ class BrowserAcceptance(unittest.TestCase):
         page.on('pageerror', lambda error: self.errors.append(str(error)))
         page.on('dialog', lambda dialog: dialog.accept())
         try:
-            self.load(page, query)
+            self.load(page, query, expected_document=expected_document)
         except BaseException:
             # unittest does not call tearDown when setUp fails. Do not leave a
             # live WASM app polling while subsequent tests try to diagnose it.
@@ -84,12 +84,14 @@ class BrowserAcceptance(unittest.TestCase):
             raise
         return ctx, page
 
-    def load(self, page, query=''):
+    def load(self, page, query='', expected_document=None):
         # A collaborative editor keeps its live transport active. Readiness is
         # the actual native command bridge, rather than a quiet network.
         page.goto(BASE + '/' + query, wait_until='domcontentloaded', timeout=90000)
         page.wait_for_function('typeof window.photocraftCommand === "function"', timeout=60000)
         page.wait_for_timeout(400)
+        if expected_document is not None:
+            self.wait_opened_document(page, expected_document)
 
     def command(self, method, params=None, page=None):
         result = (page or self.page).evaluate(
@@ -229,9 +231,10 @@ class BrowserAcceptance(unittest.TestCase):
         with zipfile.ZipFile(io.BytesIO(data)) as archive:
             return json.loads(archive.read('manifest.json'))['document']
 
-    def auth_opened_document(self, page, expected):
+    def wait_opened_document(self, page, expected):
         # The native bridge is available before the asynchronous project download
-        # and open finish. Establish the real document before injecting expiry.
+        # and open finish. Expected-success fixtures require the actual native
+        # document; delayed/denied/open-race tests deliberately omit this option.
         expected_layers = [(layer['id'], layer['name']) for layer in expected['layers']]
         deadline = time.monotonic()+10
         document = None
@@ -346,7 +349,7 @@ class BrowserAcceptance(unittest.TestCase):
         first = self.wait_revision(1)
         self.execute('layer.duplicate')
         self.wait_revision(2)
-        self.load(self.page, '?project='+first['id'])
+        self.load(self.page, '?project='+first['id'], expected_document=self.inspect()['document'])
         self.page.wait_for_timeout(700)
         doc = self.inspect()['document']
         self.assertIsNotNone(doc)
@@ -470,7 +473,8 @@ class BrowserAcceptance(unittest.TestCase):
         self.new()
         self.page.mouse.click(1320,32)
         project = self.wait_revision(1)
-        other_context, second = self.context_page('?project='+project['id'], token=token)
+        other_context, second = self.context_page('?project='+project['id'], token=token,
+                                                 expected_document=self.inspect()['document'])
         self.assertIsNotNone(self.inspect(second)['document'])
         # Both editors modify the same pixels from the same saved revision.
         other_context.set_offline(True)
@@ -544,7 +548,8 @@ class BrowserAcceptance(unittest.TestCase):
         self.db.execute('INSERT INTO photocraft.sessions(hash,account_id) VALUES(%s,%s)', (hashlib.sha256(token.encode()).hexdigest(),ident))
         response=self.context.request.put(BASE+f"/api/projects/{project['id']}/members",headers={'Origin':BASE},data={'email':email,'role':'edit'})
         self.assertTrue(response.ok)
-        other_context,second=self.context_page('?project='+project['id'],token=token)
+        other_context,second=self.context_page('?project='+project['id'],token=token,
+                                              expected_document=self.inspect()['document'])
         layers=self.inspect(second)['document']['layers']
         self.assertEqual(len(layers),2)
         other_context.set_offline(True)
@@ -570,7 +575,7 @@ class BrowserAcceptance(unittest.TestCase):
         self.assertTrue(response.ok)
         second.wait_for_timeout(2000)
         second.screenshot(path=str(ARTIFACTS/'collaborator-view-role.png'))
-        self.load(second,'?project='+project['id'])
+        self.load(second,'?project='+project['id'], expected_document=self.inspect(second)['document'])
         self.assertEqual({l['name'] for l in self.inspect(second)['document']['layers']},expected)
 
 
@@ -1748,7 +1753,8 @@ class BrowserAcceptance(unittest.TestCase):
                     self.execute('shape.create', {'kind': 'rect', 'rect': [170, 80, 70, 90],
                                                   'fill': '#3344cc', 'name': 'Later local edit'})
                 elif scenario == 'collaborator':
-                    other_context, second = self.context_page('?project='+pid, token=token)
+                    other_context, second = self.context_page('?project='+pid, token=token,
+                                                              expected_document=self.inspect()['document'])
                     layers = self.inspect(second)['document']['layers']
                     self.execute('layer.renameLayer', {'layer': layers[0]['id'], 'name': 'Remote background'}, page=second)
                     save(['More', 'Comments', 'Save', 'Share'], page=second)
@@ -1802,7 +1808,7 @@ class BrowserAcceptance(unittest.TestCase):
                     self.assertCountEqual([l['name'] for l in json.loads(archive.read('manifest.json'))['document']['layers']], expected_names)
                 self.context.unroute('**/api/projects/*/uploads', upload)
                 self.context.unroute('**/api/uploads/*/commit', commit)
-                self.load(self.page, '?project='+pid)
+                self.load(self.page, '?project='+pid, expected_document=self.inspect()['document'])
                 self.assertEqual(Image.open(self.download('file.export.quickExportAsPng')).convert('RGBA').tobytes(), pixels,
                                  'Save retry or reopen changed the document pixels')
                 observations.append({'scenario': scenario, 'revision': current['revision'],
@@ -2543,7 +2549,8 @@ class BrowserAcceptance(unittest.TestCase):
                 other_context = None
                 if held_kind == 'content':
                     self.context.route(pattern, hold)
-                    other_context, other = self.context_page('?project='+pid, token=token)
+                    other_context, other = self.context_page('?project='+pid, token=token,
+                                                             expected_document=self.inspect()['document'])
                     self.execute('shape.create', {'kind': 'rect', 'rect': [220, 70, 80, 100],
                                                   'fill': '#ffbb22', 'name': 'Later cloud content'}, page=other)
                     save(['More', 'Comments', 'Save', 'Share'], page=other)
@@ -2776,10 +2783,9 @@ class BrowserAcceptance(unittest.TestCase):
         self.assertTrue(self.context.request.put(member_path, headers={'Origin':BASE},
                                                 data={'email':email,'role':'edit'}).ok)
         owner_context, owner_page = self.context, self.page
-        other_context, other = self.context_page('?project='+pid, token=token)
+        other_context, other = self.context_page('?project='+pid, token=token, expected_document=expected[0])
         self.context, self.page = other_context, other
         try:
-            self.auth_opened_document(other, expected[0])
             self.db.execute('DELETE FROM photocraft.sessions WHERE account_id=%s', (collaborator,))
             self.execute('layer.renameLayer', {'name':'Retained after permission downgrade'})
             retained = self.inspect()['document']
@@ -3068,8 +3074,8 @@ class BrowserAcceptance(unittest.TestCase):
         pid = created.value.json()['id']
         self.auth_revision(pid, 1)
         self.page.wait_for_timeout(300)
-        other_context, other = self.context_page('?project='+pid, token=token)
-        self.auth_opened_document(other, self.inspect()['document'])
+        other_context, other = self.context_page('?project='+pid, token=token,
+                                                 expected_document=self.inspect()['document'])
         layers = self.inspect()['document']['layers']
         self.context.set_offline(True)
         self.execute('layer.renameLayer', {'layer':layers[0]['id'],'name':'Owner local shape'})
