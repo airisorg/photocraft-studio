@@ -1,6 +1,6 @@
 # PhotoCraft Studio
 
-PhotoCraft Studio is an independent web adaptation of [PhotoCraft](https://github.com/storytold/photocraft), created by the ArtCraft team and the PhotoCraft contributors. Their Rust editor, document model, painting tools, file formats, and GPU compositor are the foundation of this project. Thank you to the upstream contributors.
+PhotoCraft Studio is an independent web adaptation of [PhotoCraft](https://github.com/storytold/photocraft). The original PhotoCraft project was created by the ArtCraft team and the PhotoCraft contributors. Their Rust editor, document model, painting tools, file formats, and GPU compositor are the foundation of this project. Thank you to the upstream contributors.
 
 This fork is maintained independently in [FZ2000/photocraft](https://github.com/FZ2000/photocraft). It is not affiliated with, sponsored by, endorsed by, or an official release of the ArtCraft team. Please report issues in this fork to its maintainers.
 
@@ -20,9 +20,9 @@ The editor and this adaptation remain early-alpha software. A passed local bench
 
 ## Try it
 
-Open [PhotoCraft Studio](https://photocraft-studio-d42c446ec275.trytofu.app/) in a supported desktop browser. Local editing and download do not require a cloud account. Saving and collaboration require sign-in and access to a shared project.
+Open [PhotoCraft Studio](https://photocraft-studio-d42c446ec275.trytofu.app/) in a supported desktop browser. Local editing and download do not require a cloud account. Cloud saving requires sign-in; collaboration also requires access to a shared project.
 
-To build the native editor:
+With access to the private repository, build the native editor:
 
 ```sh
 git clone https://github.com/FZ2000/photocraft.git
