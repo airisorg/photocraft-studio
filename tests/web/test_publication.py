@@ -24,7 +24,9 @@ class PublicationHistory(unittest.TestCase):
         url = 'https://static.rust-lang.org/rustup/archive/1.28.2/x86_64-unknown-freebsd/rustup-init'
         # A harmless marker replaces the binary. The official downloaded installer
         # is never invoked; only the actual workflow control flow is exercised.
-        payload = b'#!/bin/sh\nprintf "%s\\n" "$@" > "$FIXTURE_MARKER"\n'
+        # Pinned rustup dispatches setup mode from its executable basename.
+        payload = (b'#!/bin/sh\n[ "${0##*/}" = rustup-init ] || exit 64\n'
+                   b'printf "%s\\n" "$@" > "$FIXTURE_MARKER"\n')
         fixture_digest = hashlib.sha256(payload).hexdigest()
         for name in ['freebsd.yml', 'release.yml']:
             source = (root/'.github/workflows'/name).read_text()
@@ -45,9 +47,8 @@ class PublicationHistory(unittest.TestCase):
                     # FreeBSD's mktemp -t accepts a prefix; GNU mktemp expects a
                     # template. Keep this fixture independent of the test host.
                     'mktemp': '#!'+sys.executable+'\nimport os,sys,tempfile\n'
-                              'assert sys.argv[1:] == ["-t", "photocraft-rustup"]\n'
-                              'fd,path=tempfile.mkstemp(prefix="photocraft-rustup",dir=os.environ["TMPDIR"])\n'
-                              'os.close(fd)\nprint(path)\n',
+                              'assert sys.argv[1:] == ["-d", "-t", "photocraft-rustup"]\n'
+                              'print(tempfile.mkdtemp(prefix="photocraft-rustup",dir=os.environ["TMPDIR"]))\n',
                     'curl': '#!'+sys.executable+'\nimport os,sys\nfrom pathlib import Path\n'
                             'if os.environ["FIXTURE_MODE"] == "download-error": sys.exit(22)\n'
                             'data='+repr(payload)+'\n'
@@ -70,7 +71,7 @@ class PublicationHistory(unittest.TestCase):
                                                 env=environment, capture_output=True)
                         self.assertEqual(result.returncode == 0, mode == 'valid')
                         self.assertEqual(marker.exists(), mode == 'valid')
-                        self.assertEqual(list(temp.glob('photocraft-rustup*')), [], 'Downloaded file must be removed')
+                        self.assertEqual(list(temp.glob('photocraft-rustup*')), [], 'Owned download directory must be removed')
                         if mode == 'valid':
                             self.assertEqual(marker.read_text().splitlines(), ['-y', '--profile', 'minimal',
                                              '--default-host', 'x86_64-unknown-freebsd', '--default-toolchain', 'stable'])

@@ -317,8 +317,10 @@ jobs:
           prepare: |
             set -eu
             pkg install -y bash git curl pkgconf cmake python3 libxkbcommon wayland libX11 libXcursor libXrandr libXi libxcb mesa-libs vulkan-loader gtk3 fontconfig freetype2 alsa-lib
-            PHOTOCRAFT_RUSTUP_INIT="$(mktemp -t photocraft-rustup)"
-            trap 'rm -f "$PHOTOCRAFT_RUSTUP_INIT"' EXIT
+            PHOTOCRAFT_RUSTUP_DIR="$(mktemp -d -t photocraft-rustup)"
+            trap 'rm -rf "$PHOTOCRAFT_RUSTUP_DIR"' EXIT
+            # rustup chooses installer mode from the executable basename.
+            PHOTOCRAFT_RUSTUP_INIT="$PHOTOCRAFT_RUSTUP_DIR/rustup-init"
             # Official rustup 1.28.2 x86_64 FreeBSD archive; verify before execution.
             curl --proto '=https' --tlsv1.2 -fsSL --output "$PHOTOCRAFT_RUSTUP_INIT" https://static.rust-lang.org/rustup/archive/1.28.2/x86_64-unknown-freebsd/rustup-init
             [ "$(sha256 -q "$PHOTOCRAFT_RUSTUP_INIT")" = '4d9fef2e40731489f3186c61a0f178d54d79864fe3d34791edf5b17f70074956' ]
