@@ -1,5 +1,6 @@
 //! Bounded, authenticated transient views. Saved documents still use the native cloud path.
 use super::{Binding, CloudHttp, HttpFailure, account_request, field, now};
+use crate::live_peer::PreviewLease;
 use photocraft_doc::{DocId, Document};
 use photocraft_ui_egui::{
     PhotocraftApp,
@@ -51,6 +52,7 @@ pub(super) struct Live {
     editing_paused: bool,
     blocked_base: Option<i64>,
     peers: HashMap<String, f64>,
+    previews: HashMap<String, PreviewLease>,
     pub notice: Option<String>,
 }
 
@@ -147,6 +149,7 @@ impl Live {
         self.editing_paused = false;
         self.blocked_base = None;
         self.peers.clear();
+        self.previews.clear();
         self.notice = None;
         collaboration::clear_all(app);
         collaboration::set_enabled(app, false);
@@ -188,6 +191,7 @@ impl Live {
         if self.base.as_ref().is_some_and(|(revision, _)| *revision != binding.revision) {
             collaboration::clear_all(app);
             self.peers.clear();
+            self.previews.clear();
             self.events.clear();
             self.gesture = None;
             self.changed = true;
@@ -275,6 +279,7 @@ impl Live {
                         self.cursor = None;
                         self.changed = false;
                         self.peers.clear();
+                        self.previews.clear();
                         collaboration::clear_all(app);
                         collaboration::set_enabled(app, false);
                         return Some(Update { revision: binding.revision, role: "unavailable".into() });
@@ -329,6 +334,7 @@ impl Live {
             if !matches!(role.as_str(), "owner" | "edit" | "view") {
                 collaboration::clear_all(app);
                 self.peers.clear();
+                self.previews.clear();
                 continue;
             }
             let mut present = HashMap::new();
@@ -341,8 +347,15 @@ impl Live {
                         continue;
                     }
                     present.insert(label.clone(), clock + lease);
-                    if peer.get("gesture").is_none_or(Value::is_null) {
-                        collaboration::clear_peer(app, &label);
+                    let clean_base = app.session.active().is_some_and(|d| self.base.as_ref().is_some_and(|(_, base)| Arc::ptr_eq(base, &d.doc)));
+                    // The server hides previous-base gestures as soon as a save commits.
+                    // Its native bytes may still be downloading: retire at installation,
+                    // not at notification, without renewing the admitted preview's lease.
+                    if peer.get("gesture").is_none_or(Value::is_null)
+                        && !self.previews.get(&label).is_some_and(|p| p.retain_for_install(clock, revision, binding.revision, clean_base))
+                    {
+                        collaboration::clear_preview(app, &label);
+                        self.previews.remove(&label);
                     }
                     collaboration::set_peer_label(app, &label, field(peer, "name"));
                     let position = peer.get("cursor").filter(|c| !c.is_null()).and_then(|c| Some([c.get("x")?.as_f64()?, c.get("y")?.as_f64()?]));
@@ -354,20 +367,28 @@ impl Live {
                         PreviewEvent { gesture: 0, sequence: 0, kind: PreviewKind::Cursor { position } },
                         native_clock,
                     );
-                    let clean_base = app.session.active().is_some_and(|d| self.base.as_ref().is_some_and(|(_, base)| Arc::ptr_eq(base, &d.doc)));
                     if peer.get("baseRevision").and_then(Value::as_i64) != Some(binding.revision) || !clean_base {
                         continue;
                     }
                     let expected = app.session.active().map_or(0, |d| d.revision);
                     if let Some(events) = peer.pointer("/gesture/events").and_then(Value::as_array) {
                         for raw in events.iter().take(collaboration::MAX_EVENTS) {
-                            let result = serde_json::from_value::<PreviewEvent>(raw.clone())
-                                .map_err(|e| e.to_string())
-                                .and_then(|event| collaboration::receive(app, document, expected, &label, event, native_clock));
+                            let result = serde_json::from_value::<PreviewEvent>(raw.clone()).map_err(|e| e.to_string()).and_then(|event| {
+                                let clear = matches!(event.kind, PreviewKind::Cancel | PreviewKind::Unavailable { .. });
+                                collaboration::receive(app, document, expected, &label, event, native_clock)?;
+                                if clear {
+                                    self.previews.remove(&label);
+                                } else {
+                                    self.previews.entry(label.clone()).or_default().admitted(clock + lease);
+                                }
+                                Ok(())
+                            });
                             match result {
                                 Ok(()) => {}
                                 Err(_) => {
                                     self.notice = Some("Some live gestures are waiting for the saved version.".into());
+                                    collaboration::clear_preview(app, &label);
+                                    self.previews.remove(&label);
                                     break;
                                 }
                             }
@@ -379,11 +400,20 @@ impl Live {
                 collaboration::clear_peer(app, absent);
             }
             self.peers = present;
+            self.previews.retain(|peer, _| self.peers.contains_key(peer));
             ctx.request_repaint();
         }
         self.peers.retain(|peer, expires| {
             if *expires <= clock {
                 collaboration::clear_peer(app, peer);
+                false
+            } else {
+                true
+            }
+        });
+        self.previews.retain(|peer, preview| {
+            if !self.peers.contains_key(peer) || preview.expired(clock) {
+                collaboration::clear_preview(app, peer);
                 false
             } else {
                 true

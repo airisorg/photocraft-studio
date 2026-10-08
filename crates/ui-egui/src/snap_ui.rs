@@ -5,6 +5,8 @@
 //! Snapping is on when View › Snap (⇧⌘;) is; holding Ctrl while dragging turns it off for that
 //! drag, as in Photoshop. Smart guides follow View › Show › Smart Guides and also snap the Move
 //! tool to other layers' edges and centres. The threshold is 8 screen pixels at the current zoom.
+// PhotoCraft Studio modification (2026-10-08): allow Move Auto-Select to refresh the native
+// snap gesture after picking its actual layer, before any drag offset is applied.
 
 use egui::{Color32, Stroke, pos2};
 use photocraft_doc::LayerId;
@@ -131,8 +133,8 @@ fn override_held(mods: egui::Modifiers) -> bool {
     mods.ctrl && !mods.mac_cmd
 }
 
-/// Start snapping for a drag beginning at `p` (called on pointer down).
-fn begin(app: &mut PhotocraftApp, p: [f64; 2]) {
+/// Start snapping for a drag beginning at `p` (and refresh after Move Auto-Select).
+pub(crate) fn begin(app: &mut PhotocraftApp, p: [f64; 2]) {
     app.prefs_rt.snap = None;
     app.prefs_rt.snap_lines.clear();
     if app.session.active().is_none() {
@@ -328,6 +330,37 @@ mod tests {
     fn mover_bounds(app: &PhotocraftApp) -> photocraft_geom::Rect {
         let st = app.session.active().unwrap();
         st.doc.layer(st.active_layer.unwrap()).unwrap().surface().unwrap().content_bounds()
+    }
+
+    #[test]
+    fn auto_selected_move_uses_picked_layer_bounds_and_excludes_it_from_snap_targets() {
+        for (auto_select, modifiers) in [(true, egui::Modifiers::NONE), (false, egui::Modifiers { command: true, ..Default::default() })] {
+            let mut app = app_with_box();
+            let previous = app.session.active().unwrap().active_layer.unwrap();
+            let history = app.session.active().unwrap().history.entries().len();
+            app.ui.tool = Tool::Move;
+            app.ui.tool_options.move_auto_select = auto_select;
+            crate::canvas::tool_event(&mut app, ToolEvent::Down { x: 320.0, y: 220.0, pressure: 1.0 }, modifiers);
+            let picked = app.session.active().unwrap().active_layer.unwrap();
+            assert_ne!(picked, previous);
+            let snap = app.prefs_rt.snap.as_ref().unwrap();
+            assert_eq!(snap.gesture, Gesture::Move { rect: [300.0, 200.0, 350.0, 260.0] }, "outline and snapping must follow the picked layer");
+            assert_eq!(snap.start, [320.0, 220.0]);
+            // A 22px move has no nearby target except the picked layer's own old centre.
+            // Its original bounds must not be included as snapping targets.
+            crate::canvas::tool_event(&mut app, ToolEvent::Move { x: 342.0, y: 242.0, pressure: 1.0 }, egui::Modifiers::NONE);
+            let points = &app.drag.as_ref().unwrap().points;
+            let at = points.last().unwrap();
+            assert_eq!([at[0], at[1]], [342.0, 242.0]);
+            // The previously selected layer remains a target: left edge43 snaps to40.
+            crate::canvas::tool_event(&mut app, ToolEvent::Move { x: 63.0, y: 100.0, pressure: 1.0 }, egui::Modifiers::NONE);
+            assert!(app.prefs_rt.snap_lines.iter().any(|l| l.vertical && l.pos == 40.0 && l.kind.is_smart()));
+            crate::canvas::tool_event(&mut app, ToolEvent::Up { x: 63.0, y: 100.0 }, egui::Modifiers::NONE);
+            assert_eq!(mover_bounds(&app).x0, 40);
+            let st = app.session.active().unwrap();
+            assert_eq!(st.doc.layer(previous).unwrap().surface().unwrap().content_bounds(), photocraft_geom::Rect::new(40, 40, 90, 80));
+            assert_eq!(st.history.entries().len(), history + 1);
+        }
     }
 
     #[test]

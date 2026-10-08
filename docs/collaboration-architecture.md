@@ -132,6 +132,20 @@ from request start through response handling from each peer's remaining lease. E
 are not admitted, and a network failure does not restart a previous lease. A response admitted
 before revocation cannot be recalled from the network.
 
+When a live response announces a newer saved revision, the web adapter keeps an already
+admitted native preview while the corresponding canonical document downloads. This handoff
+is limited to the same still-present authorized peer, a clean unchanged local base, and the
+preview's original remaining lease; cursor-only heartbeats do not renew it. Installing the
+canonical base, local edits, cancellation at the same base, peer absence/revocation, auth
+reset or lease expiry removes the preview. After an already-admitted native End and a
+saved revision advance, leaving the canvas can retain that publisher's metadata until
+the original lease expires. Its cursor and obsolete gesture remain hidden. Repeated
+empty updates advance sequence watermarks without refreshing that handoff lease; fresh
+authorization still filters the metadata, and its existing room/tab slot remains counted.
+Same-base clear, Cancel, unavailable input and project rebinding keep their ordinary
+clear behavior. This bounded retention changes neither saved revisions nor native
+document/history and is not proof of which peer owns a commit.
+
 Bounds are 64 KiB per update, 256 events, 1,024 points, eight active tabs per session,
 256 retained session watermarks and 64 active room slots; the native view shows at most
 32 peer cursors. Brush previews also have a conservative 16-million estimated dab-pixel

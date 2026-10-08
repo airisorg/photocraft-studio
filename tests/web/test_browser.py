@@ -254,7 +254,7 @@ class BrowserAcceptance(unittest.TestCase):
         self.fail(f'The expected native cloud document did not open: {document}')
 
     def test_01_workspace_new_canvas_button(self):
-        self.assertEqual(self.page.title(), 'PhotoCraft Studio')
+        self.assertEqual(self.page.title(), 'PhotoCraft Studio — Browser Image Editor')
         self.click_workspace_action('Create a design')
         self.page.wait_for_timeout(200)
         dialog = self.inspect()['dialogs'][0]
@@ -3225,7 +3225,11 @@ class BrowserAcceptance(unittest.TestCase):
             self.command('ui.menu.invoke',{'id':'edit.preferences.general'})
             self.page.wait_for_timeout(250)
             wide=Image.open(io.BytesIO(self.page.screenshot()))
+            wide.save(ARTIFACTS/'preferences-reference-wide.png')
             references=preferences_section_references(wide,bounds(wide_before,wide))
+            evidence['references']={name:{'size':mask.size} for name,mask in references.items()}
+            for name,mask in references.items():
+                mask.save(ARTIFACTS/f'preferences-reference-{name}.png')
             values=self.inspect()['dialogs'][0]['fields']['values']
             self.page.keyboard.press('Escape')
             self.page.set_viewport_size({'width':390,'height':844})
@@ -3245,6 +3249,7 @@ class BrowserAcceptance(unittest.TestCase):
                 self.page.mouse.move(0,0)
                 self.page.wait_for_timeout(100)
                 before=Image.open(io.BytesIO(self.page.screenshot()))
+                before.save(ARTIFACTS/f'preferences-before-{section}.png')
                 selector=compact_preferences_selector(before,bounds(clean,before))
                 x0,y0,x1,y1=selector
                 self.page.mouse.click((x0+x1)/2,(y0+y1)/2)
@@ -3262,14 +3267,15 @@ class BrowserAcceptance(unittest.TestCase):
                     (ARTIFACTS/f'preferences-menu-{section}-failed.png').write_bytes(picture)
                     self.fail(last)
                 (ARTIFACTS/f'preferences-menu-{section}.png').write_bytes(picture)
+                evidence['choices'].append({'section':section,'selector':selector,**choice})
                 x0,y0,x1,y1=choice['rect']
                 self.page.mouse.click((x0+x1)/2,(y0+y1)/2)
                 self.page.wait_for_timeout(100)
                 fields=self.inspect()['dialogs'][0]['fields']
+                evidence['choices'][-1]['observed_section']=fields['section']
+                self.page.screenshot(path=str(ARTIFACTS/f'preferences-section-{section}.png'))
                 self.assertEqual(fields['section'],section,'Painted native menu row did not select its section')
                 self.assertEqual(fields['values'],pending,'Section selection lost/changed the pending native working copy')
-                self.page.screenshot(path=str(ARTIFACTS/f'preferences-section-{section}.png'))
-                evidence['choices'].append({'section':section,'selector':selector,**choice})
             self.page.keyboard.press('Escape')
             self.page.wait_for_timeout(100)
             self.assertEqual(self.inspect()['dialogs'],[])
@@ -3285,6 +3291,188 @@ class BrowserAcceptance(unittest.TestCase):
             for dialog in self.inspect()['dialogs']:
                 self.command('ui.dialog.cancel',{'dialog':dialog['id']})
             (ARTIFACTS/'preferences-section-selector.json').write_text(json.dumps(evidence,indent=2)+'\n')
+
+
+    def test_53_native_clipped_shape_move_keeps_held_pixels_and_picked_outline(self):
+        from PIL import ImageChops, ImageFilter
+
+        evidence = {'scope': 'Original editable starter, trusted Type and Move input, held versus committed pixels.',
+                    'checkpoints': []}
+
+        def wait(check, message, seconds=10):
+            deadline = time.monotonic()+seconds
+            while time.monotonic() < deadline:
+                result = check()
+                if result:
+                    return result
+                self.page.wait_for_timeout(50)
+            self.fail(message)
+
+        def picture(name):
+            data = self.page.screenshot(scale='css')
+            (ARTIFACTS/f'move-preview-{name}.png').write_bytes(data)
+            return Image.open(io.BytesIO(data)).convert('RGB')
+
+        def layer_contents(document):
+            return [{key: value for key, value in layer.items() if key != 'selected'}
+                    for layer in document['layers']]
+
+        def color_mask(image, color):
+            bands = ImageChops.difference(image, Image.new('RGB', image.size, color)).split()
+            return ImageChops.lighter(ImageChops.lighter(bands[0], bands[1]), bands[2]).point(
+                lambda value: 255 if value <= 2 else 0)
+
+        def outline_coverage(held, committed, rect):
+            def ink(x, y):
+                if not (0 <= x < held.width and 0 <= y < held.height):
+                    return False
+                a, b = held.getpixel((x, y)), committed.getpixel((x, y))
+                return (sum(abs(v-w) for v, w in zip(a, b)) > 25
+                        and a[2] > .7*a[0] and a[2] > .8*a[1])
+
+            def edge(horizontal, at, start, end):
+                points = list(range(round(start)+8, round(end)-7, 3))
+                self.assertGreater(len(points), 20, 'A visible selected-layer edge is required')
+                return sum(any(ink(pos, round(at)+d) if horizontal else ink(round(at)+d, pos)
+                               for d in range(-2, 3)) for pos in points)/len(points)
+
+            x0, y0, x1, y1 = rect
+            return {'top': edge(True, y0, x0, x1), 'bottom': edge(True, y1, x0, x1),
+                    'left': edge(False, x0, y0, y1), 'right': edge(False, x1, y0, y1)}
+
+        try:
+            # Wait for real gallery pixels, not merely an initialized command bridge.
+            deadline = time.monotonic()+10
+            while time.monotonic() < deadline:
+                try:
+                    home = Image.open(io.BytesIO(self.page.screenshot(scale='css')))
+                    workspace_controls(home)
+                    cards = workspace_template_previews(home)
+                    self.assertEqual(len(cards), 6)
+                    break
+                except AssertionError:
+                    self.page.wait_for_timeout(50)
+            else:
+                self.fail('The original starter gallery did not render')
+            x0, y0, x1, y1 = cards[2]
+            self.page.mouse.click((x0+x1)/2, (y0+y1)/2)
+            original = wait(lambda: self.inspect().get('document'), 'Native starter did not open')
+            self.assertEqual((original['width'], original['height'], len(original['layers'])), (1920, 1080, 9))
+            self.command('ui.set', {'fit': True})
+            self.page.wait_for_timeout(250)
+            state = self.inspect()
+            image = picture('starter')
+            box = color_mask(image, (35, 33, 55)).crop((90, 190, 1090, 900)).getbbox()
+            self.assertIsNotNone(box, 'Original template background must be painted')
+            left, top, right, bottom = box[0]+90, box[1]+190, box[2]+90, box[3]+190
+            self.assertTrue(950 < right-left < 1000 and 520 < bottom-top < 560,
+                            (left, top, right, bottom))
+            zoom = state['views'][0]['zoom']
+            point = lambda x, y: (left+x*zoom, top+y*zoom)
+            headline = next(layer for layer in original['layers']
+                            if layer.get('text', {}).get('text') == 'What\ncomes next.')
+            self.page.keyboard.press('t')
+            wait(lambda: self.inspect()['tool'] == 'Type', 'Type shortcut did not select the native tool')
+            self.page.mouse.click(*point(250, 415))
+            edit = wait(lambda: self.inspect().get('textEdit'), 'Native Type did not pick the headline')
+            self.assertEqual(edit['layer'], headline['id'])
+            self.page.keyboard.press('ControlOrMeta+A')
+            self.page.keyboard.type('Make')
+            self.page.keyboard.press('Enter')
+            self.page.keyboard.type('ideas real.')
+            self.page.keyboard.press('ControlOrMeta+Enter')
+            wait(lambda: self.inspect().get('textEdit') is None, 'Native Type did not commit')
+            typed = self.inspect()['document']
+            self.assertEqual(next(layer for layer in typed['layers'] if layer['id'] == headline['id'])['text']['text'],
+                             'Make\nideas real.')
+            orbit = next(layer for layer in typed['layers'] if layer['name'] == 'Orbit two')
+            shape = self.execute('shape.info', {'layer': orbit['id']})
+            self.assertEqual(shape['kind'], 'ellipse')
+            self.assertIsNone(shape['stroke'])
+            geometry = shape['live']['rect']
+            self.assertGreater(geometry[2], orbit['bounds'][2], 'Fixture must contain clipped vector geometry')
+            self.page.keyboard.press('v')
+            wait(lambda: self.inspect()['tool'] == 'Move', 'Move shortcut did not select the native tool')
+            start = point(1740, 650)
+            # The earliest checkpoint must expose all four true vector edges
+            # inside the canvas viewport, not ask for a clipped offscreen edge.
+            travel_x = 300
+            crop = (left, top, right, bottom)
+
+            for steps in (15, 30, 45):
+                before = self.inspect()['document']
+                self.page.mouse.move(*start)
+                self.page.mouse.down()
+                first_down = self.inspect()
+
+                def picked_after_input_frame():
+                    current = self.inspect()
+                    return current if (current['frame'] > first_down['frame']
+                                       and current['document']['activeLayer'] == orbit['id']) else None
+
+                # The control queue drains before canvas pointer processing in
+                # the same native frame. Wait for that trusted Down to be
+                # consumed, including on later gestures already selecting Orbit.
+                picked = wait(picked_after_input_frame, 'Move Auto-Select did not pick the actual orange shape')
+                pressed = picked['document']
+                evidence.setdefault('selectionFrames', []).append({
+                    'steps': steps, 'firstFrame': first_down['frame'], 'pickedFrame': picked['frame'],
+                    'firstLayer': first_down['document']['activeLayer'], 'pickedLayer': pressed['activeLayer']})
+                self.assertEqual(pressed['activeLayer'], orbit['id'])
+                self.assertEqual(pressed['history'], before['history'])
+                for step in range(1, steps+1):
+                    self.page.mouse.move(start[0]-travel_x*step/45, start[1]+30*step/45)
+                    self.page.wait_for_timeout(40)
+                held = picture(f'held-{steps}')
+                native = self.inspect()
+                self.assertIsNone(native.get('textEdit'), 'Committed Type overlay must be absent')
+                self.assertEqual(native['document']['activeLayer'], orbit['id'])
+                self.assertEqual(layer_contents(native['document']), layer_contents(before))
+                self.assertEqual(native['document']['history'], before['history'])
+                # Native Auto-Select changes revision before Move begins; it is
+                # the held gesture after that selection which must stay inert.
+                self.assertEqual(native['document']['revision'], pressed['revision'],
+                                 'Held preview changed native revision')
+                self.page.mouse.up()
+                moved = wait(lambda: self.inspect()['document']
+                             if self.inspect()['document']['revision'] != pressed['revision'] else None,
+                             'Move release did not commit')
+                self.page.wait_for_timeout(150)
+                committed = picture(f'committed-{steps}')
+                target = next(layer for layer in moved['layers'] if layer['id'] == orbit['id'])
+                self.assertLess(target['bounds'][0], orbit['bounds'][0]-100)
+                held_mask = color_mask(held.crop(crop), (250, 153, 116))
+                committed_mask = color_mask(committed.crop(crop), (250, 153, 116))
+                for mask in (held_mask, committed_mask):
+                    self.assertGreater(sum(value != 0 for value in mask.get_flattened_data()), 20000,
+                                       'Both frames must contain the actual orange shape')
+                excess = ImageChops.subtract(held_mask, committed_mask.filter(ImageFilter.MaxFilter(3)))
+                missing = ImageChops.subtract(committed_mask, held_mask.filter(ImageFilter.MaxFilter(3)))
+                # Read original vector extents, not the narrower raster cache.
+                rect = (left+target['bounds'][0]*zoom, top+target['bounds'][1]*zoom,
+                        left+(target['bounds'][0]+geometry[2])*zoom,
+                        top+(target['bounds'][1]+geometry[3])*zoom)
+                coverage = outline_coverage(held, committed, rect)
+                result = {'steps': steps, 'expectedOutline': rect, 'outlineCoverage': coverage,
+                          'excessOrangePixels': sum(value != 0 for value in excess.get_flattened_data()),
+                          'missingOrangePixels': sum(value != 0 for value in missing.get_flattened_data())}
+                evidence['checkpoints'].append(result)
+                self.assertEqual((result['excessOrangePixels'], result['missingOrangePixels']), (0, 0),
+                                 'Held Move pixels differ from the same committed offset beyond a one-pixel edge')
+                self.assertGreaterEqual(min(coverage.values()), .75, 'Move retained the previous layer outline')
+                self.page.keyboard.press('ControlOrMeta+z')
+                wait(lambda: layer_contents(self.inspect()['document']) == layer_contents(typed),
+                     'Undo did not restore the complete typed layout')
+                self.page.keyboard.press('ControlOrMeta+Shift+z')
+                wait(lambda: layer_contents(self.inspect()['document']) == layer_contents(moved),
+                     'Redo did not restore the complete moved layout')
+                self.page.keyboard.press('ControlOrMeta+z')
+                wait(lambda: layer_contents(self.inspect()['document']) == layer_contents(typed),
+                     'Next gesture did not start from the original native layout')
+            evidence['passed'] = True
+        finally:
+            self.page.mouse.up()
+            (ARTIFACTS/'move-preview-pixels.json').write_text(json.dumps(evidence, indent=2)+'\n')
 
 
 if __name__ == '__main__':

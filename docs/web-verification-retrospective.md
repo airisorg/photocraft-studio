@@ -31,10 +31,54 @@ it through the UI, persisted state, runtime, and deployment.
 | Browser recovery accumulates old documents | Individual snapshots could be written and recovered | The requested policy is one latest-visited recovery copy, including real eviction | Visit clean A/B/A documents, reload, migrate old rows, preserve account isolation, reject stale writes and prevent multi-tab work loss on sign-in |
 | Collaboration takes several seconds | Native state eventually converged and HTTP requests were fast | Trusted input must produce matching pixels on another user's visible canvas during the gesture | Calibrate input/frame clocks; reject stale or frozen pixels; measure cursors and held native strokes under declared network profiles; verify committed bytes and reload separately |
 | Release-image execution was untested | Debug-service/browser suites and package identity checks passed | The exact ZIP's Dockerfile must build/start the release service, serve tested bytes and connect with verified database TLS | Fresh Linux exact-package image job, trusted API/live/lock suites and a hash-bound receipt required before promotion |
+| Demo barely showed an edit | Still frames, file provenance and seven-second duration were checked | A useful recording must show legible, continuous actions and their visible result | Review complete playback, progressive motion and scene timing; keep PNG validation warnings outside the recorded interval; verify the served video decodes and pauses |
+| Recording shows a cloud-startup notice | Native editing and the downloaded file passed against a static capture server | The recording fixture must also model a configured guest workspace | Use the real isolated backend and database, await actual configuration and unauthenticated account responses, verify the settled footer, then record; do not hide the notice or fabricate sign-in availability |
+| Dragging an edge-clipped vector leaves a trail | Pixels, Undo/Redo and the native file matched after release | Every held preview must erase the previous painted region, including vector pixels revealed by moving inward | Apply each native damage-region composite to the previous frame and compare all pixels with a full composition at successive and skipped offsets on all four canvas edges |
+| Move shows the previously selected layer's outline | Auto-Select chose the new layer and the final translation succeeded | Snapping bounds and targets must belong to the layer selected by this pointer press | Select A, press B with native Auto-Select, then check the held outline, bounds and excluded snapping targets |
+| A clipped vector's box crosses inside its revealed shape | The outline followed the picked layer's cached pixels | Native transform bounds must include its full fill/stroke geometry, including pixels beyond the canvas edge | Compare full geometry and independently rendered pixels on all four edges; preserve raster/interior/mask behavior and verify the held box in the browser |
+| Collaborator preview briefly snaps back on release | Held-preview and final saved pixels separately matched | Authorized preview pixels must remain visible while a newer native archive downloads | Delay actual receiver version bytes, sample rendered pixels throughout release and installation, then test cancellation, revocation, local edits and original lease expiry separately |
+| Move briefly returns to old pixels at pointer release | Paint handoff tests kept a finished stroke visible until its saved version arrived | Move with Auto-Select has a distinct ordering: view revision, held native transform, release and durable save must be tested together | Hold an auto-selected Move across an autosave interval, inspect the first saved archive, delay canonical installation and require uninterrupted remote release frames plus native-file convergence |
 
 The test for the saved CPU preference failed before the adapter fix: it observed GPU still
 active after restart. The original header failed the pixel geometry check. These are useful
 regressions because they distinguish the broken behavior from the intended behavior.
+
+The 2026-10-08 demo review exposed the motion gaps above. The first GIF had only four
+distinct states, moved its artwork farther out of view and included export notices.
+A continuous browser recording then exposed defects that final-state equality had missed.
+For these transitions, a passing saved file is necessary but insufficient: keep the pointer
+held, inspect intermediate rendered frames, and follow the preview through the save handoff.
+Presentation checks use native media controls and opt-in loading; a playable MP4 alone does
+not establish editing correctness or internet collaboration latency.
+
+A later full-speed Move recording exposed a separate seven-frame recoil after the paint
+handoff checks passed. Auto-Select advanced the native view revision while the pixel
+document was unchanged. At release, the cloud adapter saw raw pointer-up before the
+canvas processed its native Move commit, so autosave uploaded the old pixels. The
+receiver correctly installed that intermediate archive; the native End event was not
+the cause. A read-only predicate now exposes the existing pending native drag, and
+automatic save waits for both pointer input and that lifecycle to be idle. The same
+predicate aligns the three existing automatic sync/install guards defensively.
+
+The rendered Move regression failed on WASM `189bb7db` in 6.740 s and passed on
+`38853028d21943a51f2488d7300daa7166134c72b1d020962dcaa04e830216d0`
+in 9.676 s, with backend `73eada2a` unchanged. It checks the first installed saved
+archive, intermediate moved pixels, reload and Undo/Redo. The queued-sync and
+same-document pending-save-acknowledgment journeys also passed the new artifact
+(8.113 s and 9.068 s), but already passed the old one: those are positive regression
+coverage, not additional reproduced data-loss fixes. The local `release-r6-focused3`
+receipt records all three passes and owned worker/database cleanup; the failed
+`move-release-old-red-r3` receipt is retained separately. These are test durations,
+not collaboration latency measurements. Broader browser, recording and hosted
+acceptance remain separate gates; this focused evidence does not establish their results.
+
+Full-shape bounds inspection also introduced a route from cached malformed metadata
+to the original vector compiler. Targeted tests reproduced excessive tiny-dash work
+and a curved-stroke integer overflow. Admission now bounds compilation work, the
+original rasterizer uses saturating pixel endpoints, and the inspector falls back to
+the existing cache for extreme bounds. Ordinary stroke bounds retain the original
+compiler's coarse extents, including nondefault RGB under zero alpha; tightening
+them to mathematical fill bounds would discard existing native cache semantics.
 
 The security-release browser run caught the software WebGPU defect before deployment.
 Bundled Chromium selected a software adapter, lost its device, and stayed black while
@@ -227,8 +271,10 @@ passing rerun; a test's timing assumption must not become a product constraint.
 - Keep the explicit hidden-preference list distinct from the scorecard's heuristic read count.
 - Real invitation delivery needs the exact approved email address. Local synthetic accounts
   must never be inserted into the hosted database.
-- Current GitHub Actions jobs were blocked by the account's billing/spending restriction;
-  local passes must remain separately reported until an exact-revision CI run executes.
+- Earlier GitHub Actions jobs were blocked by the account's billing/spending restriction.
+  The 2026-10-08 jobs executed: the browser transaction-pool fixture failed and the
+  FreeBSD host exhausted disk space. Fixture transport and disposable-runner disk
+  changes require fresh CI; local passes remain separately reported.
 - Bounded named live cursors and native Brush/Pencil/Eraser/Move previews are implemented;
   their [contract and measured scope](collaboration-architecture.md) remain explicit.
   Live selections, unrestricted simultaneous strokes, previews for every command type,
@@ -389,17 +435,17 @@ replace that deployment transition. This was missing coverage, not evidence that
 container had already failed.
 
 The new `container-package` job follows acceptance on a fresh Linux runner. Its helper and
-three contract suites come from the trusted PR base/caller revision, not Python code taken
+four contract suites come from the trusted PR base/caller revision, not Python code taken
 from the candidate ZIP. The candidate Dockerfile builds its locked Rust release inside the
 image. An owned local PostgreSQL cluster, temporary CA and UUID database exercise TLS
 `verify-full` without `CLOUD_LOCAL_DEV` or provider credentials. After real schema readiness,
-the gate checks served index/WASM bytes and runs `test_api.py`, `test_live.py` and
-`test_live_scale.py` against the image. Browser/auth/archive suites and paint measurements
+the gate checks served index/WASM bytes and runs `test_api.py`, `test_live.py`,
+`test_live_scale.py` and `test_live_handoff.py` against the image. Browser/auth/archive suites and paint measurements
 remain separate; this job does not claim a second full browser run or capacity test.
 
 Before the write-permission promotion command, the trusted verifier must accept the
 receipt's candidate/package/browser/fixture and QA-script hashes, image identity, Linux
-execution, TLS setting, three successful suites and complete owned-resource cleanup.
+execution, TLS setting, four successful suites and complete owned-resource cleanup.
 Missing or mismatched evidence fails closed. Logs and the receipt are retained even on
 failure. Later Tofu builds can still differ through base tags/system packages, so this
 does not prove bit-for-bit container reproducibility or hosted readiness.
@@ -407,8 +453,10 @@ does not prove bit-for-bit container reproducibility or hosted readiness.
 The first introduction needs a reviewed trusted-branch bootstrap because an older PR
 base lacks the new helper. Keep the QA checkout trusted, then run a fresh candidate after
 bootstrap; do not substitute candidate test code or a fabricated receipt. The actual Linux
-Docker/TLS execution remains **unverified while GitHub's billing/spending hold prevents
-runners from starting**. Mocked gate/cleanup tests verify orchestration contracts only.
+Docker/TLS execution remains **unverified**. The historical billing hold has cleared;
+the `f707cdce` run started, but its container job was skipped after browser acceptance
+failed. A fresh run of this candidate must execute the container gate. Mocked gate/cleanup
+tests verify orchestration contracts only.
 No container pass or promotion is established by the existing local browser/load evidence.
 See [the exact gate and activation boundary](upstream-updates.md#exact-package-container-gate).
 

@@ -23,15 +23,16 @@ README. Private repositories appear only to viewers who can access them.
 
 The opening explains the product, credits the original editor and states the
 fork's independence, then introduces Tofu. It provides a live-editor link, one
-real screenshot, an optional short GIF, the additions, quick start, code map and
+real screenshot, editing and collaboration videos, the additions, quick start, code map and
 licenses. This follows GitHub's guidance to explain what a project does and how
 to start, while keeping the deployment story visible.
 [README guidance](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-readmes).
 
-The real screenshot stays useful without animation. The GIF is optional, and
-its nearby text explains the demonstrated move and Undo/Redo behavior. GitHub
-users can disable GIF autoplay through accessibility settings.
-[Motion settings](https://docs.github.com/en/account-and-profile/how-tos/account-settings/managing-accessibility-settings).
+The real screenshot stays useful without animation. Videos use native playback
+controls and load only when requested. The editing video shows a local guest;
+the collaboration video explicitly uses a local test workspace. Nearby text
+explains the actions and their limits. Review the complete playback, including
+motion and interruptions; correct still images and duration alone are insufficient.
 
 `docs/media/social-preview.png` is a 1280 × 640 PNG below 1 MB. Upload it using
 **Settings → Social preview** when the repository is eligible; adding the image
@@ -70,6 +71,9 @@ Trunk copy paths and byte-preserving packaging. `tests/web/test_discovery_browse
 opens the actual public page in eight fresh browser contexts at 320, 390, 768
 and 1440 pixels. It checks readable text with JavaScript disabled, contrast,
 clipping, 44-pixel action targets and keyboard focus, and retains screenshots.
+A ninth context checks that both videos remain unloaded until the user activates
+the browser's Play control, then verifies real decoding, advancing playback time
+and Pause. Videos have native controls and no autoplay.
 It permits only public GET requests and never signs in or creates test accounts.
 
 The browser test defaults to the disposable local service used by CI. An operator

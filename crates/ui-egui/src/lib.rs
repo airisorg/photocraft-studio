@@ -538,6 +538,13 @@ impl PhotocraftApp {
         self
     }
 
+    /// Whether a native canvas drag still needs to finish. Raw pointer input can already
+    /// report release before the canvas consumes it and commits the gesture; adapters must
+    /// defer document saves and replacements until both that input and this state are idle.
+    pub fn has_active_canvas_gesture(&self) -> bool {
+        self.drag.is_some()
+    }
+
     /// Run an engine command, reporting errors in the status bar.
     pub fn run(&mut self, id: &str, params: Value) -> Result<Value, String> {
         let clip_read = std::mem::take(&mut self.clip_read_for_paste);
@@ -1320,6 +1327,67 @@ mod stamp_tests;
 
 #[cfg(test)]
 mod polygon_lasso_tests;
+
+#[cfg(test)]
+mod canvas_gesture_tests {
+    use super::*;
+    use crate::canvas::{ToolEvent, tool_event};
+    use photocraft_geom::Rect;
+    use serde_json::json;
+    use std::sync::Arc;
+
+    #[test]
+    fn move_remains_active_after_raw_release_until_native_commit() {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), Services::default());
+        app.session.execute("file.new", json!({"width": 64, "height": 64})).unwrap();
+        app.session.execute("layer.new.layer", json!({})).unwrap();
+        app.session
+            .edit("paint", |doc, active| {
+                doc.layer_mut(active.unwrap()).unwrap().surface_mut().unwrap().fill_rect(Rect::new(8, 8, 24, 24), &[1.0, 0.0, 0.0, 1.0]);
+                Ok(())
+            })
+            .unwrap();
+        app.sync_views();
+        app.ui.tool = Tool::Move;
+        app.ui.extras.snap = false;
+        app.ui.view.show.smart_guides = false;
+        let st = app.session.active().unwrap();
+        let (original, revision, history, layer) = (st.doc.clone(), st.revision, st.history.entries().len(), st.active_layer.unwrap());
+        assert!(!app.has_active_canvas_gesture());
+
+        let ctx = egui::Context::default();
+        let pointer = |pressed, x, y| egui::RawInput {
+            events: vec![egui::Event::PointerButton { pos: egui::pos2(x, y), button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE }],
+            ..Default::default()
+        };
+        ctx.run_ui(pointer(true, 16.0, 16.0), |ui| {
+            assert!(ui.input(|i| i.pointer.any_down()));
+            tool_event(&mut app, ToolEvent::Down { x: 16.0, y: 16.0, pressure: 1.0 }, egui::Modifiers::NONE);
+            assert!(app.has_active_canvas_gesture());
+            tool_event(&mut app, ToolEvent::Move { x: 26.0, y: 20.0, pressure: 1.0 }, egui::Modifiers::NONE);
+        })
+        .textures_delta
+        .clear();
+        let held_revision = app.session.active().unwrap().revision;
+        assert!(held_revision > revision, "Auto-Select advances the view revision without committing a move");
+        ctx.run_ui(pointer(false, 26.0, 20.0), |ui| {
+            assert!(!ui.input(|i| i.pointer.any_down()), "the release reaches raw input first");
+            assert!(app.has_active_canvas_gesture(), "document adapters must still wait for the canvas");
+            let st = app.session.active().unwrap();
+            assert!(Arc::ptr_eq(&st.doc, &original));
+            assert_eq!(st.revision, held_revision);
+            assert_eq!(st.history.entries().len(), history);
+            tool_event(&mut app, ToolEvent::Up { x: 26.0, y: 20.0 }, egui::Modifiers::NONE);
+            assert!(!app.has_active_canvas_gesture());
+            let st = app.session.active().unwrap();
+            assert!(st.revision > held_revision);
+            assert_eq!(st.history.entries().len(), history + 1);
+            assert_eq!(st.doc.layer(layer).unwrap().surface().unwrap().content_bounds(), Rect::new(18, 12, 34, 28));
+        })
+        .textures_delta
+        .clear();
+    }
+}
 
 #[cfg(test)]
 mod clipboard_tests {
