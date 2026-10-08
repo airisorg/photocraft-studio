@@ -1,3 +1,4 @@
+// Modified by the independent FZ2000 PhotoCraft Studio fork; see docs/fork-code-map.md.
 //! File › New: Photoshop's New Document dialog. Category tabs with blank-document presets on the
 //! left, Preset Details on the right. Values live in the dialog fields (`width`/`height` in pixels,
 //! `resolution` in ppi, `mode`, `depth`, `background`, `name`), so `ui.dialog.set` drives it and

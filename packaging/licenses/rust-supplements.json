@@ -1,0 +1,591 @@
+[
+  {
+    "package": "accesskit",
+    "version": "0.24.1",
+    "files": [
+      {
+        "path": "rust-supplements/AccessKit--accesskit-a55d3e1a18bb/AUTHORS",
+        "source": "https://raw.githubusercontent.com/AccessKit/accesskit/a55d3e1a18bb9ef0e4bccc9083fb13c3e0ad8969/AUTHORS",
+        "sha256": "3bab8c36f6a85657504aaefb37c7ff34e29b8c917290f3d28a1f0920c992e502"
+      },
+      {
+        "path": "rust-supplements/AccessKit--accesskit-a55d3e1a18bb/LICENSE-APACHE",
+        "source": "https://raw.githubusercontent.com/AccessKit/accesskit/a55d3e1a18bb9ef0e4bccc9083fb13c3e0ad8969/LICENSE-APACHE",
+        "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a"
+      },
+      {
+        "path": "rust-supplements/AccessKit--accesskit-a55d3e1a18bb/LICENSE-MIT",
+        "source": "https://raw.githubusercontent.com/AccessKit/accesskit/a55d3e1a18bb9ef0e4bccc9083fb13c3e0ad8969/LICENSE-MIT",
+        "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3"
+      },
+      {
+        "path": "rust-supplements/AccessKit--accesskit-a55d3e1a18bb/LICENSE.chromium",
+        "source": "https://raw.githubusercontent.com/AccessKit/accesskit/a55d3e1a18bb9ef0e4bccc9083fb13c3e0ad8969/LICENSE.chromium",
+        "sha256": "845022e0c1db1abb41a6ba4cd3c4b674ec290f3359d9d3c78ae558d4c0ed9308"
+      },
+      {
+        "path": "rust-supplements/AccessKit--accesskit-a55d3e1a18bb/source-notices/common--src--geometry.rs.txt",
+        "source": "https://raw.githubusercontent.com/AccessKit/accesskit/a55d3e1a18bb9ef0e4bccc9083fb13c3e0ad8969/common/src/geometry.rs",
+        "sha256": "cb908f6fee8d90f44979b32715de36c1694c6d091fae167ce567631a0b958501",
+        "sourceLines": [
+          1,
+          10
+        ],
+        "sourceFileSha256": "2f2c37da6a856f1463c593bd2c01d07f237951556c3f72594cb05a2561afa7ed"
+      },
+      {
+        "path": "rust-supplements/AccessKit--accesskit-a55d3e1a18bb/source-notices/common--src--lib.rs.txt",
+        "source": "https://raw.githubusercontent.com/AccessKit/accesskit/a55d3e1a18bb9ef0e4bccc9083fb13c3e0ad8969/common/src/lib.rs",
+        "sha256": "39e7c03e4e604262cb89b837faa1b50a4cede98164db77787210fb9a865b2b01",
+        "sourceLines": [
+          1,
+          9
+        ],
+        "sourceFileSha256": "da99bad8c05747eee4c1cee0850488c4e61170f7f55cbf6b39e79cd4e4a1acbf"
+      }
+    ],
+    "license": "MIT OR Apache-2.0"
+  },
+  {
+    "package": "crc-catalog",
+    "version": "2.5.0",
+    "files": [
+      {
+        "path": "rust-supplements/akhilles--crc-catalog-ed4ad631f22b/LICENSES/Apache-2.0.txt",
+        "source": "https://raw.githubusercontent.com/akhilles/crc-catalog/ed4ad631f22b05055c21a3a4127eb7cf6d75bb62/LICENSES/Apache-2.0.txt",
+        "sha256": "d3cdb764b98283ee7c3a3cea8d374e2a2957322374378d1f3263f4d512741fc3"
+      },
+      {
+        "path": "rust-supplements/akhilles--crc-catalog-ed4ad631f22b/LICENSES/MIT.txt",
+        "source": "https://raw.githubusercontent.com/akhilles/crc-catalog/ed4ad631f22b05055c21a3a4127eb7cf6d75bb62/LICENSES/MIT.txt",
+        "sha256": "5ef8fcfb6cccec8fcae043c834099a60c8b7406408db576e026d2b7e67dc5cf5"
+      }
+    ],
+    "license": "MIT OR Apache-2.0"
+  },
+  {
+    "package": "ecolor",
+    "version": "0.36.2",
+    "files": [
+      {
+        "path": "rust-supplements/emilk--egui-49682f8baa05/LICENSE-APACHE",
+        "source": "https://raw.githubusercontent.com/emilk/egui/49682f8baa058bf49e011035cfbd6e825f88a5ef/LICENSE-APACHE",
+        "sha256": "8173d5c29b4f956d532781d2b86e4e30f83e6b7878dce18c919451d6ba707c90"
+      },
+      {
+        "path": "rust-supplements/emilk--egui-49682f8baa05/LICENSE-MIT",
+        "source": "https://raw.githubusercontent.com/emilk/egui/49682f8baa058bf49e011035cfbd6e825f88a5ef/LICENSE-MIT",
+        "sha256": "95ca92f5f8ea5231f1580b3a2a799e8260af3114b900e1def5355a7f44bcf60c"
+      }
+    ],
+    "license": "MIT OR Apache-2.0"
+  },
+  {
+    "package": "eframe",
+    "version": "0.36.2",
+    "files": [
+      {
+        "path": "rust-supplements/emilk--egui-49682f8baa05/LICENSE-APACHE",
+        "source": "https://raw.githubusercontent.com/emilk/egui/49682f8baa058bf49e011035cfbd6e825f88a5ef/LICENSE-APACHE",
+        "sha256": "8173d5c29b4f956d532781d2b86e4e30f83e6b7878dce18c919451d6ba707c90"
+      },
+      {
+        "path": "rust-supplements/emilk--egui-49682f8baa05/LICENSE-MIT",
+        "source": "https://raw.githubusercontent.com/emilk/egui/49682f8baa058bf49e011035cfbd6e825f88a5ef/LICENSE-MIT",
+        "sha256": "95ca92f5f8ea5231f1580b3a2a799e8260af3114b900e1def5355a7f44bcf60c"
+      }
+    ],
+    "license": "MIT OR Apache-2.0"
+  },
+  {
+    "package": "egui",
+    "version": "0.36.2",
+    "files": [
+      {
+        "path": "rust-supplements/emilk--egui-49682f8baa05/LICENSE-APACHE",
+        "source": "https://raw.githubusercontent.com/emilk/egui/49682f8baa058bf49e011035cfbd6e825f88a5ef/LICENSE-APACHE",
+        "sha256": "8173d5c29b4f956d532781d2b86e4e30f83e6b7878dce18c919451d6ba707c90"
+      },
+      {
+        "path": "rust-supplements/emilk--egui-49682f8baa05/LICENSE-MIT",
+        "source": "https://raw.githubusercontent.com/emilk/egui/49682f8baa058bf49e011035cfbd6e825f88a5ef/LICENSE-MIT",
+        "sha256": "95ca92f5f8ea5231f1580b3a2a799e8260af3114b900e1def5355a7f44bcf60c"
+      }
+    ],
+    "license": "MIT OR Apache-2.0"
+  },
+  {
+    "package": "egui-wgpu",
+    "version": "0.36.2",
+    "files": [
+      {
+        "path": "rust-supplements/emilk--egui-49682f8baa05/LICENSE-APACHE",
+        "source": "https://raw.githubusercontent.com/emilk/egui/49682f8baa058bf49e011035cfbd6e825f88a5ef/LICENSE-APACHE",
+        "sha256": "8173d5c29b4f956d532781d2b86e4e30f83e6b7878dce18c919451d6ba707c90"
+      },
+      {
+        "path": "rust-supplements/emilk--egui-49682f8baa05/LICENSE-MIT",
+        "source": "https://raw.githubusercontent.com/emilk/egui/49682f8baa058bf49e011035cfbd6e825f88a5ef/LICENSE-MIT",
+        "sha256": "95ca92f5f8ea5231f1580b3a2a799e8260af3114b900e1def5355a7f44bcf60c"
+      }
+    ],
+    "license": "MIT OR Apache-2.0"
+  },
+  {
+    "package": "egui_extras",
+    "version": "0.36.2",
+    "files": [
+      {
+        "path": "rust-supplements/emilk--egui-49682f8baa05/LICENSE-APACHE",
+        "source": "https://raw.githubusercontent.com/emilk/egui/49682f8baa058bf49e011035cfbd6e825f88a5ef/LICENSE-APACHE",
+        "sha256": "8173d5c29b4f956d532781d2b86e4e30f83e6b7878dce18c919451d6ba707c90"
+      },
+      {
+        "path": "rust-supplements/emilk--egui-49682f8baa05/LICENSE-MIT",
+        "source": "https://raw.githubusercontent.com/emilk/egui/49682f8baa058bf49e011035cfbd6e825f88a5ef/LICENSE-MIT",
+        "sha256": "95ca92f5f8ea5231f1580b3a2a799e8260af3114b900e1def5355a7f44bcf60c"
+      }
+    ],
+    "license": "MIT OR Apache-2.0"
+  },
+  {
+    "package": "emath",
+    "version": "0.36.2",
+    "files": [
+      {
+        "path": "rust-supplements/emilk--egui-49682f8baa05/LICENSE-APACHE",
+        "source": "https://raw.githubusercontent.com/emilk/egui/49682f8baa058bf49e011035cfbd6e825f88a5ef/LICENSE-APACHE",
+        "sha256": "8173d5c29b4f956d532781d2b86e4e30f83e6b7878dce18c919451d6ba707c90"
+      },
+      {
+        "path": "rust-supplements/emilk--egui-49682f8baa05/LICENSE-MIT",
+        "source": "https://raw.githubusercontent.com/emilk/egui/49682f8baa058bf49e011035cfbd6e825f88a5ef/LICENSE-MIT",
+        "sha256": "95ca92f5f8ea5231f1580b3a2a799e8260af3114b900e1def5355a7f44bcf60c"
+      }
+    ],
+    "license": "MIT OR Apache-2.0"
+  },
+  {
+    "package": "enum-map",
+    "version": "2.7.3",
+    "files": [
+      {
+        "path": "rust-supplements/xfix--enum-map-c788a9c4bd04/LICENSES/Apache-2.0.txt",
+        "source": "https://codeberg.org/xfix/enum-map/raw/commit/c788a9c4bd0431308d889942719f7a38761d9884/LICENSES/Apache-2.0.txt",
+        "sha256": "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff"
+      },
+      {
+        "path": "rust-supplements/xfix--enum-map-c788a9c4bd04/LICENSES/MIT.txt",
+        "source": "https://codeberg.org/xfix/enum-map/raw/commit/c788a9c4bd0431308d889942719f7a38761d9884/LICENSES/MIT.txt",
+        "sha256": "b85dcd3e453d05982552c52b5fc9e0bdd6d23c6f8e844b984a88af32570b0cc0"
+      },
+      {
+        "path": "rust-supplements/xfix--enum-map-c788a9c4bd04/source-notices/enum-map--src--arbitrary.rs.txt",
+        "source": "https://codeberg.org/xfix/enum-map/raw/commit/c788a9c4bd0431308d889942719f7a38761d9884/enum-map/src/arbitrary.rs",
+        "sha256": "3b55374387dc9e6277a6f31731398f254e1f605da3145fa1d2d0499fa8627257",
+        "sourceLines": [
+          1,
+          4
+        ],
+        "sourceFileSha256": "30e90bc431c4e74f756a619f432b30ccadc9b3288fc85f2d4bd160a374d0dfdb"
+      },
+      {
+        "path": "rust-supplements/xfix--enum-map-c788a9c4bd04/source-notices/enum-map--src--enum_map_impls.rs.txt",
+        "source": "https://codeberg.org/xfix/enum-map/raw/commit/c788a9c4bd0431308d889942719f7a38761d9884/enum-map/src/enum_map_impls.rs",
+        "sha256": "2a5c3d1bcabaa71f479320543d252e3f76f017e3aefbb2f82a329ae626d45d66",
+        "sourceLines": [
+          1,
+          6
+        ],
+        "sourceFileSha256": "9a03bf2500215e3c2dcb7e93cfc4d466bd767bdb9b83673b013f7ef50ac08d04"
+      },
+      {
+        "path": "rust-supplements/xfix--enum-map-c788a9c4bd04/source-notices/enum-map--src--internal.rs.txt",
+        "source": "https://codeberg.org/xfix/enum-map/raw/commit/c788a9c4bd0431308d889942719f7a38761d9884/enum-map/src/internal.rs",
+        "sha256": "2f1f7a39fa0a7c43b47dba87220d200e9eae92a3a19b99c20aca752421582cec",
+        "sourceLines": [
+          1,
+          5
+        ],
+        "sourceFileSha256": "ea03c0ca57eb52012e77dc3928ba5407109c5d24d373b7d7359ba037d890716f"
+      },
+      {
+        "path": "rust-supplements/xfix--enum-map-c788a9c4bd04/source-notices/enum-map--src--iter.rs.txt",
+        "source": "https://codeberg.org/xfix/enum-map/raw/commit/c788a9c4bd0431308d889942719f7a38761d9884/enum-map/src/iter.rs",
+        "sha256": "1908c2919db2da385ee7f8d9572e986d79dae4c2a04e5feef704dc07b2fa46ce",
+        "sourceLines": [
+          3,
+          7
+        ],
+        "sourceFileSha256": "cc75658ea4c61ed63b35bf12c8f14534e36b2d3c9b1a29ab2efc028de0181d44"
+      },
+      {
+        "path": "rust-supplements/xfix--enum-map-c788a9c4bd04/source-notices/enum-map--src--lib.rs.txt",
+        "source": "https://codeberg.org/xfix/enum-map/raw/commit/c788a9c4bd0431308d889942719f7a38761d9884/enum-map/src/lib.rs",
+        "sha256": "f1ff1cf76fe3f0b724fc619b7e9b984e01d74834eabea39eb0c2a9eae46fab9c",
+        "sourceLines": [
+          1,
+          8
+        ],
+        "sourceFileSha256": "3e34c9461dfb5b102d620b0196b30dab2d8d429e801e193f8e2e78adfef9039e"
+      },
+      {
+        "path": "rust-supplements/xfix--enum-map-c788a9c4bd04/source-notices/enum-map--src--serde.rs.txt",
+        "source": "https://codeberg.org/xfix/enum-map/raw/commit/c788a9c4bd0431308d889942719f7a38761d9884/enum-map/src/serde.rs",
+        "sha256": "3b72120c27cc3a8c69c0ad7c17dafd25df92b476380b76eca14e6cc386a339a8",
+        "sourceLines": [
+          1,
+          4
+        ],
+        "sourceFileSha256": "f3a9919e2f6c0721a7e1fa386eb712875c5fce01d4f01d5d4775bc246d45ba90"
+      }
+    ],
+    "license": "MIT OR Apache-2.0",
+    "selectedLicense": "Apache-2.0",
+    "selectionReason": "An offered license with complete upstream text; the upstream MIT template and exact source copyright notices are also preserved."
+  },
+  {
+    "package": "enum-map-derive",
+    "version": "0.17.0",
+    "files": [
+      {
+        "path": "rust-supplements/xfix--enum-map-2026968c30ad/LICENSES/Apache-2.0.txt",
+        "source": "https://codeberg.org/xfix/enum-map/raw/commit/2026968c30ad14d268f3d70c618a704e22a3b980/LICENSES/Apache-2.0.txt",
+        "sha256": "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff"
+      },
+      {
+        "path": "rust-supplements/xfix--enum-map-2026968c30ad/LICENSES/MIT.txt",
+        "source": "https://codeberg.org/xfix/enum-map/raw/commit/2026968c30ad14d268f3d70c618a704e22a3b980/LICENSES/MIT.txt",
+        "sha256": "b85dcd3e453d05982552c52b5fc9e0bdd6d23c6f8e844b984a88af32570b0cc0"
+      },
+      {
+        "path": "rust-supplements/xfix--enum-map-2026968c30ad/source-notices/enum-map-derive--src--derive_enum.rs.txt",
+        "source": "https://codeberg.org/xfix/enum-map/raw/commit/2026968c30ad14d268f3d70c618a704e22a3b980/enum-map-derive/src/derive_enum.rs",
+        "sha256": "0d60650ae41f24b02c6b884d05448cedbf0abb54489ce931ee1684027d1c53a9",
+        "sourceLines": [
+          1,
+          4
+        ],
+        "sourceFileSha256": "fc478b32e580dabfa31f71db2958faf05125e58b17bf420a881930d96e76ce11"
+      },
+      {
+        "path": "rust-supplements/xfix--enum-map-2026968c30ad/source-notices/enum-map-derive--src--derive_struct.rs.txt",
+        "source": "https://codeberg.org/xfix/enum-map/raw/commit/2026968c30ad14d268f3d70c618a704e22a3b980/enum-map-derive/src/derive_struct.rs",
+        "sha256": "ca2a49a1eb6f985e25195562667523949212be251ea5953a44db6d73fa7edac0",
+        "sourceLines": [
+          1,
+          4
+        ],
+        "sourceFileSha256": "ec7e4d1f44925713098713c8c77af87142f499999a812687d52306cc9255224f"
+      },
+      {
+        "path": "rust-supplements/xfix--enum-map-2026968c30ad/source-notices/enum-map-derive--src--lib.rs.txt",
+        "source": "https://codeberg.org/xfix/enum-map/raw/commit/2026968c30ad14d268f3d70c618a704e22a3b980/enum-map-derive/src/lib.rs",
+        "sha256": "3e4db5145120fe05ce49f34d9df0cdb89ace28e8714dbd37a1a89b7c6cab8442",
+        "sourceLines": [
+          1,
+          7
+        ],
+        "sourceFileSha256": "531dd501eced4ebf2733d525417adc9ef724e1c117ffb20be7453a79200c2988"
+      }
+    ],
+    "license": "MIT OR Apache-2.0",
+    "selectedLicense": "Apache-2.0",
+    "selectionReason": "An offered license with complete upstream text; the upstream MIT template and exact source copyright notices are also preserved."
+  },
+  {
+    "package": "epaint",
+    "version": "0.36.2",
+    "files": [
+      {
+        "path": "rust-supplements/emilk--egui-49682f8baa05/LICENSE-APACHE",
+        "source": "https://raw.githubusercontent.com/emilk/egui/49682f8baa058bf49e011035cfbd6e825f88a5ef/LICENSE-APACHE",
+        "sha256": "8173d5c29b4f956d532781d2b86e4e30f83e6b7878dce18c919451d6ba707c90"
+      },
+      {
+        "path": "rust-supplements/emilk--egui-49682f8baa05/LICENSE-MIT",
+        "source": "https://raw.githubusercontent.com/emilk/egui/49682f8baa058bf49e011035cfbd6e825f88a5ef/LICENSE-MIT",
+        "sha256": "95ca92f5f8ea5231f1580b3a2a799e8260af3114b900e1def5355a7f44bcf60c"
+      }
+    ],
+    "license": "MIT OR Apache-2.0"
+  },
+  {
+    "package": "epaint_default_fonts",
+    "version": "0.36.2",
+    "files": [
+      {
+        "path": "rust-supplements/emilk--egui-49682f8baa05/LICENSE-APACHE",
+        "source": "https://raw.githubusercontent.com/emilk/egui/49682f8baa058bf49e011035cfbd6e825f88a5ef/LICENSE-APACHE",
+        "sha256": "8173d5c29b4f956d532781d2b86e4e30f83e6b7878dce18c919451d6ba707c90"
+      },
+      {
+        "path": "rust-supplements/emilk--egui-49682f8baa05/LICENSE-MIT",
+        "source": "https://raw.githubusercontent.com/emilk/egui/49682f8baa058bf49e011035cfbd6e825f88a5ef/LICENSE-MIT",
+        "sha256": "95ca92f5f8ea5231f1580b3a2a799e8260af3114b900e1def5355a7f44bcf60c"
+      }
+    ],
+    "license": "(MIT OR Apache-2.0) AND OFL-1.1 AND Ubuntu-font-1.0"
+  },
+  {
+    "package": "gloo-net",
+    "version": "0.6.0",
+    "files": [
+      {
+        "path": "rust-supplements/rustwasm--gloo-40c6daa612a9/LICENSE-APACHE",
+        "source": "https://raw.githubusercontent.com/rustwasm/gloo/40c6daa612a90a138ba3e3d70804fcbc5ad4911e/LICENSE-APACHE",
+        "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2"
+      },
+      {
+        "path": "rust-supplements/rustwasm--gloo-40c6daa612a9/LICENSE-MIT",
+        "source": "https://raw.githubusercontent.com/rustwasm/gloo/40c6daa612a90a138ba3e3d70804fcbc5ad4911e/LICENSE-MIT",
+        "sha256": "5a6f5443ea473f130adbdcf84254761d1292bc79759b5253915d4b5e7afbef66"
+      }
+    ],
+    "license": "MIT OR Apache-2.0"
+  },
+  {
+    "package": "gloo-timers",
+    "version": "0.3.0",
+    "files": [
+      {
+        "path": "rust-supplements/rustwasm--gloo-f3bb1d1a1c33/LICENSE-APACHE",
+        "source": "https://raw.githubusercontent.com/rustwasm/gloo/f3bb1d1a1c33dbcccaf26446aca7d0cea8e9d574/LICENSE-APACHE",
+        "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2"
+      },
+      {
+        "path": "rust-supplements/rustwasm--gloo-f3bb1d1a1c33/LICENSE-MIT",
+        "source": "https://raw.githubusercontent.com/rustwasm/gloo/f3bb1d1a1c33dbcccaf26446aca7d0cea8e9d574/LICENSE-MIT",
+        "sha256": "5a6f5443ea473f130adbdcf84254761d1292bc79759b5253915d4b5e7afbef66"
+      }
+    ],
+    "license": "MIT OR Apache-2.0"
+  },
+  {
+    "package": "gloo-utils",
+    "version": "0.2.0",
+    "files": [
+      {
+        "path": "rust-supplements/rustwasm--gloo-f3bb1d1a1c33/LICENSE-APACHE",
+        "source": "https://raw.githubusercontent.com/rustwasm/gloo/f3bb1d1a1c33dbcccaf26446aca7d0cea8e9d574/LICENSE-APACHE",
+        "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2"
+      },
+      {
+        "path": "rust-supplements/rustwasm--gloo-f3bb1d1a1c33/LICENSE-MIT",
+        "source": "https://raw.githubusercontent.com/rustwasm/gloo/f3bb1d1a1c33dbcccaf26446aca7d0cea8e9d574/LICENSE-MIT",
+        "sha256": "5a6f5443ea473f130adbdcf84254761d1292bc79759b5253915d4b5e7afbef66"
+      }
+    ],
+    "license": "MIT OR Apache-2.0"
+  },
+  {
+    "package": "profiling",
+    "version": "1.0.18",
+    "files": [
+      {
+        "path": "rust-supplements/aclysma--profiling-8271551172eb/LICENSE-APACHE",
+        "source": "https://raw.githubusercontent.com/aclysma/profiling/8271551172eb6fa4cba47369aedd93790c623df9/LICENSE-APACHE",
+        "sha256": "10d30a673cd5e9349bdc02aeb48f14b3386d27d0da32df8f0a555d4aa16aa551"
+      },
+      {
+        "path": "rust-supplements/aclysma--profiling-8271551172eb/LICENSE-MIT",
+        "source": "https://raw.githubusercontent.com/aclysma/profiling/8271551172eb6fa4cba47369aedd93790c623df9/LICENSE-MIT",
+        "sha256": "c8167fdeeed46d3f244d3f85c5bf998ce889343691c32be2c61a8bc4b5c08333"
+      }
+    ],
+    "license": "MIT OR Apache-2.0"
+  },
+  {
+    "package": "pulp-wasm-simd-flag",
+    "version": "0.1.1",
+    "files": [
+      {
+        "path": "rust-supplements/sarah-quinones--pulp-5eb07fd7b68e/LICENSE",
+        "source": "https://raw.githubusercontent.com/sarah-quinones/pulp/5eb07fd7b68edf0a5e19f71737d315f72a510295/LICENSE",
+        "sha256": "d64f878c89bd5f1e5ada7e4aad57690b122727cf5229b7b87ea1980c188da1d9"
+      }
+    ],
+    "license": "MIT"
+  },
+  {
+    "package": "wasmi",
+    "version": "2.0.0",
+    "files": [
+      {
+        "path": "rust-supplements/wasmi-labs--wasmi-2970aa871cc1/LICENSE-APACHE",
+        "source": "https://raw.githubusercontent.com/wasmi-labs/wasmi/2970aa871cc1001b57b267ccecdcd1e42306199e/LICENSE-APACHE",
+        "sha256": "f031c1608e4a19e8cbcc3394cdba838067e79189610227459e8ffcd669e6f52d"
+      },
+      {
+        "path": "rust-supplements/wasmi-labs--wasmi-2970aa871cc1/LICENSE-MIT",
+        "source": "https://raw.githubusercontent.com/wasmi-labs/wasmi/2970aa871cc1001b57b267ccecdcd1e42306199e/LICENSE-MIT",
+        "sha256": "172bc1497507c1c363496bc23b0f16de8fa8e94befa85db6c8d9fa790e0a8657"
+      }
+    ],
+    "license": "MIT/Apache-2.0"
+  },
+  {
+    "package": "wasmi_collections",
+    "version": "2.0.0",
+    "files": [
+      {
+        "path": "rust-supplements/wasmi-labs--wasmi-2970aa871cc1/LICENSE-APACHE",
+        "source": "https://raw.githubusercontent.com/wasmi-labs/wasmi/2970aa871cc1001b57b267ccecdcd1e42306199e/LICENSE-APACHE",
+        "sha256": "f031c1608e4a19e8cbcc3394cdba838067e79189610227459e8ffcd669e6f52d"
+      },
+      {
+        "path": "rust-supplements/wasmi-labs--wasmi-2970aa871cc1/LICENSE-MIT",
+        "source": "https://raw.githubusercontent.com/wasmi-labs/wasmi/2970aa871cc1001b57b267ccecdcd1e42306199e/LICENSE-MIT",
+        "sha256": "172bc1497507c1c363496bc23b0f16de8fa8e94befa85db6c8d9fa790e0a8657"
+      }
+    ],
+    "license": "MIT/Apache-2.0"
+  },
+  {
+    "package": "wasmi_core",
+    "version": "2.0.0",
+    "files": [
+      {
+        "path": "rust-supplements/wasmi-labs--wasmi-2970aa871cc1/LICENSE-APACHE",
+        "source": "https://raw.githubusercontent.com/wasmi-labs/wasmi/2970aa871cc1001b57b267ccecdcd1e42306199e/LICENSE-APACHE",
+        "sha256": "f031c1608e4a19e8cbcc3394cdba838067e79189610227459e8ffcd669e6f52d"
+      },
+      {
+        "path": "rust-supplements/wasmi-labs--wasmi-2970aa871cc1/LICENSE-MIT",
+        "source": "https://raw.githubusercontent.com/wasmi-labs/wasmi/2970aa871cc1001b57b267ccecdcd1e42306199e/LICENSE-MIT",
+        "sha256": "172bc1497507c1c363496bc23b0f16de8fa8e94befa85db6c8d9fa790e0a8657"
+      }
+    ],
+    "license": "MIT/Apache-2.0"
+  },
+  {
+    "package": "wasmi_ir",
+    "version": "2.0.0",
+    "files": [
+      {
+        "path": "rust-supplements/wasmi-labs--wasmi-2970aa871cc1/LICENSE-APACHE",
+        "source": "https://raw.githubusercontent.com/wasmi-labs/wasmi/2970aa871cc1001b57b267ccecdcd1e42306199e/LICENSE-APACHE",
+        "sha256": "f031c1608e4a19e8cbcc3394cdba838067e79189610227459e8ffcd669e6f52d"
+      },
+      {
+        "path": "rust-supplements/wasmi-labs--wasmi-2970aa871cc1/LICENSE-MIT",
+        "source": "https://raw.githubusercontent.com/wasmi-labs/wasmi/2970aa871cc1001b57b267ccecdcd1e42306199e/LICENSE-MIT",
+        "sha256": "172bc1497507c1c363496bc23b0f16de8fa8e94befa85db6c8d9fa790e0a8657"
+      }
+    ],
+    "license": "MIT/Apache-2.0"
+  },
+  {
+    "package": "wasmparser",
+    "version": "0.228.0",
+    "files": [
+      {
+        "path": "rust-supplements/bytecodealliance--wasm-tools-e66235859a6e/LICENSE-APACHE",
+        "source": "https://raw.githubusercontent.com/bytecodealliance/wasm-tools/e66235859a6ec0502bf6f9dcc358953eda4cafcc/LICENSE-APACHE",
+        "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2"
+      },
+      {
+        "path": "rust-supplements/bytecodealliance--wasm-tools-e66235859a6e/LICENSE-Apache-2.0_WITH_LLVM-exception",
+        "source": "https://raw.githubusercontent.com/bytecodealliance/wasm-tools/e66235859a6ec0502bf6f9dcc358953eda4cafcc/LICENSE-Apache-2.0_WITH_LLVM-exception",
+        "sha256": "268872b9816f90fd8e85db5a28d33f8150ebb8dd016653fb39ef1f94f2686bc5"
+      },
+      {
+        "path": "rust-supplements/bytecodealliance--wasm-tools-e66235859a6e/LICENSE-MIT",
+        "source": "https://raw.githubusercontent.com/bytecodealliance/wasm-tools/e66235859a6ec0502bf6f9dcc358953eda4cafcc/LICENSE-MIT",
+        "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3"
+      },
+      {
+        "path": "rust-supplements/bytecodealliance--wasm-tools-e66235859a6e/source-notices/crates--wasmparser--src--arity.rs.txt",
+        "source": "https://raw.githubusercontent.com/bytecodealliance/wasm-tools/e66235859a6ec0502bf6f9dcc358953eda4cafcc/crates/wasmparser/src/arity.rs",
+        "sha256": "edb28f237f598b6e909a74a536f422307f61ef9c2789254a66d0f519eb79ec8d",
+        "sourceLines": [
+          1,
+          14
+        ],
+        "sourceFileSha256": "ea30dc6d2b96943312138fb09ef3254e0ff2c6bb170142bcb274cc07c528dd39"
+      },
+      {
+        "path": "rust-supplements/bytecodealliance--wasm-tools-e66235859a6e/source-notices/crates--wasmparser--src--binary_reader.rs.txt",
+        "source": "https://raw.githubusercontent.com/bytecodealliance/wasm-tools/e66235859a6ec0502bf6f9dcc358953eda4cafcc/crates/wasmparser/src/binary_reader.rs",
+        "sha256": "06c834ba5f0eba2644ed4ef6d90d1de49e65c9ed7795d500117390898943c20f",
+        "sourceLines": [
+          1,
+          14
+        ],
+        "sourceFileSha256": "3fc22e9641fd210b8fbaa1fc77bebf3dc30c3f0f7c5d26840a9a60f3cd8e9dad"
+      },
+      {
+        "path": "rust-supplements/bytecodealliance--wasm-tools-e66235859a6e/source-notices/crates--wasmparser--src--lib.rs.txt",
+        "source": "https://raw.githubusercontent.com/bytecodealliance/wasm-tools/e66235859a6ec0502bf6f9dcc358953eda4cafcc/crates/wasmparser/src/lib.rs",
+        "sha256": "fa835d546b5f42f7f998792868436eb8f32775876adfbc680f0beaf126095af4",
+        "sourceLines": [
+          1,
+          14
+        ],
+        "sourceFileSha256": "031c0f7eb877b93d06313d614a8fdf787ce68d4c403af2e323b327484258bee8"
+      },
+      {
+        "path": "rust-supplements/bytecodealliance--wasm-tools-e66235859a6e/source-notices/crates--wasmparser--src--readers--core--producers.rs.txt",
+        "source": "https://raw.githubusercontent.com/bytecodealliance/wasm-tools/e66235859a6ec0502bf6f9dcc358953eda4cafcc/crates/wasmparser/src/readers/core/producers.rs",
+        "sha256": "c63102073c08c248e4ae0ca1d8bc856edcbed81607e4b71ea804ac4d83af328f",
+        "sourceLines": [
+          1,
+          14
+        ],
+        "sourceFileSha256": "1114cd29823c8a9ebfbe373975cfa52140782867b6b4c0fa342ee64c4040bd51"
+      },
+      {
+        "path": "rust-supplements/bytecodealliance--wasm-tools-e66235859a6e/source-notices/crates--wasmparser--src--readers--core--tags.rs.txt",
+        "source": "https://raw.githubusercontent.com/bytecodealliance/wasm-tools/e66235859a6ec0502bf6f9dcc358953eda4cafcc/crates/wasmparser/src/readers/core/tags.rs",
+        "sha256": "1891d1a07cd13492116239e23ef3cafa035a46d977ae8df1966212810eeb6ee9",
+        "sourceLines": [
+          1,
+          14
+        ],
+        "sourceFileSha256": "c1dcfeb973195da9708549bcc2df4dd8ff282fe802c15a603bebc8a856f70949"
+      }
+    ],
+    "license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
+    "selectedLicense": "Apache-2.0",
+    "selectionReason": "An offered Cargo license, also expressly used by the preserved Mozilla Foundation source headers; all supplied alternative license texts are retained."
+  },
+  {
+    "package": "zune-inflate",
+    "version": "0.2.54",
+    "files": [
+      {
+        "path": "rust-supplements/etemesi254--zune-image-69502ce83fdf/LICENSE-ZLIB",
+        "source": "https://raw.githubusercontent.com/etemesi254/zune-image/69502ce83fdfecdd0beefd677e2abb3781b29d98/LICENSE-ZLIB",
+        "sha256": "7fa429541e55b1509909e058f2d21a37467e4958ec713b357f6e0cf9dc4ee352"
+      },
+      {
+        "path": "rust-supplements/etemesi254--zune-image-69502ce83fdf/LICENSE.md",
+        "source": "https://raw.githubusercontent.com/etemesi254/zune-image/69502ce83fdfecdd0beefd677e2abb3781b29d98/LICENSE.md",
+        "sha256": "e870d7fd7819a9f0453c62798cb52ae95d148a8c91dc2de1d983f997143c72de"
+      },
+      {
+        "path": "rust-supplements/etemesi254--zune-image-69502ce83fdf/source-notices/zune-inflate--src--encoder--fast_match_finder.rs.txt",
+        "source": "https://raw.githubusercontent.com/etemesi254/zune-image/69502ce83fdfecdd0beefd677e2abb3781b29d98/zune-inflate/src/encoder/fast_match_finder.rs",
+        "sha256": "46bf4a3cf8bcf22124b4404bd8a640d684399f3f3229a116594a64acae3b2091",
+        "sourceLines": [
+          1,
+          7
+        ],
+        "sourceFileSha256": "67bcc3602a1705dd375128526d99334aee78777dc19bcc622757d78c43af90d6"
+      },
+      {
+        "path": "rust-supplements/etemesi254--zune-image-69502ce83fdf/source-notices/zune-inflate--src--encoder.rs.txt",
+        "source": "https://raw.githubusercontent.com/etemesi254/zune-image/69502ce83fdfecdd0beefd677e2abb3781b29d98/zune-inflate/src/encoder.rs",
+        "sha256": "82dadd3c4a4df0d55d055f78f0fbb14e2fc3f66516a45d57dbcc5aadf32ebbb0",
+        "sourceLines": [
+          1,
+          5
+        ],
+        "sourceFileSha256": "c99d7afda5c50bc52efc5d8e788da6a884d0e13b3b38865f760f5ed3d9fc65bd"
+      }
+    ],
+    "license": "MIT OR Apache-2.0 OR Zlib",
+    "selectedLicense": "Zlib",
+    "selectionReason": "An offered Cargo license with a complete license text at the pinned commit; its Apache/MIT grant notice is preserved without inventing the absent license files."
+  }
+]

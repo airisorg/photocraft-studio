@@ -1,52 +1,58 @@
-# Security Policy
+# Security reporting and release boundaries
 
-PhotoCraft processes complex document and image formats and exposes CLI, JSON control, and MCP automation. Treat files, paths, metadata, automation requests, and command parameters as potentially malicious.
+Please report a vulnerability privately to the repository maintainer. Use
+[GitHub private vulnerability reporting](https://github.com/FZ2000/photocraft/security/advisories/new)
+when that feature is enabled; otherwise contact the maintainer through their
+GitHub profile to arrange a private channel before sharing exploit details.
+Do not put credentials, session cookies, private artwork, customer identifiers,
+or a working exploit against a hosted service in a public issue.
 
-## Reporting a vulnerability
+Include the affected commit or release, the trust boundary involved, expected
+and observed behavior, and a small synthetic reproduction. Local isolated
+reproductions are preferred. Testing someone else's account, production load
+testing, destructive requests, or accessing private content requires separate
+permission. This policy is not a bug-bounty or a promise of response times.
 
-Please give the repository maintainers a reasonable opportunity to investigate and coordinate a fix before publishing exploitable details, proof-of-concept code, or weaponized files.
+Only the current maintained branch is a remediation target. A passing local
+check is not evidence that a fix has reached a hosted deployment. Release notes
+should identify the source revision, tested artifact, and deployment evidence.
 
-This repository does not currently document a dedicated private security email or private reporting channel. Contact the repository maintainers through the repository owner/maintainer channels already listed in the project, provide only a minimal non-exploitable summary in public, and ask for an appropriate private transfer method before sharing sensitive details. Do not open a public issue containing a working exploit, secret, sensitive crash dump, or malicious attachment.
+## Before publishing source or a release
 
-If no private channel can be established, withhold weaponized material and report the smallest safe description that allows maintainers to make contact.
+- Run `python3 packaging/web/check-publication.py` from a clean checkout with
+  `gitleaks` installed. It checks all locally reachable Git history, rejects
+  retained restricted brand artwork and personal home paths, and reports only
+  counts and categories. Fetch the refs intended for publication first. It does
+  not inspect unavailable refs or prove that all sensitive information is absent.
+- Review Git author identities and public contact details separately. Secret
+  scanners cannot decide whether a person consented to publishing their identity.
+- Keep the upstream copyright, both project licenses, `NOTICE`, asset licenses,
+  and `ATTRIBUTION.md`. Modified upstream files must carry change notices when
+  distributing under Apache-2.0. The restricted upstream marks are not covered
+  by the source-code licenses. A clean current tree does not remove old assets
+  or private data from Git history. Do not rewrite history without owner approval.
+- Review the current RustSec advisories against the locked dependencies and the
+  actual target's dependency graph. An optional lockfile package is not proof of
+  runtime exposure; record the reason for each exception rather than silently
+  suppressing it. Recheck advisories for each release.
+- Pin privileged CI actions to full commit IDs and verify downloaded build tools.
+  Tests and artifact provenance do not replace reviewing upstream or workflow
+  changes that execute in a release job.
 
-## What to include
+## Cloud native-document limits
 
-A useful report includes:
+Cloud uploads retain a 100 MiB wire limit. Validation additionally bounds the
+expanded ZIP to 128 MiB, the manifest to 4 MiB, an individual blob to 64 MiB,
+archive entries to 16,384, and layers to 4,096. The native loader verifies every
+referenced tile/blob and its content hash under a 256 MiB decoded-payload budget.
+All three merge inputs share that budget; the merged output is checked separately
+after their decoded documents have been released. These are cloud limits, not a
+change to the desktop file format or its loading defaults.
 
-- affected PhotoCraft version, commit, or release artifact;
-- operating system, architecture, build profile, and relevant feature flags;
-- the affected component or path;
-- security impact and required attacker access;
-- exact reproduction steps;
-- expected behavior and actual behavior;
-- crash logs, backtraces, sanitizer output, or resource measurements when applicable;
-- whether the problem reproduces from a clean checkout;
-- any known workaround or containment.
-
-Remove credentials, personal paths, private document content, and unrelated system information from logs.
-
-## Malicious test files
-
-Do not attach a potentially harmful or non-redistributable file to a public issue. Initially provide its format, size, cryptographic hash, observed effect, provenance category (for example, synthetic or fuzz-generated), and the command needed to reproduce the problem. Coordinate a private transfer method with maintainers before sending the sample.
-
-Test files accepted into the repository must be minimized, free of personal or proprietary data, legally redistributable, and documented with the expected failure behavior. A fixed parser defect should receive a permanent regression test whenever safe and practical.
-
-## Scope
-
-Security reports may cover:
-
-- PSD/PSB, raster, `.pcraft`, ICC, LUT, pattern, and embedded-object parsing;
-- decompression bombs, oversized dimensions, integer overflow, memory exhaustion, recursion, or hangs;
-- import/export and filesystem path handling, including traversal, symlinks, and unsafe overwrite behavior;
-- engine command validation and serialization/deserialization;
-- the desktop control server, headless JSON server, MCP server, and MCP-to-GUI bridge;
-- authentication, authorization/capabilities, request limits, batch limits, and connection exhaustion;
-- GPU resource validation or driver-facing input handling;
-- dependencies, CI, packaging, signing, checksums, and release artifact integrity.
-
-General bugs without a security impact should use the project's normal issue and contribution process.
-
-## Current limitations
-
-TCP control connections require a 256-bit bearer token before method dispatch and enforce request-line, active-connection, and batch-step limits. These protections do not provide a capability model: an authenticated client still receives the complete exposed control surface. Automation file operations are not restricted to configured workspace roots, and JSON-depth, render, document-memory, command-duration, client-identity, encryption, and audit controls are not yet implemented. See the [security documentation](book/src/security/overview.md) for the source-backed status and hardening roadmap.
+One blocking validation worker is admitted per service process. Waiting is
+bounded before upload snapshots are allocated, and cancellation does not release
+the worker's permit early. These bounds reduce resource amplification; they are
+not a process-RSS guarantee or provider-wide abuse protection. Container memory,
+worker counts, database capacity, and ingress controls still need deployment
+limits. Oversized or malformed saves are rejected explicitly while preserving
+the user's local document and the previous saved version.

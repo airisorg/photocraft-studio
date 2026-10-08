@@ -1,3 +1,4 @@
+// Modified by the independent FZ2000 PhotoCraft Studio fork; see docs/fork-code-map.md.
 //! Document canvas: display texture cache, view transform, tool input, extra document windows.
 //!
 //! Rendering is CPU (`photocraft-compose`) for now, uploaded into an egui texture. Brush strokes

@@ -1,0 +1,2 @@
+# Preserve verified third-party notice bytes and their original whitespace on every platform.
+packaging/licenses/** -text -whitespace

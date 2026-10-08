@@ -1,3 +1,4 @@
+// Modified by the independent FZ2000 PhotoCraft Studio fork; see docs/fork-code-map.md.
 //! Colour management commands and helpers: document profiles (Edit › Assign / Convert to
 //! Profile), CMS-based Image › Mode conversions, soft proofing (View › Proof Setup / Proof
 //! Colors / Gamut Warning) and the display transform the canvas applies.

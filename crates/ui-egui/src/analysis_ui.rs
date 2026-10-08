@@ -1,3 +1,4 @@
+// Modified by the independent FZ2000 PhotoCraft Studio fork; see docs/fork-code-map.md.
 //! Image › Analysis and Notes in the shell: the Ruler, Count and Note tools (eyedropper group),
 //! their canvas overlays and options bars, Window › Measurement Log and Window › Notes, and the
 //! Set Measurement Scale / Select Data Points / Place Scale Marker dialogs.

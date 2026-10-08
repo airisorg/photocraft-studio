@@ -1,3 +1,4 @@
+// Modified by the independent FZ2000 PhotoCraft Studio fork; see docs/fork-code-map.md.
 //! Photocraft in the browser.
 //!
 //! Runs the same [`photocraft_ui_egui::PhotocraftApp`] as the desktop app through eframe's web

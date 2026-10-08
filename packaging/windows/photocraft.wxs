@@ -1,4 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Modified for PhotoCraft Studio: include the staged project and embedded-asset license tree. -->
 <!--
   PhotoCraft MSI (WiX Toolset v5: `dotnet tool install -g wix`). Built by package.ps1:
 
@@ -44,6 +45,8 @@
 
   <Fragment>
     <ComponentGroup Id="PhotocraftFiles" Directory="INSTALLFOLDER">
+      <!-- WiX v5 recursively includes only the explicitly staged notice files. -->
+      <Files Directory="INSTALLFOLDER" Subdirectory="Licenses" Include="$(var.BinDir)\Licenses\**" />
       <Component Id="PhotocraftApp" Guid="A6DE41B7-A80F-4C59-A17E-BB68065BF67E">
         <File Id="PhotocraftExe" Source="$(var.BinDir)\photocraft.exe" KeyPath="yes">
           <Shortcut Id="StartMenuShortcut" Directory="ProgramMenuFolder" Name="PhotoCraft"
