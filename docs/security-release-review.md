@@ -32,7 +32,17 @@ SHA-256 `3c65885b6eaf0e7dd16a2dca8d8bcc9ea7d4a5607b94c5468f1fe52e4eed2ddc`.
 - The transaction-pool protocol fixture passes all 41 API and 12 live tests across 2,917 idle backend switches, with no named prepared statements or SQLSTATE errors. This fixture is not a Supavisor emulator or hosted-cause diagnosis.
 - Four focused renderer-startup journeys pass on the final browser artifact: bundled-browser default, explicit WebGL, hardware WebGPU, and safe initialization-error recovery with real pixels, keyboard focus and narrow-screen geometry.
 
-The final 20 live/concurrency tests pass. The optimized TLS load results are in [the scale review](scale-release-review.md); the 1,000-client target is not met. Final browser acceptance is recorded separately. No code-coverage percentage or production security certification is inferred from test counts.
+The final 20 live/concurrency tests pass. All 50 bundled-browser journeys pass in
+710.687 seconds on the frozen artifacts above, including two-account merge,
+permissions, invitation response handling, save/reopen, lost acknowledgments,
+bounded recovery and session renewal. Earlier failed attempts are retained:
+successful shared-project setups now wait for the actual native dimensions,
+layer identities/names and active layer before injecting later faults. Intentionally
+delayed or denied opening tests keep their original boundary. No runtime or timing
+threshold was changed for this fixture correction. The optimized TLS load results
+are in [the scale review](scale-release-review.md); the 1,000-client target is not
+met. No code-coverage percentage or production security certification is inferred
+from test counts.
 
 The final hardware-browser collaboration lane passes three regressions and all 19
 input-to-observed-pixel samples using two independent synthetic accounts on loopback.
