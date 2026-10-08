@@ -60,6 +60,7 @@ jobs:
           python -m unittest discover -s tests/web -p test_benchmark_scale.py
           python -m unittest discover -s tests/web -p test_rust_notices.py
           python -m unittest discover -s tests/web -p test_runtime_notices.py
+          python -m unittest discover -s tests/web -p test_build_privacy.py
           cargo fmt --all -- --check
           cargo test --locked -p photocraft-cloud
           cargo clippy --locked -p photocraft-cloud --all-targets -- -D warnings
@@ -68,7 +69,7 @@ jobs:
         working-directory: apps/photocraft-web
         run: |
           cargo clippy --locked -p photocraft-web --target wasm32-unknown-unknown --no-deps -- -D warnings
-          NO_COLOR=true trunk build --release
+          python ../../packaging/web/build-release.py
       - name: Build service and fixture
         run: |
           mkdir -p test-results

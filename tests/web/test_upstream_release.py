@@ -215,6 +215,19 @@ class UpstreamRelease(unittest.TestCase):
         self.assertIn('uncommitted-adapter.rs', files)
         self.assertTrue(dirty['dirty'], 'Packaged source absent from the named commit must never claim to be clean')
         previous_package = output.read_bytes()
+        private_paths = [b'/' + b'Users/' + b'synthetic-operator/project/source.rs',
+                         b'/' + b'home/' + b'synthetic-operator/project/source.rs',
+                         b'C:' + bytes([92]) + b'Users' + bytes([92]) + b'synthetic-operator' + bytes([92]) + b'source.rs']
+        for private_path in private_paths:
+            # A valid WASM custom section represents compiler-emitted file strings.
+            from test_runtime_notices import integer, string
+            section = string('fixture-path') + private_path
+            (assets / 'editor.wasm').write_bytes(runtime_wasm() + b'\0' + integer(len(section)) + section)
+            with self.assertRaises(subprocess.CalledProcessError) as failure:
+                manifest()
+            self.assertIn('private home path', failure.exception.stderr)
+            self.assertNotIn(private_path.decode(), failure.exception.stderr)
+            self.assertEqual(output.read_bytes(), previous_package, 'Private artifact must not replace the distributable')
         (assets / 'editor.wasm').write_bytes(runtime_wasm('1.96.0 (wrong compiler)'))
         with self.assertRaises(subprocess.CalledProcessError):
             manifest()

@@ -2,6 +2,7 @@
 from pathlib import Path
 import hashlib
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -11,16 +12,22 @@ root = Path(__file__).resolve().parents[2]
 out = Path(sys.argv[1]).resolve()
 out.parent.mkdir(parents=True, exist_ok=True)
 assets = root / 'dist/web'
-wasm = list(assets.glob('*.wasm'))
+wasm = list(assets.rglob('*.wasm'))
 # This container serves the upstream 0.3 editor including HEIF. Its measured binary is
 # about 24.6 MiB; Cloudflare's separate distribution keeps its own 24 MiB gate.
 if len(wasm) != 1 or wasm[0].stat().st_size > 26 * 1024 * 1024:
     raise SystemExit('Expected one release WASM within the Tofu container 26 MiB budget')
+wasm_bytes = wasm[0].read_bytes()
+# Inspect raw bytes: panic locations and file! strings survive release stripping.
+# Never print matching values. Reject before invoking collectors or opening the ZIP.
+private_home = re.compile(rb'(?:/(?:Users|home)/[^/\\\x00\r\n]{1,128}/|[A-Za-z]:\\Users\\[^/\\\x00\r\n]{1,128}\\)')
+if private_home.search(wasm_bytes):
+    raise SystemExit('Release WASM contains a private home path; rebuild with packaging/web/build-release.py')
 source = subprocess.check_output(['git', 'ls-files', '--cached', '--others', '--exclude-standard', '-z'], cwd=root).decode().split('\0')
 manifest = {
     'sourceCommit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root, text=True).strip(),
     'dirty': bool(subprocess.check_output(['git', 'status', '--porcelain'], cwd=root, text=True).strip()),
-    'wasm': {'path': 'public/' + wasm[0].name, 'sha256': hashlib.sha256(wasm[0].read_bytes()).hexdigest()},
+    'wasm': {'path': 'public/' + wasm[0].relative_to(assets).as_posix(), 'sha256': hashlib.sha256(wasm_bytes).hexdigest()},
 }
 # Generate from the resolved, locked registry graph before opening the archive.
 # Missing or modified license texts stop redistribution instead of silently omitting notices.
