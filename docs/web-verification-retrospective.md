@@ -212,16 +212,28 @@ passing rerun; a test's timing assumption must not become a product constraint.
 - Dropdown, display-density, saved-renderer and phone New Document regressions passed
   in the earlier released 31-case local browser suite. Native forms cover 33 viewport states and
   cloud windows cover 20; this does not establish every field or physical-device journey.
-- Wide native Preferences forms remain horizontally scrollable on phones. Being inside
-  the viewport is not equivalent to a complete mobile interaction design.
+- On 2026-10-08, screenshot review confirmed clipped internal Preferences controls on
+  phones despite an outer window that fits the viewport and a passing intermediate
+  61-check browser run. Focused case 51 then failed on that old artifact in 7.102 seconds.
+  The combined native build now passes focused cases 51–52, including actual compact
+  section-menu clicks, pending-copy preservation and Cancel. The first selector helper
+  failure is retained: a 29px workspace-height assumption excluded the actual 24px native
+  control; the corrected oracle still checks the complete frame and painted menu captions.
+  The exact combined build also passed four renderer-startup, 52 browser-journey and seven
+  live cases; this still does not establish every native field or physical-device workflow.
+  See the
+  [combined build and scoped evidence](collaboration-performance.md#combined-browser-build-and-focused-profiles).
+  Outer bounds or the presence of scrolling do not prove that every field and action is reachable.
 - Keep the explicit hidden-preference list distinct from the scorecard's heuristic read count.
 - Real invitation delivery needs the exact approved email address. Local synthetic accounts
   must never be inserted into the hosted database.
 - Current GitHub Actions jobs were blocked by the account's billing/spending restriction;
   local passes must remain separately reported until an exact-revision CI run executes.
-- Full native behavior parity, live cursors, simultaneous-stroke collaboration, accessible
-  DOM controls, physical-device acceptance and worker offload are open work, not hidden
-  behind this UI patch.
+- Bounded named live cursors and native Brush/Pencil/Eraser/Move previews are implemented;
+  their [contract and measured scope](collaboration-architecture.md) remain explicit.
+  Live selections, unrestricted simultaneous strokes, previews for every command type,
+  full native behavior parity, accessible DOM controls, physical-device acceptance and
+  worker offload remain open work.
 - The candidate separates recovery warnings/retry timing from cloud-save eligibility.
   Its quota-failure journey must prove that cloud revisions still advance automatically,
   and that restoring local recovery cannot dismiss an unrelated cloud-save failure.

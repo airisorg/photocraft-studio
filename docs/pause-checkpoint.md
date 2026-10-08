@@ -4,6 +4,14 @@ The owner requested that the current work be committed, merged, deployed, and th
 This checkpoint preserves the accepted implementation and the remaining work. It is not
 a claim of complete Figma/Canva parity or exhaustive verification of every native feature.
 
+Historical checkpoint notice, 2026-10-08: the implementation timings and remaining-work
+list below describe the 2026-10-07 release and are superseded where later changes apply.
+In particular, the old 3.5-second save delay, 1.5-second collaboration poll and absence of
+live cursors are not the current contract. See [collaboration architecture](collaboration-architecture.md)
+and [artifact-specific performance evidence](collaboration-performance.md) for current
+bounds and verification. The original hashes, results and unresolved acceptance boundaries
+below are retained as historical evidence, not attributed to later candidates.
+
 ## Accepted implementation
 
 The original PhotoCraft Rust editor, document model, commands, native file format and

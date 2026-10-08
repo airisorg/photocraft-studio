@@ -1,6 +1,11 @@
 # Scale release review
 
-## Current candidate — 2026-10-08
+## Earlier RPC transport snapshot — 2026-10-08
+
+This section retains the `c0a89fbd` artifact's measurements. The later combined
+Preferences/cursor-label artifact has [separate current evidence](collaboration-performance.md#combined-artifact-cross-worker-mixed-workload),
+including the retained first run and one unchanged-artifact diagnostic; its results do
+not replace this snapshot or certify production capacity.
 
 The optimized candidate passes a short **local** 1,000-actor mixed workload:
 998 modeled HTTP collaborators plus two real native browser clients. The three
@@ -25,7 +30,7 @@ or purchased service was changed. See the [collaboration contract](collaboration
 
 ### Exact artifacts and workloads
 
-All current optimized runs use backend SHA-256
+The optimized runs in this snapshot use backend SHA-256
 `90908c3f4eedd41373a8916fddfe65e43b9710dac9439dab437d0042b5ddc090`.
 The mixed browser run uses `photocraft-web-d3fc6e503acae4d9_bg.wasm`, SHA-256
 `c0a89fbd41e0b9d00bebf4065e440a754083739e5a84acda93cf581a48abf1a1`.
