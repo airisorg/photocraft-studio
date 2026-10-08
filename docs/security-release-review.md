@@ -6,7 +6,7 @@ This review covers the independent PhotoCraft Studio fork, based on `1d264da`, a
 
 | Priority | Defect and impact | Remediation and evidence |
 |---|---|---|
-| P1 | Project access was checked before lock waits; a removed collaborator could still commit or mutate after removal completed. | Durable project writes acquire the shared project barrier, then query current access. Controlled revocation-wait regressions cover saves, thumbnails, upload reservation/chunks, duplication and comments. |
+| P1 | Project access was checked before lock waits; a removed collaborator could still commit or mutate after removal completed. | Durable project writes acquire the common project barrier (exclusive for durable writes), then query current access. Controlled revocation-wait regressions cover saves, thumbnails, upload reservation/chunks, duplication and comments. |
 | P1 | Cached authenticated identity survived queued logout/expiry, including secondary account/upload/quota locks. | The private session digest is retained only internally. Current session, email and membership are checked after waits with wall-clock expiry; account-only writes refresh their session too. Eight controlled expiry/logout scenarios reproduced before the fix. A serialization unit verifies that responses never include the digest. |
 | P1 | Cloud commit accepted a native archive with missing referenced data; wire size did not bound expanded or decoded data. Parse/merge work also held database locks. | Reuse the original native loader with cloud-only ZIP/manifest/blob/layer/canvas and decoded-byte limits. Hash/parse/merge runs in one owned blocking lane outside durable locks, followed by fresh authorization, immutable declaration, revision and quota checks. Five archive HTTP regressions and native corruption/round-trip tests pass. |
 | P1 | Sign-in held database transactions across two potentially slow provider calls and could starve the five-connection pool. | Readiness is checked first; provider HTTP holds no database connection. Account/session writes begin only after verified identity. Both stalled-provider phases leave ordinary APIs available in the regression. |
@@ -21,8 +21,8 @@ A 128-request ordinary admission trial shed 131 requests at 100 simulated client
 ## Verified local checks
 
 The final debug backend SHA-256 is `53c0126e1b770778a8c81b2096679cfb5fb45a242ff15bdbc1c2fc1846efff91`; the optimized backend is `d46b760c283140d8bb7aee7c9939a04eb8fad7f4943caf528922c3c7637e3779`.
-The browser artifact is `photocraft-web-6a6b88f0901cfa12_bg.wasm`, 26,021,507 bytes,
-SHA-256 `3c65885b6eaf0e7dd16a2dca8d8bcc9ea7d4a5607b94c5468f1fe52e4eed2ddc`.
+The browser artifact is `photocraft-web-3e8018e55ab85877_bg.wasm`, 25,982,620 bytes,
+SHA-256 `6ecd9aaeebb452aae091f360a79963bedea98c673adc7c544e81d1c9bf8432cb`.
 
 - 21 cloud units and strict cloud/format Clippy pass; workspace formatting passes.
 - All 80 native-format tests pass, including atomic saves, autosave, corruption, hash validation, all-mode round trips and decoded-byte accounting.
@@ -31,10 +31,11 @@ SHA-256 `3c65885b6eaf0e7dd16a2dca8d8bcc9ea7d4a5607b94c5468f1fe52e4eed2ddc`.
 - Chromium and WebKit submit the actual email-confirmation form without an injected Origin header; verified identity, token privacy and replay rejection pass. The provider is simulated on loopback; no inbox delivery is claimed.
 - Packaging provenance, publication fixtures and benchmark safety guards have separate evidence. A missing PowerShell runtime is an explicit skip, not Windows execution evidence.
 - The transaction-pool protocol fixture passes all 41 API and 12 live tests across 2,917 idle backend switches, with no named prepared statements or SQLSTATE errors. This fixture is not a Supavisor emulator or hosted-cause diagnosis.
+- Ten build-privacy fixtures pass, covering Cargo flag semantics, path remapping and package rejection before an existing ZIP can be overwritten.
 - Four focused renderer-startup journeys pass on the final browser artifact: bundled-browser default, explicit WebGL, hardware WebGPU, and safe initialization-error recovery with real pixels, keyboard focus and narrow-screen geometry.
 
 The final 20 live/concurrency tests pass. All 50 bundled-browser journeys pass in
-710.687 seconds on the frozen artifacts above, including two-account merge,
+647.780 seconds on the frozen artifacts above, including two-account merge,
 permissions, invitation response handling, save/reopen, lost acknowledgments,
 bounded recovery and session renewal. Earlier failed attempts are retained:
 successful shared-project setups now wait for the actual native dimensions,
@@ -54,11 +55,11 @@ uncertainty in the upper bound:
 
 | Minimum request delay | Upper-bound p50 | Largest upper bound |
 |---|---:|---:|
-| 0 ms | 105.764 ms | 142.529 ms |
-| 50 ms | 185.734 ms | 204.208 ms |
-| 100 ms | 285.676 ms | 304.150 ms |
+| 0 ms | 104.581 ms | 147.038 ms |
+| 50 ms | 186.276 ms | 205.562 ms |
+| 100 ms | 200.515 ms | 274.060 ms |
 
-The additional reload sample has an 83.976 ms upper bound. Measurement ends at a
+The additional reload sample has a 132.266 ms upper bound. Measurement ends at a
 matching CDP-swapped PNG, not a physical display. These small samples cover cursor
 input and a supported native Pencil preview, not every editor operation or tail
 reliability. The delay is a CDP HTTP simulation, not measured Internet latency.
@@ -68,6 +69,12 @@ repeat produced matching pixels but exceeded the unchanged 15 ms clock-uncertain
 limit (29.58 ms and 17.283 ms). Both remain invalid timing evidence rather than
 passes or demonstrated latency failures. Full functional browser acceptance uses
 the bundled browser independently of the hardware timing lane.
+
+The earlier `3c65885b` browser artifact passed its functional checks but was held
+when byte-level package inspection found operator home paths in compiled WASM.
+The remapped artifact above has zero home-path matches; every browser and hardware
+timing gate was rerun against its exact hash. Earlier receipts remain retained as
+superseded evidence rather than being attributed to the replacement artifact.
 
 ## Publication boundary
 
