@@ -1,3 +1,4 @@
+# Modified for PhotoCraft Studio: preserve FreeBSD validation for the maintained fork.
 # Builds and tests the workspace on FreeBSD, inside a FreeBSD VM on a Linux runner
 # (GitHub has no FreeBSD runners). GPU tests skip themselves when the VM has no adapter.
 # It then runs packaging/freebsd/package.sh, the script the release job runs, and checks the

@@ -18,6 +18,18 @@
       color: #bcb9d8; background: #1a1a1c; font: 11px system-ui, sans-serif; border-radius: 3px; }
     #photocraft_stalled { visibility: hidden; animation: photocraft-stalled 0s 20s forwards; }
     #photocraft_stalled a { pointer-events: auto; color: #6f45ce; }
+    #photocraft_loading.photocraft-startup-error { box-sizing: border-box; pointer-events: auto; overflow: auto; }
+    #photocraft_loading.photocraft-startup-error p { margin: 0; max-width: 440px; line-height: 1.6; }
+    #photocraft_loading.photocraft-startup-error > a { display: inline-flex; align-items: center; justify-content: center;
+      box-sizing: border-box; min-height: 40px; padding: 10px 16px; border-radius: 8px; background: #23202d;
+      color: #fff; font-weight: 600; text-decoration: none; }
+    #photocraft_loading.photocraft-startup-error > a:hover { background: #393344; }
+    #photocraft_loading.photocraft-startup-error :is(a, summary):focus-visible { outline: 3px solid #7955dc; outline-offset: 3px; }
+    #photocraft_loading.photocraft-startup-error details { width: min(100%, 640px); text-align: left; }
+    #photocraft_loading.photocraft-startup-error summary { width: fit-content; margin: 0 auto; padding: 10px 4px; cursor: pointer; }
+    #photocraft_loading.photocraft-startup-error pre { box-sizing: border-box; max-height: 160px; overflow: auto;
+      margin: 8px 0 0; padding: 12px; border: 1px solid #d9d5e0; border-radius: 8px; font: 12px/1.5 monospace;
+      white-space: pre-wrap; overflow-wrap: anywhere; }
     @keyframes photocraft-stalled { to { visibility: visible; } }
   </style>
 </head>

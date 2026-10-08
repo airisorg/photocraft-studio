@@ -19,21 +19,15 @@ git log --oneline 3a3984075a1fd06d1af3e660aa376ee5368c4f73..HEAD -- crates/engin
 
 | Path | Responsibility |
 |---|---|
-| `apps/photocraft-web/src/home.rs` | Reusable workspace styling, navigation and starter-design widgets |
-| `apps/photocraft-web/src/cloud.rs` | Stateful workspace, project/recovery/account/sharing UI, authenticated HTTP calls, native save/load integration, versions and synchronization; automatic save/sync/install guards wait for the native gesture to finish |
-| `apps/photocraft-web/src/live.rs`, `live_peer.rs` | Ephemeral cursor and native gesture transport, with bounded preview-to-saved-version handoff; no separate painting engine |
+| `apps/photocraft-web/src/home.rs` | Browser workspace, project navigation, recovery, account and sharing UI |
+| `apps/photocraft-web/src/cloud.rs` | Authenticated HTTP calls, native save/load integration, versions, recovery and synchronization |
+| `apps/photocraft-web/src/live.rs` | Ephemeral cursor and native gesture transport; no separate painting engine |
 | `crates/ui-egui/src/collaboration.rs` | Temporary remote view state around the existing native canvas and compositor |
-| `crates/ui-egui/src/lib.rs` | Modified upstream integration hooks, including a read-only pending-drag predicate for adapters; exposes the existing native gesture lifecycle without replacing its commit or undo behavior |
-| `crates/ui-egui/src/move_ui.rs`, `snap_ui.rs`, `crates/engine/src/transform_cmds.rs` | Modified upstream correctness paths: repaint revealed vector pixels and use the picked layer's complete shape bounds; keep original Move/transform commands and history |
-| `crates/vector/src/raster.rs` | Modified upstream pixel-bounds conversion: saturating endpoints for extreme geometry; original vector rasterization remains in use |
-| `crates/ui-egui/src/prefs_ui.rs` | Modified upstream Preferences view: compact native section selector and stacked, width-bounded fields on narrow viewports; reuses the existing widgets, working copy and preference commands |
-| `crates/ui-egui/src/dialogs.rs` | Modified upstream dialog shell: bounds the Preferences body to the available viewport while preserving its existing Apply/OK/Cancel path |
 | `apps/photocraft-cloud/src/` | HTTP service, authorization, invitations, document merge/validation and bounded live previews |
 | `apps/photocraft-cloud/migrations/` | Versioned, re-runnable application-schema migrations |
 | `apps/photocraft-cloud/examples/fixture.rs` | Synthetic native-document fixture for tests |
 | `tests/web/` | Local API, authentication, browser, recovery, live-preview, visual, security and performance checks |
 | `packaging/web/stage-tofu.sh`, `tofu-package.py` | Container source/asset staging and release provenance |
-| `packaging/web/build-release.py` | Existing Trunk release build with compiler path remapping; no editor replacement |
 | `packaging/web/upstream-release.py` | Candidate import and tested-release promotion support |
 | `packaging/web/rust-notices.py`, `runtime-notices.py`, `packaging/licenses/` | Verified dependency/runtime notice collection and pinned upstream supplements |
 | `.github/workflows/web-cloud.yml`, `update-and-release.yml` | Fork-specific acceptance and guarded upstream-update jobs |

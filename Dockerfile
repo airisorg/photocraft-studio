@@ -5,7 +5,9 @@ COPY crates ./crates
 COPY apps ./apps
 COPY xtask ./xtask
 COPY assets ./assets
-RUN cargo build --locked --release -p photocraft-cloud
+RUN rustc -Vv | grep -Fx 'release: 1.95.0' \
+    && rustc -Vv | grep -Fx 'commit-hash: 59807616e1fa2540724bfbac14d7976d7e4a3860' \
+    && cargo build --locked --release -p photocraft-cloud
 
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*

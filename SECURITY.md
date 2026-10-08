@@ -1,7 +1,7 @@
 # Security reporting and release boundaries
 
 Please report a vulnerability privately to the repository maintainer. Use
-[GitHub private vulnerability reporting](https://github.com/airisorg/photocraft-studio/security/advisories/new)
+[GitHub private vulnerability reporting](https://github.com/FZ2000/photocraft/security/advisories/new)
 when that feature is enabled; otherwise contact the maintainer through their
 GitHub profile to arrange a private channel before sharing exploit details.
 Do not put credentials, session cookies, private artwork, customer identifiers,

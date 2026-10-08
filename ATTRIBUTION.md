@@ -26,19 +26,6 @@ next to them.
 
 ### Optional build input: craft-fonts (not files in this repo)
 
-Builds made with `CRAFT_FONTS_DIR` (upstream's official native releases) embed fonts from
-[storytold/craft-fonts](https://github.com/storytold/craft-fonts) at a pinned commit; no font file
-from it is committed here. Per-file authors, sources and licences:
-[craft-fonts `ATTRIBUTION.md`](https://github.com/storytold/craft-fonts/blob/main/ATTRIBUTION.md).
-
-| Font (embedded at build time) | Use | License |
-|---|---|---|
-| BIZ UDPGothic Regular, Bold (Morisawa) | Japanese UI and sans Type fallback (desktop) | SIL OFL 1.1, shipped as `OFL-biz-ud-pgothic.txt` |
-| Shippori Mincho Regular (FONTDASU) | Japanese serif Type fallback (desktop) | SIL OFL 1.1, shipped as `OFL-shippori-mincho.txt` |
-| BIZ UDMincho Regular (Morisawa) | Japanese serif Type fallback (desktop) | SIL OFL 1.1, shipped as `OFL-biz-ud-mincho.txt` |
-
-### Optional build input: craft-fonts (not files in this repo)
-
 Builds made with `CRAFT_FONTS_DIR` (all official releases) embed fonts from
 [storytold/craft-fonts](https://github.com/storytold/craft-fonts) at a pinned commit; no font file
 from it is committed here. Per-file authors, sources and licences:
@@ -104,20 +91,9 @@ the actual WASM producer before packaging; the cloud build checks the matching
 Rust release and source commit. This supplements the Cargo inventory. It does
 not certify every native installer, operating-system image or linked system library.
 
-## PhotoCraft Studio presentation
-
-| Path | Title | Author | Source | License |
-|---|---|---|---|---|
-| `docs/media/editor.png`, `docs/media/workspace.png` | Actual hosted editor and guest workspace screenshots with an original starter design | PhotoCraft Studio contributors; editor UI by the ArtCraft team and PhotoCraft contributors | Captured from the deployed PhotoCraft Studio guest session; [capture notes](docs/media/README.md) | MIT OR Apache-2.0; underlying assets retain the notices above |
-| `docs/media/editing-walkthrough.mp4` | Native editing walkthrough | PhotoCraft Studio contributors; editor engine and UI by the ArtCraft team and PhotoCraft contributors | Actual local guest browser recording of PhotoCraft Studio, encoded with FFmpeg; [capture notes](docs/media/README.md) | MIT OR Apache-2.0; underlying assets retain the notices above |
-| `docs/media/collaboration-demo.mp4`, `docs/media/collaboration-preview.png` | Two-browser local collaboration recording and poster | PhotoCraft Studio contributors; editor engine and UI by the ArtCraft team and PhotoCraft contributors | Actual independent local browser recordings and disposable test workspace; [capture notes](docs/media/README.md) | MIT OR Apache-2.0; underlying assets retain the notices above |
-| `docs/media/social-preview.png`, `docs/media/deployed-on-tofu.svg` | Original social card and deployment badge | PhotoCraft Studio contributors | Original HTML/SVG composition using the real editor screenshot and plain-text deployment acknowledgment | MIT OR Apache-2.0; no trademark rights granted |
-
-The presentation uses plain text to identify Tofu as the hosting platform. It does not incorporate a Tofu logo or proprietary third-party design assets.
-
 ## Test data (not committed, not shipped)
 
-`corpus/` is gitignored and no test fixtures are committed to the repository.
+`corpus/` is gitignored; these fetched corpus fixtures are not committed or shipped.
 `cargo xtask corpus --all` fetches every corpus at the pinned commits in `xtask/src/corpus_pins.rs`
 and verifies each file against the sha256 lists in `xtask/*.sha256`, with the upstream licence
 next to the files:

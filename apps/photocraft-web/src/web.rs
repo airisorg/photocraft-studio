@@ -116,6 +116,31 @@ pub fn start() {
     });
 }
 
+/// Software WebGPU adapters can initialize successfully and then lose their device before
+/// the first frame. That also blanks eframe's shell, beyond the document CPU fallback.
+/// Choose the existing WebGL renderer before binding the canvas or constructing any document.
+/// Hardware WebGPU and the explicit `?webgl` option retain their original paths.
+async fn prefer_hardware_webgpu(options: &mut eframe::WebOptions) {
+    let power_preference = match &options.wgpu_options.wgpu_setup {
+        eframe::egui_wgpu::WgpuSetup::CreateNew(create) if create.instance_descriptor.backends.contains(eframe::wgpu::Backends::BROWSER_WEBGPU) => {
+            create.power_preference
+        }
+        _ => return,
+    };
+    let instance = options.wgpu_options.wgpu_setup.new_instance().await;
+    let Ok(adapter) = instance.request_adapter(&eframe::wgpu::RequestAdapterOptions { power_preference, ..Default::default() }).await else {
+        return;
+    };
+    let info = adapter.get_info();
+    if info.backend == eframe::wgpu::Backend::BrowserWebGpu
+        && info.device_type == eframe::wgpu::DeviceType::Cpu
+        && let eframe::egui_wgpu::WgpuSetup::CreateNew(create) = &mut options.wgpu_options.wgpu_setup
+    {
+        log::info!("photocraft-web: software WebGPU adapter; selecting the compatible WebGL2 renderer before startup");
+        create.instance_descriptor.backends = eframe::wgpu::Backends::GL;
+    }
+}
+
 thread_local! {static UNSAVED:std::cell::Cell<bool>=const{std::cell::Cell::new(false)};}
 pub(crate) fn set_unsaved(value: bool) {
     UNSAVED.with(|v| v.set(value));

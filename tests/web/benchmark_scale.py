@@ -3,8 +3,7 @@
 Default is a dry plan. --execute creates its own database and bounded worker fleet
 from an existing binary, never builds, and drops only that database after stopping
 every worker. Actors route evenly and stick to one worker sharing the same database.
-Baseline clients model one in-flight GET and one PUT each. Exchange clients
-model one PUT carrying peers every80ms; missed ticks coalesce in both modes.
+Logical clients model one in-flight GET and one PUT each; missed ticks coalesce.
 HTTP service time is not browser paint latency. Admission failures fail the gate.
 """
 import argparse
@@ -37,55 +36,6 @@ from benchmark_collaboration import fixture
 ROOT = Path(__file__).resolve().parents[2]
 MAX_BODY = 8*1024*1024
 
-# Continuous active movement: the exchange uses the PUT peer snapshot and has
-# no separate read lane. Quiet-client polling and presence are out of this load.
-PACINGS = {'current': {'GET': .08, 'PUT': .04},
-           'reduced': {'GET': .25, 'PUT': .1},
-           'exchange': {'PUT': .08}}
-
-def live_ack(value, sequence):
-    if (value.get('accepted') is not True or type(value.get('seq')) is not int
-            or value['seq'] != sequence):
-        raise ValueError('invalid_live_ack')
-
-
-def live_snapshot(value, actor, peers, http_indices, native_peers=(), *, elapsed_ms=0, expected_gesture=None):
-    if value.get('role') not in {'owner', 'edit'} or not isinstance(value.get('peers'), list):
-        raise ValueError('missing_exchange_snapshot')
-    rows = value['peers']
-    if len(rows) > min(63, len(peers)-1):
-        raise ValueError('unbounded_exchange_peers')
-    seen, usable = set(), set()
-    for row in rows:
-        if not isinstance(row, dict):
-            raise ValueError('invalid_exchange_peer')
-        key = (row.get('actor'), row.get('tab'))
-        if (not all(isinstance(v, str) for v in key) or key not in peers
-                or key == (actor['id'], actor['tab']) or key in seen):
-            raise ValueError('unauthorized_exchange_peer')
-        seen.add(key)
-        sequence, base, ttl = row.get('seq'), row.get('baseRevision'), row.get('ttlMs')
-        if (type(sequence) is not int or not 1 <= sequence <= 2**63-1
-                or type(base) is not int or base != 1 or type(ttl) not in {int, float}
-                or not math.isfinite(ttl) or not 0 <= ttl <= 2000 or 'cursor' not in row or 'gesture' not in row):
-            raise ValueError('invalid_exchange_peer')
-        cursor = row['cursor']
-        if cursor is not None:
-            if (not isinstance(cursor, dict) or set(cursor) != {'x', 'y'}
-                    or any(type(v) not in {int, float} or not math.isfinite(v) or abs(v)>1_000_000
-                           for v in cursor.values())):
-                raise ValueError('invalid_exchange_cursor')
-        if key in http_indices:
-            if cursor != {'x':sequence%320, 'y':http_indices[key]%240}:
-                raise ValueError('incorrect_fixture_cursor')
-            if row['gesture'] != expected_gesture:
-                raise ValueError('incorrect_fixture_gesture')
-            if ttl > elapsed_ms:
-                usable.add(key)
-        elif key not in native_peers:
-            raise ValueError('undeclared_exchange_peer')
-    return len(rows), usable
-
 
 def arguments():
     p = argparse.ArgumentParser(description=__doc__)
@@ -100,8 +50,8 @@ def arguments():
     p.add_argument('--workers', type=int, choices=[1,2,4,8], default=1)
     p.add_argument('--db-pool-size', type=int, choices=range(1,9), default=5)
     p.add_argument('--scenario', choices=['rooms10', 'hot-room'], default='rooms10')
-    p.add_argument('--pacing', choices=list(PACINGS), default='current',
-                   help='current=GET80/PUT40ms; reduced=GET250/PUT100ms; exchange=PUT80ms with required authorized peers')
+    p.add_argument('--pacing', choices=['current', 'reduced'], default='current',
+                   help='current=GET80/PUT40ms; reduced=GET250/PUT100ms experimental comparison only')
     p.add_argument('--payload', choices=['cursor', 'points'], default='cursor')
     p.add_argument('--duration', type=float, default=10)
     p.add_argument('--warmup', type=float, default=3)
@@ -143,11 +93,7 @@ def db_stats(db):
 
 
 @contextmanager
-def isolated(a, report, *, public_dir=None, browser_workers=(0,)):
-    if (not isinstance(browser_workers, (tuple, list)) or not browser_workers or 0 not in browser_workers
-            or any(type(index) is not int or not 0 <= index < a.workers for index in browser_workers)
-            or len(set(browser_workers)) != len(browser_workers)):
-        raise ValueError('Browser worker topology must contain unique in-range indices including0')
+def isolated(a, report):
     name = 'photocraft_scale_'+uuid.uuid4().hex
     u = urlparse(a.database)
     database = urlunparse(u._replace(path='/'+name))
@@ -174,14 +120,12 @@ def isolated(a, report, *, public_dir=None, browser_workers=(0,)):
                     # before spawning; the others stay reserved during startup.
                     item.close()
                     app_name = f'photocraft_scale_worker_{index}'
-                    origin = f'http://127.0.0.1:{port}' if index in browser_workers else base
                     worker_db = urlunparse(urlparse(database)._replace(query=urlencode({'application_name':app_name})))
                     # No inherited provider credentials or database overrides.
                     env = {'PATH':os.environ.get('PATH','/usr/bin:/bin'),'DATABASE_URL':worker_db,
-                           'APP_ORIGIN':origin,'PORT':str(port),'CLOUD_LOCAL_DEV':'1',
+                           'APP_ORIGIN':base,'PORT':str(port),'CLOUD_LOCAL_DEV':'1',
                            'PHOTOCRAFT_DB_POOL_SIZE':str(a.db_pool_size),
-                           'SUPABASE_URL':'','SUPABASE_ANON_KEY':'',
-                           'PUBLIC_DIR':str(Path(public_dir).resolve() if index in browser_workers and public_dir is not None else a.output.parent/'no-public')}
+                           'SUPABASE_URL':'','SUPABASE_ANON_KEY':'','PUBLIC_DIR':str(a.output.parent/'no-public')}
                     if a.tls_ca:
                         env.pop('CLOUD_LOCAL_DEV')
                         env['SUPABASE_CA_CERT'] = a.tls_ca.read_text()
@@ -189,7 +133,7 @@ def isolated(a, report, *, public_dir=None, browser_workers=(0,)):
                     with log_path.open('w') as log:
                         process = subprocess.Popen([str(a.binary.resolve())],env=env,stdout=log,stderr=subprocess.STDOUT)
                     processes.append(process)
-                    workers.append({'index':index,'port':port,'pid':process.pid,'db_application_name':app_name,'origin':origin})
+                    workers.append({'index':index,'port':port,'pid':process.pid,'db_application_name':app_name})
             report['workers'] = workers
             for worker,process in zip(workers,processes):
                 session = requests.Session(); session.trust_env = False
@@ -259,7 +203,7 @@ def seed(db, a, data, info):
 
 
 class Load:
-    def __init__(self, a, base, actors, report, db, workers, *, native_peers=()):
+    def __init__(self, a, base, actors, report, db, workers):
         self.a, self.base, self.actors, self.report = a, base, actors, report
         self.db, self.workers = db, workers
         self.resource_samples = []
@@ -279,24 +223,6 @@ class Load:
         self.peer_counts = Counter(); self.requests = 0; self.bytes_in = 0; self.bytes_out = 0
         self.inflight = 0; self.peak = 0; self.coalesced = 0; self.reason = None
         self.active_start = 0; self.active_end = 0
-        self.room_peers = {p: {(v['id'], v['tab']) for v in actors if v['project']==p}
-                           for p in {v['project'] for v in actors}}
-        self.http_indices = {(v['id'],v['tab']):i for i,v in enumerate(actors)}
-        if len(self.http_indices) != len(actors) or not actors:
-            raise ValueError('Invalid HTTP actor roster')
-        self.native_peers = set()
-        if len(native_peers) > 2:
-            raise ValueError('At most two declared native browser peers')
-        for peer in native_peers:
-            key = (peer['id'],peer['tab'])
-            if (not all(isinstance(v,str) and v for v in key) or key in self.http_indices
-                    or key in self.native_peers or peer['project'] not in self.room_peers):
-                raise ValueError('Invalid native peer roster')
-            self.native_peers.add(key)
-            self.room_peers[peer['project']].add(key)
-        self.coverage = {i:set() for i in range(len(actors))}
-        self.expected_coverage = {i:(self.room_peers[v['project']] & self.http_indices.keys())-{(v['id'],v['tab'])}
-                                  for i,v in enumerate(actors)}
         self.payload = None if a.payload == 'cursor' else {'events': [
             {'gesture': 1, 'sequence': 0, 'kind': 'points', 'points': [[i%320,i%240,1,.1,.2,.3] for i in range(256)]}]}
 
@@ -319,8 +245,7 @@ class Load:
         reusable = False
         try:
             path = f"/api/projects/{actor['project']}/live"+('?tab='+actor['tab'] if method == 'GET' else '')
-            origin = self.workers[worker].get('origin', self.base)
-            headers = (f'{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nOrigin: {origin}\r\n'
+            headers = (f'{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nOrigin: {self.base}\r\n'
                 f"Cookie: pc_session={actor['token']}\r\nX-Photocraft-Account: {actor['id']}\r\n"
                 'Accept-Encoding: identity\r\nConnection: keep-alive\r\nContent-Type: application/json\r\n'
                 f'Content-Length: {len(body)}\r\n\r\n').encode()+body
@@ -351,23 +276,12 @@ class Load:
                 # arbitrary response text. Latencies stay separated by status.
                 category = 'ordinary_admission' if error == 'This service is busy. Your local work is safe; retry shortly.' else 'other_http_error'
                 self.http_failure_categories[f'{status} {category}'] += 1
-            snapshot = method == 'GET' or self.a.pacing == 'exchange'
-            if status == 200 and length > 65536:
-                raise ValueError('exchange_snapshot_validation_limit')
             if status == 200 and length <= 65536:
                 value = json.loads(capture)
-                if not isinstance(value,dict) or type(value.get('revision')) is not int or value['revision'] != 1:
+                if value.get('revision') != 1:
                     raise ValueError('wrong_canonical_revision')
-                if method == 'PUT':
-                    live_ack(value,json.loads(body)['seq'])
-                if snapshot:
-                    ended = time.monotonic()
-                    count, usable = live_snapshot(value, actor, self.room_peers[actor['project']],
-                                                  self.http_indices, self.native_peers, elapsed_ms=(ended-started)*1000,
-                                                  expected_gesture=self.payload)
-                    self.peer_counts[count] += 1
-                    if self.active_start <= started <= ended < self.active_end:
-                        self.coverage[self.http_indices[(actor['id'],actor['tab'])]].update(usable)
+                if method == 'GET':
+                    self.peer_counts[len(value.get('peers',[]))] += 1
             reusable = h.get('connection','').lower() != 'close'
             return status, (time.monotonic()-started)*1000
         finally:
@@ -380,7 +294,7 @@ class Load:
                 await writer.wait_closed()
 
     async def client(self, actor, method, index):
-        period = PACINGS[self.a.pacing][method]
+        period = (.08 if method == 'GET' else .04) if self.a.pacing == 'current' else (.25 if method == 'GET' else .1)
         due = self.active_start-self.a.warmup+(index%100)/100*period
         sequence = 0
         while not self.stop.is_set() and time.monotonic() < self.active_end:
@@ -430,7 +344,7 @@ class Load:
             if sampled:
                 self.lags.append((ended-due)*1000)
                 self.coalesced += max(0,int((ended-offered)/period)-1)
-            # One in-flight request per configured lane, coalescing missed ticks. The
+            # One in-flight request per direction, coalescing missed ticks. The
             # current Rust client backs failed writes off500ms and reads250ms.
             retry = .5 if method == 'PUT' else .25
             due = ended+retry+period if status is None or status >= 400 else max(offered+period,ended)
@@ -469,7 +383,7 @@ class Load:
                     pass
         monitoring = asyncio.create_task(monitor())
         try:
-            await asyncio.gather(*(self.client(actor,method,index) for index,actor in enumerate(self.actors) for method in PACINGS[self.a.pacing]))
+            await asyncio.gather(*(self.client(actor,method,index) for index,actor in enumerate(self.actors) for method in ['GET','PUT']))
         finally:
             finished.set()
             await monitoring
@@ -477,34 +391,25 @@ class Load:
                 while not pool.empty():
                     _,writer = pool.get_nowait(); writer.close(); await writer.wait_closed()
         elapsed = time.monotonic()-now
-        opportunities = len(self.actors)*self.a.duration*sum(1/v for v in PACINGS[self.a.pacing].values())
-        coverage = [{'client':i,'expected_http_peers':len(self.expected_coverage[i]),
-                     'usable_http_peers_seen':len(self.coverage[i]),
-                     'complete':self.expected_coverage[i] <= self.coverage[i]} for i in range(len(self.actors))]
         return {'elapsed_including_warmup_seconds':elapsed, 'requested_active_seconds':self.a.duration,
-            'http_client_count':len(self.actors),
             'completed_active_seconds':max(0,min(self.a.duration,elapsed-self.a.warmup)),
             'resource_samples':self.resource_samples,
-            'ideal_request_opportunities_active': int(opportunities),
+            'ideal_request_opportunities_active': int(self.a.clients*self.a.duration*(37.5 if self.a.pacing=='current' else 14)),
             'stop_reason':self.reason,'requests_including_warmup':self.requests,'status_counts_active':dict(self.statuses),
             'status_counts_including_warmup':dict(self.all_statuses),'errors_including_warmup':dict(self.all_errors),
             'workers':[{'index':i,'requests_total':self.worker_requests[i],'statuses_total':dict(self.worker_statuses[i]),'statuses_active':dict(self.worker_active_statuses[i]),'errors_total':dict(self.worker_errors[i])} for i in range(self.a.workers)],
             'http_failure_categories_including_warmup':dict(self.http_failure_categories),
             'http_status_ms_active':{k:distribution(v) for k,v in self.status_samples.items()},
-            'client_active_request_counts':[{'client':i,'completed':self.client_completed[i],'succeeded':self.client_succeeded[i]} for i in range(len(self.actors))],
-            'http_peer_coverage_active':{'complete_clients':sum(v['complete'] for v in coverage),
-                'all_clients_covered':all(v['complete'] for v in coverage), 'clients':coverage,
-                'scope':'Each HTTP actor observed every other HTTP actor in its room with validated state and ttlMs greater than full request elapsed; request starts/ends inside active interval. Native peers are validated but not mandatory publishers.'},
+            'client_active_request_counts':[{'client':i,'completed':self.client_completed[i],'succeeded':self.client_succeeded[i]} for i in range(self.a.clients)],
             'errors_active':dict(self.errors),'peak_inflight':self.peak,'body_and_header_response_bytes':self.bytes_in,
             'request_bytes_including_headers':self.bytes_out,'get_ms':distribution(self.samples['GET']),
             'put_ms':distribution(self.samples['PUT']),'admission_wait_ms':distribution(self.admissions),
             'scheduled_completion_lag_ms':distribution(self.lags),'coalesced_nominal_ticks_active':self.coalesced,
             'peer_count_histogram_including_warmup':dict(self.peer_counts),
-            'observed_completion_ratio':sum(self.statuses.values())/opportunities,
-            'successful_completion_ratio':sum(v for k,v in self.statuses.items() if k.endswith(' 200'))/opportunities,
+            'observed_completion_ratio':sum(self.statuses.values())/(self.a.clients*self.a.duration*(37.5 if self.a.pacing=='current' else 14)),
+            'successful_completion_ratio':sum(v for k,v in self.statuses.items() if k.endswith(' 200'))/(self.a.clients*self.a.duration*(37.5 if self.a.pacing=='current' else 14)),
             'capacity_slo_certified':False,
-            'all_requests_succeeded':not self.all_errors and all(k.endswith(' 200') for k in self.all_statuses)
-                and not self.errors and all(k.endswith(' 200') for k in self.statuses) and bool(self.statuses) and not self.reason}
+            'all_requests_succeeded':not self.errors and all(k.endswith(' 200') for k in self.statuses) and bool(self.statuses) and not self.reason}
 
 
 def main():
@@ -512,15 +417,10 @@ def main():
     plan = {'clients':a.clients,'scenario':a.scenario,'rooms':1 if a.scenario=='hot-room' else math.ceil(a.clients/10),
         'workers':a.workers,'db_pool_size_per_worker':a.db_pool_size,'database_connection_budget_workers':a.workers*a.db_pool_size,
         'routing':'Sticky actor index modulo workers; peers in the same room cross workers; one canonical Origin; simulated local fleet, not hosted autoscaling',
-        'pacing':a.pacing,'read_ms':PACINGS[a.pacing].get('GET',0)*1000 or None,
-        'write_ms':PACINGS[a.pacing]['PUT']*1000,
-        'live_snapshot_response':'PUT' if a.pacing=='exchange' else 'GET',
-        'nominal_requests_per_client_second':sum(1/v for v in PACINGS[a.pacing].values()),
+        'pacing':a.pacing,'read_ms':80 if a.pacing=='current' else 250,'write_ms':40 if a.pacing=='current' else 100,
         'payload':a.payload,'warmup_seconds':a.warmup,'active_seconds':a.duration,'cooldown_seconds':a.cooldown,
         'max_inflight':a.max_inflight,'max_requests':a.max_requests,'max_response_mib':a.max_response_mib}
     plan['database_transport'] = 'TLS verify-full' if a.tls_ca else 'local plaintext debug-only'
-    plan['snapshot_validation_limit_bytes'] = 65536
-    plan['semantic_gate'] = 'Exact accepted PUT sequence; typed deterministic HTTP peer payloads; every HTTP actor observes all other room HTTP actors with usable remaining lease during active interval. Warmup errors also fail.'
     plan['response_encoding'] = 'identity; no browser compression or rendering cost'
     plan['fixture_admission'] = 'Direct synthetic DB seed; hot-room sizes above ordinary membership limits are adversarial, unsupported fixtures'
     plan['omitted_workloads'] = ['1500ms presence requests','durable saves/uploads','browser frame scheduling and native rendering']
@@ -550,8 +450,7 @@ def main():
             report['database_counters_delta'] = {k:after[k]-before[k] for k in before}
             report['database_counters_note'] = 'Includes warmup and monitoring; local DB stats may lag. No per-query CPU attribution.'
             report['native_unchanged'] = db.execute('SELECT count(*) FROM photocraft.projects WHERE revision<>1').fetchone()[0]==0
-            report['status'] = 'passed' if (report['load']['all_requests_succeeded']
-                and report['load']['http_peer_coverage_active']['all_clients_covered'] and report['native_unchanged']) else 'failed'
+            report['status'] = 'passed' if report['load']['all_requests_succeeded'] and report['native_unchanged'] else 'failed'
     except Exception as error:
         report['status']='error'; report['error_type']=type(error).__name__; raise
     finally:

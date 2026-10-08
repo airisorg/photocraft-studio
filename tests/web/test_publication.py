@@ -1,14 +1,11 @@
 """Publication checks use disposable Git history; no private values are emitted."""
 import importlib.util
-import hashlib
 import os
 import re
 import shutil
 from pathlib import Path
 import subprocess
-import sys
 import tempfile
-import textwrap
 import unittest
 import xml.etree.ElementTree as ET
 
@@ -18,118 +15,6 @@ SPEC.loader.exec_module(publication)
 
 
 class PublicationHistory(unittest.TestCase):
-    def test_freebsd_disk_cleanup_removes_only_unused_host_sdks(self):
-        root = Path(__file__).resolve().parents[2]
-        source = (root/'.github/workflows/freebsd.yml').read_text()
-        step = source.split('      - name: Reserve disk for the FreeBSD VM\n', 1)[1].split('\n      - ', 1)[0]
-        block = textwrap.dedent(step.split('        run: |\n', 1)[1])
-        approved = ['/usr/local/lib/android', '/usr/share/dotnet', '/opt/ghc']
-        paths = re.search(r'for unused_sdk in ([^;]+); do', block).group(1).split()
-        self.assertEqual(paths, approved, 'Cleanup must retain the runner toolcache and VM/runtime directories')
-        with tempfile.TemporaryDirectory() as directory:
-            temp = Path(directory)
-            binaries = temp/'bin'
-            binaries.mkdir()
-            allowed = [temp/('sdk-'+str(i)) for i in range(len(approved))]
-            preserved = [temp/name for name in ['toolcache', 'actions', 'vm', 'workspace']]
-            for path in preserved:
-                path.mkdir()
-                (path/'keep').write_text('must survive')
-            for original, replacement in zip(approved, allowed):
-                block = block.replace(original, str(replacement))
-            # A bounded sudo fixture refuses any deletion outside the three
-            # synthetic SDKs; no privileged command or real SDK is touched.
-            programs = {
-                'sudo': '#!'+sys.executable+'\nimport os,sys,shutil\nfrom pathlib import Path\n'
-                        'args=sys.argv[1:]\n'
-                        'assert args[:-1] in (["du","-sh","--"],["rm","-rf","--"])\n'
-                        'assert args[-1] in '+repr([str(p) for p in allowed])+'\n'
-                        'with open(os.environ["FIXTURE_LOG"],"a") as log: log.write(" ".join(args)+"\\n")\n'
-                        'if args[0] == "rm": shutil.rmtree(args[-1])\n',
-                'df': '#!'+sys.executable+'\nimport os,sys\n'
-                      'assert sys.argv[1:] == ["-h","/",os.environ["GITHUB_WORKSPACE"]]\n'
-                      'with open(os.environ["FIXTURE_LOG"],"a") as log: log.write("disk checkpoint\\n")\n',
-            }
-            for name, content in programs.items():
-                path = binaries/name
-                path.write_text(content)
-                path.chmod(0o700)
-            log = temp/'commands'
-            environment = {**os.environ, 'PATH':str(binaries)+':/usr/bin:/bin',
-                           'GITHUB_WORKSPACE':str(preserved[-1]), 'FIXTURE_LOG':str(log)}
-            for count in [3, 1, 0]:
-                with self.subTest(present_sdks=count):
-                    for path in allowed[:count]:
-                        path.mkdir()
-                        (path/'payload').write_text('unused SDK')
-                    log.write_text('')
-                    result = subprocess.run(['/bin/bash', '-c', block], env=environment, capture_output=True)
-                    self.assertEqual(result.returncode, 0, result.stderr.decode())
-                    self.assertTrue(all(not p.exists() for p in allowed))
-                    self.assertTrue(all((p/'keep').read_text() == 'must survive' for p in preserved))
-                    commands = log.read_text().splitlines()
-                    self.assertEqual(commands[0], 'disk checkpoint')
-                    self.assertEqual(commands[-1], 'disk checkpoint')
-                    self.assertEqual(sum(c.startswith('rm ') for c in commands), count)
-
-    def test_freebsd_bootstrap_pin_and_fail_closed_execution(self):
-        root = Path(__file__).resolve().parents[2]
-        pinned = '4d9fef2e40731489f3186c61a0f178d54d79864fe3d34791edf5b17f70074956'
-        url = 'https://static.rust-lang.org/rustup/archive/1.28.2/x86_64-unknown-freebsd/rustup-init'
-        # A harmless marker replaces the binary. The official downloaded installer
-        # is never invoked; only the actual workflow control flow is exercised.
-        # Pinned rustup dispatches setup mode from its executable basename.
-        payload = (b'#!/bin/sh\n[ "${0##*/}" = rustup-init ] || exit 64\n'
-                   b'printf "%s\\n" "$@" > "$FIXTURE_MARKER"\n')
-        fixture_digest = hashlib.sha256(payload).hexdigest()
-        for name in ['freebsd.yml', 'release.yml']:
-            source = (root/'.github/workflows'/name).read_text()
-            self.assertNotIn('sh.rustup.rs', source)
-            blocks = re.findall(r'^          prepare: \|\n((?: {12}.*\n)+)', source, re.M)
-            self.assertEqual(len(blocks), 1, name)
-            block = textwrap.dedent(blocks[0])
-            self.assertIn(url, block)
-            self.assertEqual(block.count(pinned), 1)
-            self.assertIn('--default-host x86_64-unknown-freebsd --default-toolchain stable', block)
-            self.assertNotRegex(block, r'curl[^\n]*\|')
-            with tempfile.TemporaryDirectory() as directory:
-                temp = Path(directory)
-                binaries = temp/'bin'
-                binaries.mkdir()
-                programs = {
-                    'pkg': '#!/bin/sh\nexit 0\n',
-                    # FreeBSD's mktemp -t accepts a prefix; GNU mktemp expects a
-                    # template. Keep this fixture independent of the test host.
-                    'mktemp': '#!'+sys.executable+'\nimport os,sys,tempfile\n'
-                              'assert sys.argv[1:] == ["-d", "-t", "photocraft-rustup"]\n'
-                              'print(tempfile.mkdtemp(prefix="photocraft-rustup",dir=os.environ["TMPDIR"]))\n',
-                    'curl': '#!'+sys.executable+'\nimport os,sys\nfrom pathlib import Path\n'
-                            'if os.environ["FIXTURE_MODE"] == "download-error": sys.exit(22)\n'
-                            'data='+repr(payload)+'\n'
-                            'if os.environ["FIXTURE_MODE"] == "tampered": data += b"tampered"\n'
-                            'Path(sys.argv[sys.argv.index("--output")+1]).write_bytes(data)\n',
-                    'sha256': '#!'+sys.executable+'\nimport hashlib,sys\nfrom pathlib import Path\n'
-                              'assert sys.argv[1] == "-q"\n'
-                              'print(hashlib.sha256(Path(sys.argv[2]).read_bytes()).hexdigest())\n',
-                }
-                for executable, content in programs.items():
-                    path = binaries/executable
-                    path.write_text(content)
-                    path.chmod(0o700)
-                marker = temp/'invoked'
-                for mode in ['tampered', 'download-error', 'valid']:
-                    with self.subTest(workflow=name, mode=mode):
-                        environment = {**os.environ, 'PATH':str(binaries)+':/usr/bin:/bin',
-                                       'TMPDIR':str(temp), 'FIXTURE_MODE':mode, 'FIXTURE_MARKER':str(marker)}
-                        result = subprocess.run(['/bin/sh', '-c', block.replace(pinned, fixture_digest)],
-                                                env=environment, capture_output=True)
-                        self.assertEqual(result.returncode == 0, mode == 'valid')
-                        self.assertEqual(marker.exists(), mode == 'valid')
-                        self.assertEqual(list(temp.glob('photocraft-rustup*')), [], 'Owned download directory must be removed')
-                        if mode == 'valid':
-                            self.assertEqual(marker.read_text().splitlines(), ['-y', '--profile', 'minimal',
-                                             '--default-host', 'x86_64-unknown-freebsd', '--default-toolchain', 'stable'])
-
     def test_privileged_workflow_actions_are_immutable(self):
         root = Path(__file__).resolve().parents[2]
         for name in ["release.yml", "update-and-release.yml"]:

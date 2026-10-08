@@ -86,7 +86,7 @@ SELECT gate.status,(SELECT revision FROM access) AS revision,
   JOIN access p ON p.id=l.project_id
   LEFT JOIN photocraft.members m ON m.project_id=p.id AND m.email=a.email
   WHERE gate.status=200
-   AND l.seen_at>clock_timestamp()-interval '2 seconds'
+   AND l.seen_at>statement_timestamp()-interval '2 seconds'
    AND (p.owner_id=a.id OR m.role IN ('view','edit'))
    AND (l.cursor IS NOT NULL OR (l.gesture IS NOT NULL AND l.base_revision=p.revision AND (p.owner_id=a.id OR m.role='edit')))
    AND NOT(l.session_hash=$1 AND l.tab_id=$4)
@@ -96,23 +96,31 @@ FROM gate
 
 const WRITE: &str = r#"
 , previous AS MATERIALIZED (
- SELECT seq FROM photocraft.live_previews WHERE session_hash=$1 AND tab_id=$4
+ SELECT seq,project_id,seen_at,cursor,gesture FROM photocraft.live_previews WHERE session_hash=$1 AND tab_id=$4
 ), decision AS MATERIALIZED (
  SELECT CASE
  WHEN gate.status<>200 THEN gate.status
  WHEN $8::jsonb IS NOT NULL AND (SELECT revision FROM access)<>$6 THEN 409
  WHEN $8::jsonb IS NOT NULL AND (SELECT role FROM access)='view' THEN 403
  WHEN EXISTS(SELECT 1 FROM previous WHERE seq>=$5) THEN 200
+ -- An existing clear cannot add occupancy. A renewal must still be active in
+ -- this project after shared room/session locks were obtained. Admissions and
+ -- revocations need the exclusive room lock and cannot race this transaction.
+ WHEN $9::boolean AND NOT EXISTS(SELECT 1 FROM previous
+  WHERE ($7::jsonb IS NULL AND $8::jsonb IS NULL)
+     OR (project_id=$3 AND seen_at>statement_timestamp()-interval '2 seconds'
+         AND (cursor IS NOT NULL OR gesture IS NOT NULL))) THEN 431
+ WHEN $9::boolean THEN 200
  WHEN NOT EXISTS(SELECT 1 FROM previous)
   AND (SELECT count(*) FROM photocraft.live_previews WHERE session_hash=$1)>=256 THEN 430
  WHEN ($7::jsonb IS NOT NULL OR $8::jsonb IS NOT NULL)
   AND (SELECT count(*) FROM photocraft.live_previews
-       WHERE session_hash=$1 AND tab_id<>$4 AND seen_at>clock_timestamp()-interval '2 seconds'
+       WHERE session_hash=$1 AND tab_id<>$4 AND seen_at>statement_timestamp()-interval '2 seconds'
        AND (cursor IS NOT NULL OR gesture IS NOT NULL))>=8 THEN 429
  WHEN ($7::jsonb IS NOT NULL OR $8::jsonb IS NOT NULL)
   AND (SELECT count(*) FROM photocraft.live_previews l
        JOIN photocraft.sessions s ON s.hash=l.session_hash AND s.expires_at>clock_timestamp()
-       WHERE l.project_id=$3 AND l.seen_at>clock_timestamp()-interval '2 seconds'
+       WHERE l.project_id=$3 AND l.seen_at>statement_timestamp()-interval '2 seconds'
        AND (l.cursor IS NOT NULL OR l.gesture IS NOT NULL)
        AND NOT(l.session_hash=$1 AND l.tab_id=$4))>=64 THEN 429
  ELSE 200 END AS status FROM gate
@@ -171,14 +179,36 @@ pub(crate) async fn put(State(s): State<App>, h: HeaderMap, Path(id): Path<Uuid>
     let gesture = update.gesture.map(|g| json!({"events":g.events}));
     let seq = i64::try_from(update.seq).map_err(|_| bad("Invalid live sequence"))?;
     let base = i64::try_from(update.base_revision).map_err(|_| bad("Invalid live base revision"))?;
-    let mut tx = ready_db(&s).await?.begin().await?;
-    let lock_sql = format!("{AUTH} SELECT photocraft.lock_live($1,$3) FROM gate WHERE status=200");
-    query(&lock_sql).bind(&session).bind(expected).bind(id).execute(&mut *tx).await?;
-    let sql = format!("{AUTH}{WRITE}");
-    let row = query(&sql).bind(session).bind(expected).bind(id).bind(update.tab).bind(seq).bind(base).bind(cursor).bind(gesture).fetch_one(&mut *tx).await?;
-    checked_status(row.get("status"))?;
-    tx.commit().await?;
-    Ok(Json(json!({"accepted":row.get::<bool,_>("accepted"),"seq":row.get::<i64,_>("seq"),"revision":row.get::<i64,_>("revision")})))
+    let pool = ready_db(&s).await?;
+    for shared in [true, false] {
+        let mut tx = pool.begin().await?;
+        let lock_sql = format!("{AUTH} SELECT photocraft.lock_live($1,$3,$4) FROM gate WHERE status=200");
+        query(&lock_sql).bind(&session).bind(expected).bind(id).bind(shared).execute(&mut *tx).await?;
+        let sql = format!("{AUTH}{WRITE}");
+        let row = query(&sql)
+            .bind(&session)
+            .bind(expected)
+            .bind(id)
+            .bind(update.tab)
+            .bind(seq)
+            .bind(base)
+            .bind(&cursor)
+            .bind(&gesture)
+            .bind(shared)
+            .fetch_one(&mut *tx)
+            .await?;
+        let status = row.get("status");
+        if shared && status == 431 {
+            // Never upgrade a held shared lock: concurrent expired renewals could
+            // deadlock. A new transaction obtains exclusive locks and fresh AUTH.
+            tx.rollback().await?;
+            continue;
+        }
+        checked_status(status)?;
+        tx.commit().await?;
+        return Ok(Json(json!({"accepted":row.get::<bool,_>("accepted"),"seq":row.get::<i64,_>("seq"),"revision":row.get::<i64,_>("revision")})));
+    }
+    Err(ApiError(StatusCode::SERVICE_UNAVAILABLE, "Live preview admission could not complete.".into()))
 }
 
 fn parse(body: &[u8]) -> Result<Update> {

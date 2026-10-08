@@ -4085,6 +4085,7 @@ version = "0.3.0"
 dependencies = [
  "axum",
  "hex",
+ "http-body",
  "photocraft-doc",
  "photocraft-format",
  "reqwest",
