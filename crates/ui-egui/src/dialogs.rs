@@ -1,3 +1,4 @@
+// Modified by the independent FZ2000 PhotoCraft Studio fork; see docs/fork-code-map.md.
 //! Dialogs rendered from `UiState::dialogs`. Field values live in the dialog data, so automation can
 //! set them (`ui.dialog.set`) and confirm (`ui.dialog.confirm`) exactly like a user.
 

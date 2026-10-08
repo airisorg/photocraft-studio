@@ -1,3 +1,4 @@
+// Modified by the independent FZ2000 PhotoCraft Studio fork; see docs/fork-code-map.md.
 //! File-menu commands beyond New/Close: Close All / Others, Revert, Save a Copy, Open As, Place
 //! Embedded / Linked, File Info, the Automate and Scripts items (Fit Image, Conditional Mode
 //! Change, Batch, Image Processor, Load Files into Stack, Flatten All Layer Effects / Masks),

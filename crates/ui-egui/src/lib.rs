@@ -1,3 +1,4 @@
+// Modified by the independent FZ2000 PhotoCraft Studio fork; see docs/fork-code-map.md.
 //! Photocraft's first UI shell, built on egui/eframe.
 //!
 //! This crate is deliberately thin. Every action goes through

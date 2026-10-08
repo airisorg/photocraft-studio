@@ -1,3 +1,4 @@
+# Modified for PhotoCraft Studio: validate the maintained fork and browser adapter.
 name: CI
 
 on:

@@ -1,3 +1,4 @@
+// Modified by the independent FZ2000 PhotoCraft Studio fork; see docs/fork-code-map.md.
 //! CJK font fallback: which installed system fonts cover Japanese, Simplified Chinese,
 //! Traditional Chinese and Korean, and in which order to try them for the user's locale.
 //!

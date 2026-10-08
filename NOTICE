@@ -21,3 +21,13 @@ Builds made with craft-fonts (CRAFT_FONTS_DIR; all official releases) also embed
 https://github.com/storytold/craft-fonts/blob/main/ATTRIBUTION.md (today BIZ UDPGothic, Shippori Mincho and
 BIZ UDMincho; not the web build), under the SIL Open Font License 1.1. Their licence texts
 ship with the package as OFL-<family>.txt.
+
+Independent fork modification notice
+------------------------------------
+PhotoCraft Studio is the independent web adaptation maintained in FZ2000/photocraft.
+This fork adds a hosted workspace, HTTP service, cloud saves, permissions, sharing,
+and bounded native collaboration previews. README.md and docs/fork-code-map.md
+describe those changes. It is not affiliated with, sponsored by, or endorsed by
+the ArtCraft Team. The upstream copyright and license notices above are preserved.
+The modified source tree excludes the restricted ArtCraft artwork; only its
+original brand terms remain in docs/brand/LICENSE-brand.txt.

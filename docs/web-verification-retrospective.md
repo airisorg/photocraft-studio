@@ -14,6 +14,7 @@ it through the UI, persisted state, runtime, and deployment.
 |---|---|---|---|
 | Uneven header buttons | Buttons could be clicked | Common height, center, gaps, typography and action hierarchy | Measure rendered pixels across themes, widths, density and long titles; review screenshots |
 | CPU preference ignored on the web | Forced `?cpu` and `?webgl` modes edited and undid correctly | A saved preference must select the next launch's actual renderer | Set preference, verify persistence, restart, inspect actual renderer, edit and undo |
+| Software WebGPU starts with a black workspace | Hardware WebGPU worked and the command bridge answered | The selected adapter must paint the native workspace; document CPU fallback cannot repair a lost UI device | Mandatory bundled-browser default and explicit WebGL pixel/click checks; safe startup error and recovery action; separate positive hardware evidence |
 | Share window painted behind itself | Window opened and Escape dismissed it | Modal pointer and keyboard ownership | Outside drag leaves document history unchanged; closing restores canvas input |
 | Member menu failed after Escape | Membership API worked; dropdown could be drawn | Nested menu closes before its parent and remains usable | Open, Escape, reopen, change role through UI; assert API write and resulting permissions |
 | Dialog actions clipped | Dialog bounding box was inside the viewport | Fields and final actions must remain reachable and visible | Scroll to all fields, use real footer actions, test keyboard focus and resize with the window open |
@@ -33,6 +34,15 @@ it through the UI, persisted state, runtime, and deployment.
 The test for the saved CPU preference failed before the adapter fix: it observed GPU still
 active after restart. The original header failed the pixel geometry check. These are useful
 regressions because they distinguish the broken behavior from the intended behavior.
+
+The security-release browser run caught the software WebGPU defect before deployment.
+Bundled Chromium selected a software adapter, lost its device, and stayed black while
+native inspection still answered. Hardware Chrome and explicit WebGL painted correctly.
+The adapter now selects the existing WebGL path for software WebGPU before canvas binding.
+`test_renderer_startup.py` checks actual workspace pixels and Create-design input, including
+after the safe recovery link. Its mandatory cases cover bundled default, explicit WebGL and
+escaped initialization errors; hardware coverage is separately reported when available.
+This does not establish recovery from device loss during an already-open editing session.
 
 ## Inventory: scope is larger than a menu count
 

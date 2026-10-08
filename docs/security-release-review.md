@@ -1,0 +1,59 @@
+# Security and public-release review — 2026-10-07
+
+This review covers the independent PhotoCraft Studio fork, based on `1d264da`, and the remediation changes committed with this document. The imported upstream reference is `3a3984075a1fd06d1af3e660aa376ee5368c4f73`. It includes source review, locally reachable Git history, synthetic local PostgreSQL/API/browser tests, packaging checks and bounded local backend benchmarks. Production attacks, production load, repository visibility changes and Git history rewrites are outside this run.
+
+## Fixed findings
+
+| Priority | Defect and impact | Remediation and evidence |
+|---|---|---|
+| P1 | Project access was checked before lock waits; a removed collaborator could still commit or mutate after removal completed. | Durable project writes acquire the shared project barrier, then query current access. Controlled revocation-wait regressions cover saves, thumbnails, upload reservation/chunks, duplication and comments. |
+| P1 | Cached authenticated identity survived queued logout/expiry, including secondary account/upload/quota locks. | The private session digest is retained only internally. Current session, email and membership are checked after waits with wall-clock expiry; account-only writes refresh their session too. Eight controlled expiry/logout scenarios reproduced before the fix. A serialization unit verifies that responses never include the digest. |
+| P1 | Cloud commit accepted a native archive with missing referenced data; wire size did not bound expanded or decoded data. Parse/merge work also held database locks. | Reuse the original native loader with cloud-only ZIP/manifest/blob/layer/canvas and decoded-byte limits. Hash/parse/merge runs in one owned blocking lane outside durable locks, followed by fresh authorization, immutable declaration, revision and quota checks. Five archive HTTP regressions and native corruption/round-trip tests pass. |
+| P1 | Sign-in held database transactions across two potentially slow provider calls and could starve the five-connection pool. | Readiness is checked first; provider HTTP holds no database connection. Account/session writes begin only after verified identity. Both stalled-provider phases leave ordinary APIs available in the regression. |
+| P2 | Concurrent link rotation could retain multiple valid links; member/comment caps and invitation cooldowns were inconsistent or raceable. | Project/account/recipient barriers serialize the relevant changes. Existing members can be reinvited at capacity; unauthorized invitation error behavior is preserved. |
+| P2 | Request futures and parser work lacked coherent overload bounds; returning response headers could release admission before the body finished. | Separate 256 ordinary, four authentication and two commit permits, bounded pool acquisition, absolute head/body deadlines, and body-owned permits. Blocking validation retains its permit after HTTP cancellation. Health checks bypass API saturation. These controls do not bound every TCP connection or total fleet memory. |
+| P2 | Browser/native package notice trees omitted required attribution and accessible asset notices. | Preserve project and asset notices in web, generic, macOS and Windows packaging. Exact-byte notice fixtures and package-provenance checks cover the locally testable paths. Windows installer execution remains an external release gate. |
+| P2 | A software WebGPU device could initialize and then fail before the first native frame, leaving a black workspace while the command bridge appeared ready. Startup errors were also inserted as HTML. | The browser reuses the existing WebGL2 renderer for software WebGPU adapters before canvas binding, preserves hardware WebGPU, and displays errors as text with a recovery action. Real-pixel startup regressions retain the original black-canvas failure; later hardware device loss remains a separate limitation. |
+
+A 128-request ordinary admission trial shed 131 requests at 100 simulated clients. The limit was adjusted to 256 using measured concurrency; the rerun completed 36,770 active requests with zero errors. This measured adjustment preserves a finite bound. It does not justify arbitrary pool or room-cap increases.
+
+## Verified local checks
+
+The final debug backend SHA-256 is `53c0126e1b770778a8c81b2096679cfb5fb45a242ff15bdbc1c2fc1846efff91`; the optimized backend is `d46b760c283140d8bb7aee7c9939a04eb8fad7f4943caf528922c3c7637e3779`.
+The browser artifact is `photocraft-web-6a6b88f0901cfa12_bg.wasm`, 26,021,507 bytes,
+SHA-256 `3c65885b6eaf0e7dd16a2dca8d8bcc9ea7d4a5607b94c5468f1fe52e4eed2ddc`.
+
+- 21 cloud units and strict cloud/format Clippy pass; workspace formatting passes.
+- All 80 native-format tests pass, including atomic saves, autosave, corruption, hash validation, all-mode round trips and decoded-byte accounting.
+- The native corpus gate passes 1,698 tests in 59 groups, with zero failures and 14 existing ignored tests. Layering passes for 29 crates; all 23 WASM package/feature checks and the generated scorecard check pass.
+- 19 security, 41 existing API, five archive, 13 authentication and four cold-worker tests pass on the final debug backend.
+- Chromium and WebKit submit the actual email-confirmation form without an injected Origin header; verified identity, token privacy and replay rejection pass. The provider is simulated on loopback; no inbox delivery is claimed.
+- Packaging provenance, publication fixtures and benchmark safety guards have separate evidence. A missing PowerShell runtime is an explicit skip, not Windows execution evidence.
+- The transaction-pool protocol fixture passes all 41 API and 12 live tests across 2,917 idle backend switches, with no named prepared statements or SQLSTATE errors. This fixture is not a Supavisor emulator or hosted-cause diagnosis.
+- Four focused renderer-startup journeys pass on the final browser artifact: bundled-browser default, explicit WebGL, hardware WebGPU, and safe initialization-error recovery with real pixels, keyboard focus and narrow-screen geometry.
+
+The final 20 live/concurrency tests pass. The optimized TLS load results are in [the scale review](scale-release-review.md); the 1,000-client target is not met. Final browser acceptance is recorded separately. No code-coverage percentage or production security certification is inferred from test counts.
+
+## Publication boundary
+
+Gitleaks inspected 412 reachable commits and found zero secrets before remediation. A separate object scan found eight historical restricted brand paths, three home-path-containing blob revisions across two repository paths, and 53 author email identities requiring manual review. The current restricted artwork was already removed; the current fork checkpoint path is now redacted. History remains unchanged.
+
+The artwork and one historical home-path-containing file originated in already-public upstream commits. The other affected path is a fork-only checkpoint. Preserving exact upstream ancestry therefore also preserves those original objects. An owner-approved selective rewrite can remove fork-only privacy material while retaining upstream ancestry; a fully object-clean history requires a different publication/history strategy and update boundary. Do not silently waive the gate, rewrite upstream identity or publish private fork paths.
+
+`packaging/web/check-publication.py` reports counts and fails closed on retained restricted artwork or home paths. Author consent, unavailable refs, issues and external services need separate review. The repository remains private pending this decision.
+
+The README credits upstream first and states the fork is independent. NOTICE preserves original copyright and adds a fork modification notice; modified upstream text files carry change notices. The code map separates original crates from added adapters. Asset license terms remain separate from the MIT OR Apache-2.0 code choice. Tofu is acknowledged as the deployment platform, with no sponsorship implication.
+
+## Dependencies, CI and remaining gates
+
+The locked advisory review found optional `rsa 0.9.10` matching [RUSTSEC-2023-0071](https://rustsec.org/advisories/RUSTSEC-2023-0071.html), with no active cloud dependency path, and the compile-time unmaintained `paste 1.0.15` advisory [RUSTSEC-2024-0436](https://rustsec.org/advisories/RUSTSEC-2024-0436.html). The recorded graph/reachability distinction must be rechecked each release. It is not a blanket vulnerability waiver.
+
+Privileged release/update actions and the web acceptance actions are pinned to verified immutable commit IDs. Some upstream nonprivileged jobs and version-only build-tool downloads remain hardening work. GitHub's current FreeBSD job has no executed steps: its annotation says recent payments failed or the spending limit must increase. No billing setting was changed. GitHub CI and real Windows/macOS release artifacts, including their native dependency/runtime notice inventories, must pass before claiming those platforms release-ready.
+
+The browser/cloud resolved Rust graphs now carry a verified notice bundle: 322 distinct external packages, 633 files, including nested egui fonts and 23 exact-commit public supplements. Repeated generation is byte-identical and missing/tampered text blocks packaging. The bundle records target graphs, Cargo.lock hash, file hashes and authentic copyright excerpts; build dependencies are conservatively included. It is not a linker census.
+
+The separate runtime bundle contains 13 files (501,723 bytes), preserving Rust 1.95.0 standard-library notices, compiler-builtins/libm licenses and pinned LLVM compiler-rt credits. The actual WASM producer and authentic text hashes are checked offline; the Docker build rejects a mismatched Rust release/source commit. Six runtime-notice regressions pass. Full toolchain redistribution, Debian base-image/system-library inventories and native installers remain separate distribution scopes.
+
+Provider-wide abuse controls, actual database/worker quotas, full RSS/slow-consumer limits, CSP compatibility, provider-account revocation mirroring, real invitation receipt and hosted two-user edit-to-render latency remain distinct acceptance items. Existing opaque app sessions last seven days; this review does not add a provider revocation feed. Supported live previews still have room/session/event bounds and do not provide general simultaneous editing or collaborative undo.
+
+A successful local request benchmark is not a 1,000-user whole-application guarantee. Use errors, successful-request latency, scheduling lag, completion ratio, per-client progress, database contention and bytes together. Preserve every failed stage. The hosting deployment and a normal live journey require separate recorded evidence.

@@ -1,3 +1,4 @@
+// Modified by the independent FZ2000 PhotoCraft Studio fork; see docs/fork-code-map.md.
 //! Design system: themes, colour tokens, radii, typography.
 //!
 //! - **Studio** (default): near-black surfaces, rounded cards, Inter + JetBrains Mono, soft violet

@@ -1,3 +1,4 @@
+// Modified by the independent FZ2000 PhotoCraft Studio fork; see docs/fork-code-map.md.
 //! M11 acceptance: an agent completes 10 scripted edit tasks over MCP (roadmap M11 DoD).
 //!
 //! Each task uses only MCP tools (`doc_*`, `command_run`) the way an agent would, and checks the

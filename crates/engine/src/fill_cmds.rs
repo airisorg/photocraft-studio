@@ -1,3 +1,4 @@
+// Modified by the independent FZ2000 PhotoCraft Studio fork; see docs/fork-code-map.md.
 //! Edit › Fill… (`edit.fill`): Photoshop's Fill dialog as one command.
 //!
 //! Contents: Foreground / Background / Color / Content-Aware / Pattern / History / Black /

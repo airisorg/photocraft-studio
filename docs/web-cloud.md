@@ -1,12 +1,15 @@
 # PhotoCraft on Tofu
 
-This private adaptation retains the PhotoCraft Rust document model, command registry, codecs,
-file format, egui interface and wgpu renderer. The browser selects WebGPU, with WebGL2 as a
-fallback. No alternative canvas engine or document format is introduced.
+This independent adaptation retains the PhotoCraft Rust document model, command registry, codecs,
+file format, egui interface and wgpu renderer. The browser prefers hardware WebGPU. Software
+WebGPU adapters use the existing WebGL2 path before the canvas or document is initialized;
+`?webgl` still selects that path explicitly. No alternative canvas engine or document format
+is introduced. This startup policy does not replace an active renderer after a later
+hardware device loss.
 
-Upstream baseline: `storytold/photocraft@47f9306fd06d5dee11acb84b108606f4c867222a` (PhotoCraft 0.3.0, 2026-10-07).
-Private repository: `FZ2000/photocraft`. GitHub cannot make a public fork private, so this is
-a private repository with upstream history and an `upstream` remote.
+Imported upstream reference: `storytold/photocraft@3a3984075a1fd06d1af3e660aa376ee5368c4f73`.
+Repository: `FZ2000/photocraft`, currently private with upstream history and an `upstream` remote.
+See [the fork code map](fork-code-map.md) for original and added modules and the public-release boundary.
 
 ## Adapter boundaries
 
@@ -25,22 +28,26 @@ a private repository with upstream history and an `upstream` remote.
 ## Save and collaboration contract
 
 Uploads use 512 KiB binary chunks (100 MiB per document) with declared lengths and SHA-256.
-The commit locks the project, checks the expected revision and inserts a complete version
-atomically. Incomplete uploads never replace a working version. Concurrent saves use a conservative three-way merge over the existing native manifest.
+The commit validates the complete archive through the original native loader outside database
+locks, then locks the project, refreshes authorization, checks the revision and inserts a complete
+version atomically. Invalid referenced blobs, oversized expansion and changed revisions preserve
+the saved document. See [the security policy](../SECURITY.md) for cloud-specific resource bounds. Incomplete uploads never replace a working version. Concurrent saves use a conservative three-way merge over the existing native manifest.
 Independent layer properties can merge; simultaneous changes to the same property, conflicting
 layer order/identities, raster tiles or global document settings return a conflict. The browser
 keeps the local document and offers Save a copy. Unchanged, idle tabs receive committed updates
 automatically; applying a remote version resets local undo history, with earlier committed work
-available in version history. This is committed-revision collaboration, not stroke streaming or
-a general CRDT. Previews are cleared after a merge and regenerated on the next ordinary save.
+available in version history. Saved revisions are the durable authority. A separate bounded live path shows authenticated
+cursors and supported native gesture previews; it is not a general CRDT. Previews are cleared after a merge and regenerated on the next ordinary save.
 
 Members have view or edit access. Only an owner manages membership, trash and public view
 links. Links are unguessable, stored as hashes, revocable, and expose only the latest version.
 Owners can send invitation emails through Tofu-managed Supabase authentication. The email is
 a sign-in email; membership is granted before delivery and delivery failures are explicit.
 Confirmation requires a user POST so email-link scanners do not consume a token. Invitation
-requests are limited to 20 per owner per hour and one per recipient per minute. Polling supplies
-presence, current roles and committed updates every 1.5 seconds.
+requests are limited to 20 per owner per hour and one per recipient per minute. Legacy presence polls every 1.5 seconds. Visible editors also read authorized live state and
+revision every 80 ms and coalesce changed cursor/gesture writes at 40 ms, with one request
+in flight per direction. Room, session, native preview and expiry bounds are documented in
+[collaboration architecture](collaboration-architecture.md). These timers are not a latency guarantee.
 Version history is retained; the initial quota is 1 GB per owner including versions.
 
 Browser recovery retains **one most recently visited document** for the current account
@@ -88,7 +95,15 @@ also initializes storage when needed. A completed configuration request on anoth
 cannot establish readiness for the worker handling a save or project action. The configuration exposes
 only fixed diagnostic categories, never connection strings or provider error payloads. `/healthz` distinguishes `starting`, `ready` and `disabled`
 cloud storage while reporting HTTP availability. Sign-in waits briefly for readiness and
-establishes a database transaction before consuming a one-time authentication token.
+checks database readiness before consuming a one-time authentication token. Provider HTTP
+verification holds no database connection; the account/session transaction begins after verification.
+A fresh authorization check after project locking protects every durable project mutation.
+
+Each worker admits at most 256 ordinary API requests, four authentication exchanges and two
+commits, with separate bounded deadlines. Saturation returns 503 with Retry-After; timeout
+returns 504 and requires checking saved state before retrying. Health checks remain available.
+The database pool defaults to five connections; PHOTOCRAFT_DB_POOL_SIZE may select 1–32.
+Increasing it requires measured database and worker-fleet capacity, not an unlimited-storage assumption.
 
 The PhotoCraft managed database was provisioned on 2026-10-07 without changing Chat. Google
 and email sign-in are configured by Tofu. Live account return, invitation delivery and
@@ -121,10 +136,10 @@ still apply; a web adaptation does not make every upstream feature complete.
 | Workspace | New responsive home, six editable native templates, search, stars, folders, shared projects and trash | Home/template browser actions and API isolation tests |
 | Account | Avatar, Google sign-in, local recovery before redirect, sign-out | Simulated provider tests; real hosted Google return needs user completion |
 | Saves | Chunked cloud saves, autosave after initial save, checksums, version history and recovery | Interrupted upload, reload, corrupt input, quota and concurrent save tests |
-| Collaboration | View/edit membership, presence, comments, committed-update sync and conservative merges | Two independent local accounts; same-pixel conflicts preserve a copy |
+| Collaboration | View/edit membership, comments, named cursors, bounded native gesture previews, committed-update sync and conservative merges | Independent local accounts, revocation races and rendered latency profiles; hosted two-user latency remains unverified |
 | Invitations | Tofu-managed sign-in emails, scanner-safe confirmation, delivery failure state and throttling | Simulated mail provider; real delivery requires an approved recipient |
 | Sharing | Private project URLs and revocable public view/download links | Independent anonymous browser and API revocation checks |
-| Figma/Canva product features | Not implemented: prototyping, component libraries, shared brand kits, asset marketplace, live cursors, arbitrary simultaneous stroke merging | These are additional products/features, not capabilities supplied by a database or by the upstream editor |
+| Figma/Canva product features | Not implemented: prototyping, component libraries, shared brand kits, asset marketplace, live selections, arbitrary simultaneous stroke merging | These are additional products/features, not capabilities supplied by a database or by the upstream editor |
 
 This adapter preserves the original Photoshop-style editor. The surrounding workspace uses
 Figma/Canva-like account, navigation, template and sharing patterns. Menu coverage is not a
@@ -146,9 +161,14 @@ cargo run --locked -p photocraft-cloud --example fixture -- /tmp/fixture.pcraft
 # Start the service with CLOUD_LOCAL_DEV=1, DATABASE_URL pointing to disposable PostgreSQL,
 # APP_ORIGIN=http://127.0.0.1:8876, PORT=8876 and PUBLIC_DIR=dist/web.
 PHOTOCRAFT_FIXTURE=/tmp/fixture.pcraft python tests/web/test_api.py
+python tests/web/test_live.py
+python tests/web/test_live_scale.py
+python tests/web/test_security_auth.py
+python tests/web/test_archive_security.py
 python tests/web/test_auth.py
 PHOTOCRAFT_FIXTURE=/tmp/fixture.pcraft python tests/web/test_startup.py
 python tests/web/test_browser.py
+python tests/web/test_renderer_startup.py
 python packaging/web/tofu-package.py dist/photocraft-tofu.zip
 ```
 
@@ -170,9 +190,10 @@ bypass to the deployed application, and refuse to seed accounts on non-loopback 
 - Recovery stores the current document in IndexedDB after an idle interval. Before sign-in, all
   guest tabs are saved there and remain recoverable after authentication. It is not a
   service-worker cache of the application and does not promise an offline first visit.
-- Collaboration uses committed document revisions, member roles, comments and presence.
-  Independent manifest changes merge; conflicting edits are preserved as copies. It does not
-  merge simultaneous strokes or display other users' live cursors.
+- Collaboration combines durable native revisions with bounded named cursors and supported
+  gesture previews. Independent manifest changes merge; conflicting edits are preserved as
+  copies. It does not merge arbitrary simultaneous strokes, provide collaborative undo or
+  establish full Figma/Canva multiplayer parity.
 - Public view links allow recipients to open and download the shared document. Revoking a link
   prevents further requests but cannot erase copies recipients have already downloaded.
 - The same-origin `photocraftCommand` automation bridge reuses the native command registry.
