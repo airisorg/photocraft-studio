@@ -143,7 +143,11 @@ def db_stats(db):
 
 
 @contextmanager
-def isolated(a, report, *, public_dir=None):
+def isolated(a, report, *, public_dir=None, browser_workers=(0,)):
+    if (not isinstance(browser_workers, (tuple, list)) or not browser_workers or 0 not in browser_workers
+            or any(type(index) is not int or not 0 <= index < a.workers for index in browser_workers)
+            or len(set(browser_workers)) != len(browser_workers)):
+        raise ValueError('Browser worker topology must contain unique in-range indices including0')
     name = 'photocraft_scale_'+uuid.uuid4().hex
     u = urlparse(a.database)
     database = urlunparse(u._replace(path='/'+name))
@@ -170,13 +174,14 @@ def isolated(a, report, *, public_dir=None):
                     # before spawning; the others stay reserved during startup.
                     item.close()
                     app_name = f'photocraft_scale_worker_{index}'
+                    origin = f'http://127.0.0.1:{port}' if index in browser_workers else base
                     worker_db = urlunparse(urlparse(database)._replace(query=urlencode({'application_name':app_name})))
                     # No inherited provider credentials or database overrides.
                     env = {'PATH':os.environ.get('PATH','/usr/bin:/bin'),'DATABASE_URL':worker_db,
-                           'APP_ORIGIN':base,'PORT':str(port),'CLOUD_LOCAL_DEV':'1',
+                           'APP_ORIGIN':origin,'PORT':str(port),'CLOUD_LOCAL_DEV':'1',
                            'PHOTOCRAFT_DB_POOL_SIZE':str(a.db_pool_size),
                            'SUPABASE_URL':'','SUPABASE_ANON_KEY':'',
-                           'PUBLIC_DIR':str(Path(public_dir).resolve() if index==0 and public_dir is not None else a.output.parent/'no-public')}
+                           'PUBLIC_DIR':str(Path(public_dir).resolve() if index in browser_workers and public_dir is not None else a.output.parent/'no-public')}
                     if a.tls_ca:
                         env.pop('CLOUD_LOCAL_DEV')
                         env['SUPABASE_CA_CERT'] = a.tls_ca.read_text()
@@ -184,7 +189,7 @@ def isolated(a, report, *, public_dir=None):
                     with log_path.open('w') as log:
                         process = subprocess.Popen([str(a.binary.resolve())],env=env,stdout=log,stderr=subprocess.STDOUT)
                     processes.append(process)
-                    workers.append({'index':index,'port':port,'pid':process.pid,'db_application_name':app_name})
+                    workers.append({'index':index,'port':port,'pid':process.pid,'db_application_name':app_name,'origin':origin})
             report['workers'] = workers
             for worker,process in zip(workers,processes):
                 session = requests.Session(); session.trust_env = False
@@ -314,7 +319,8 @@ class Load:
         reusable = False
         try:
             path = f"/api/projects/{actor['project']}/live"+('?tab='+actor['tab'] if method == 'GET' else '')
-            headers = (f'{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nOrigin: {self.base}\r\n'
+            origin = self.workers[worker].get('origin', self.base)
+            headers = (f'{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nOrigin: {origin}\r\n'
                 f"Cookie: pc_session={actor['token']}\r\nX-Photocraft-Account: {actor['id']}\r\n"
                 'Accept-Encoding: identity\r\nConnection: keep-alive\r\nContent-Type: application/json\r\n'
                 f'Content-Length: {len(body)}\r\n\r\n').encode()+body
