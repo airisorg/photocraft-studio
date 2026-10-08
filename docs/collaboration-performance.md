@@ -2,7 +2,7 @@
 
 This report separates historical HTTP/state measurements from calibrated input-to-remote-paint
 measurements. The final bounded native-preview run below passed all 19 observations, with
-an 84.552 ms local median and a 287.777 ms maximum across simulated network profiles.
+an 84.552 ms p50 with no configured delay and a 287.777 ms maximum across simulated network profiles.
 These are local two-account observations, not hosted capacity, physical-device latency or
 a production service-level objective. See [collaboration architecture](collaboration-architecture.md)
 for the transport, current limits, and optimization decisions.
@@ -327,7 +327,7 @@ requests per account/profile verified identity and measured the following actual
 All timing values below are conservative observed compositor-frame upper bounds including
 clock uncertainty; physical display photon latency was not measured.
 
-| Configured HTTP delay per page | Observed `/api/me` RTT range | Cursor + held-pencil samples | Median | Maximum |
+| Configured HTTP delay per page | Observed `/api/me` RTT range | Cursor + held-pencil samples | Nearest-rank p50 | Maximum |
 |---|---:|---:|---:|---:|
 | 0 ms | 0.80–1.90 ms | 6 | 84.552 ms | 117.382 ms |
 | 50 ms | 50.90–55.60 ms | 6 | 155.437 ms | 187.766 ms |
@@ -337,7 +337,7 @@ One additional held stroke after a real sender reload passed at 82.821 ms while 
 remained open. Tab identity was retained and the wire sequence advanced from 102 to 103.
 All 19 observations passed the strict 500 ms gate; none was invalid, missing or timed out,
 and captures reported zero errors. Each six-sample profile's p95/p99 is its maximum, not a
-reliable tail estimate. The preferred 150 ms threshold passed locally but not across delayed
+reliable tail estimate. The preferred 150 ms threshold passed with no configured delay but not across delayed
 profiles. The final canonical revision was 11, exact native convergence/reload passed, and
 both synthetic accounts were removed with zero remaining.
 
