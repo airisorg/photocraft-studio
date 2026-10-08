@@ -47,14 +47,6 @@
     h3 { margin: 0 0 10px; font-size: 19px; letter-spacing: -.4px; }
     p { line-height: 1.65; }
     .features p { margin: 0; color: #615a6b; font-size: 15px; }
-    .demo { margin-bottom: 56px; }
-    .demo h2 { font-size: clamp(28px, 4vw, 40px); }
-    .demo p { max-width: 780px; color: #615a6b; font-size: 16px; }
-    .demo video { display: block; width: 100%; height: auto; background: #19191b; border: 1px solid #ded9e5; border-radius: 12px; }
-    #editing-demo video { aspect-ratio: 4 / 3; }
-    #collaboration-demo video { aspect-ratio: 2 / 1; }
-    .demo video:focus-visible { outline: 3px solid #7955dc; outline-offset: 5px; }
-    .demo .scope { margin-bottom: 18px; font-size: 14px; }
     .tofu { padding: 40px; background: #eee9f8; border: 1px solid #e0d6f2; border-radius: 16px; }
     .tofu p:not(.eyebrow) { max-width: 730px; margin: 0 0 24px; color: #534762; font-size: 17px; }
     .details { display: grid; grid-template-columns: 1fr 1fr; gap: 48px; padding-block: 56px; }
@@ -98,26 +90,6 @@
         <article><h3>Edit with layers</h3><p>Use the original PhotoCraft painting tools, text, shapes and layer controls. The Rust engine runs on your machine through WebAssembly.</p></article>
         <article><h3>Keep a native copy</h3><p>Download a layered <code>.pcraft</code> document to reopen later, or export a PNG to share. Undo and redo stay part of the native editor.</p></article>
         <article><h3>Share a workspace</h3><p>Signed-in projects add version history, access permissions, comments and bounded collaborator cursors and editing previews.</p></article>
-      </section>
-      <section class="demo" id="editing-demo" aria-labelledby="editing-demo-title">
-        <p class="eyebrow">See the editor in action</p>
-        <h2 id="editing-demo-title">A design, from template to download.</h2>
-        <p id="editing-demo-caption">Open an original starter design, edit its headline, reposition artwork, undo and redo, then download and reopen a layered <code>.pcraft</code> file.</p>
-        <p class="scope">Recorded locally with the same browser editor deployed on Tofu. The footage runs at its original speed.</p>
-        <video controls preload="none" playsinline width="1440" height="1080" poster="/media/editor.png" aria-label="PhotoCraft Studio editing walkthrough" aria-describedby="editing-demo-caption">
-          <source src="/media/editing-walkthrough.mp4" type="video/mp4">
-          <a href="/media/editing-walkthrough.mp4">Download the editing walkthrough</a>.
-        </video>
-      </section>
-      <section class="demo" id="collaboration-demo" aria-labelledby="collaboration-demo-title">
-        <p class="eyebrow">Two independent browser sessions</p>
-        <h2 id="collaboration-demo-title">Work side by side.</h2>
-        <p id="collaboration-demo-caption">See a collaborator’s cursor, watch their paint stroke appear, then contribute from the other editor. Both views use the original PhotoCraft canvas.</p>
-        <p class="scope">Local test workspace with disposable accounts. This shows the collaboration behavior; it does not measure internet latency or certify unrestricted simultaneous editing.</p>
-        <video controls preload="none" playsinline width="1920" height="960" poster="/media/collaboration-preview.png" aria-label="PhotoCraft Studio local collaboration demonstration" aria-describedby="collaboration-demo-caption">
-          <source src="/media/collaboration-demo.mp4" type="video/mp4">
-          <a href="/media/collaboration-demo.mp4">Download the local collaboration demonstration</a>.
-        </video>
       </section>
       <section class="tofu" id="hosted-on-tofu" aria-labelledby="tofu-title">
         <p class="eyebrow">Hosted on Tofu</p>

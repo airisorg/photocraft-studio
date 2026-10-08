@@ -3,8 +3,26 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
-  <title>PhotoCraft</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#faf9f7">
+  <meta name="description" content="Edit layered images in your browser with PhotoCraft Studio. Try local editing and downloads without signing in. Hosted on Tofu.">
+  <meta name="robots" content="noindex, follow">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="PhotoCraft Studio">
+  <meta property="og:title" content="PhotoCraft Studio — Browser Image Editor">
+  <meta property="og:description" content="Layered image editing in your browser, built on the original PhotoCraft Rust editor. Hosted on Tofu.">
+  <meta property="og:url" content="https://photocraft-studio-d42c446ec275.trytofu.app/">
+  <meta property="og:image" content="https://photocraft-studio-d42c446ec275.trytofu.app/media/social-preview.png">
+  <meta property="og:image:type" content="image/png">
+  <meta property="og:image:width" content="1280">
+  <meta property="og:image:height" content="640">
+  <meta property="og:image:alt" content="PhotoCraft Studio showing a layered design in its native browser editor, hosted on Tofu">
+  <title>PhotoCraft Studio — Browser Image Editor</title>
+  <link data-trunk rel="icon" href="icon.svg" type="image/svg+xml">
+  <link data-trunk rel="copy-dir" href="templates">
+  <link data-trunk rel="copy-file" href="about.html">
+  <link data-trunk rel="copy-file" href="../../docs/media/editor.png" data-target-path="media">
+  <link data-trunk rel="copy-file" href="../../docs/media/social-preview.png" data-target-path="media">
   <link data-trunk rel="rust" data-bin="photocraft-web" data-cargo-profile="wasm-release" data-cargo-features="heif" data-wasm-opt="z" data-weak-refs />
   <style>
     html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #faf9f7; }
@@ -14,6 +32,8 @@
     #photocraft_loading img { width: 56px; height: 56px; }
     #photocraft_loading strong { color: #23202d; font-size: 26px; letter-spacing: -1px; }
     #photocraft_loading small { max-width: 310px; line-height: 1.6; }
+    #photocraft_loading a { pointer-events: auto; color: #6f45ce; }
+    .photocraft-noscript { margin: 28px; color: #23202d; font: 16px/1.6 system-ui, sans-serif; }
     #tofu_credit { position: fixed; z-index: 2; right: 8px; bottom: 5px; padding: 1px 5px;
       color: #bcb9d8; background: #1a1a1c; font: 11px system-ui, sans-serif; border-radius: 3px; }
     #photocraft_stalled { visibility: hidden; animation: photocraft-stalled 0s 20s forwards; }
@@ -35,8 +55,8 @@
 </head>
 <body>
   <canvas id="photocraft_canvas" aria-label="PhotoCraft Studio creative workspace"></canvas>
-  <div id="photocraft_loading" role="status"><strong>PhotoCraft Studio</strong><span>A little space for your next great idea.</span><small>Opening your workspace&hellip;<br>The first visit takes a moment to load the editor.</small><p id="photocraft_stalled">The editor may have failed to download. <a href="">Reload</a> to try again.</p></div>
-  <noscript>PhotoCraft Studio needs JavaScript and WebAssembly enabled to run the Rust editor in your browser.</noscript>
+  <div id="photocraft_loading" role="status"><strong>PhotoCraft Studio</strong><span>A little space for your next great idea.</span><small>Opening your workspace&hellip;<br>The first visit takes a moment to load the editor.</small><a href="/about.html">About PhotoCraft Studio</a><p id="photocraft_stalled">The editor may have failed to download. <a href="">Reload</a> to try again.</p></div>
+  <noscript><style>#photocraft_canvas, #photocraft_loading { display: none; }</style><p class="photocraft-noscript">PhotoCraft Studio needs JavaScript and WebAssembly enabled to run the Rust editor in your browser. <a href="/about.html">Learn about PhotoCraft Studio and its Tofu hosting.</a></p></noscript>
   <a id="tofu_credit" href="https://trytofu.ai" target="_blank" rel="noopener noreferrer">Hosted on Tofu</a>
 </body>
 </html>

@@ -13,6 +13,8 @@ concurrency:
   cancel-in-progress: false
 jobs:
   prepare:
+    # Transfer or public visibility must not activate ancestry-import writes.
+    if: vars.PHOTOCRAFT_UPSTREAM_UPDATES_ENABLED == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write

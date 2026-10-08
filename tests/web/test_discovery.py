@@ -1,6 +1,5 @@
 """Offline discovery contract; browser rendering and hosted responses are separate gates."""
 import ast
-import hashlib
 from html.parser import HTMLParser
 from pathlib import Path, PurePosixPath
 import shutil
@@ -95,23 +94,6 @@ class Discovery(unittest.TestCase):
                          'https://github.com/airisorg/photocraft-studio#readme'} <= hrefs)
         self.assertFalse({'/auth/login', '/api/config', '/api/me'} & hrefs)
 
-    def test_recorded_videos_are_opt_in_and_collaboration_scope_is_clear(self):
-        videos = self.about.attrs('video')
-        self.assertEqual(len(videos), 2)
-        self.assertEqual([a['src'] for a in self.about.attrs('source')],
-                         ['/media/editing-walkthrough.mp4', '/media/collaboration-demo.mp4'])
-        self.assertEqual([a['type'] for a in self.about.attrs('source')], ['video/mp4', 'video/mp4'])
-        for video in videos:
-            self.assertIn('controls', video)
-            self.assertIn('playsinline', video)
-            self.assertEqual(video['preload'], 'none')
-            self.assertNotIn('autoplay', video)
-            self.assertNotIn('loop', video)
-            self.assertIn('aria-label', video)
-            self.assertIn('aria-describedby', video)
-        self.assertIn('Local test workspace with disposable accounts', self.about.text('main'))
-        self.assertIn('does not measure internet latency', self.about.text('main'))
-
     def test_index_policy_and_social_cards_are_generic_initial_html(self):
         for document, path, policy in ((self.about, '/about.html', {'index', 'follow'}),
                                        (self.app, '/', {'noindex', 'follow'})):
@@ -166,9 +148,6 @@ class Discovery(unittest.TestCase):
             'about.html': WEB / 'about.html',
             'media/editor.png': ROOT / 'docs/media/editor.png',
             'media/social-preview.png': ROOT / 'docs/media/social-preview.png',
-            'media/editing-walkthrough.mp4': ROOT / 'docs/media/editing-walkthrough.mp4',
-            'media/collaboration-demo.mp4': ROOT / 'docs/media/collaboration-demo.mp4',
-            'media/collaboration-preview.png': ROOT / 'docs/media/collaboration-preview.png',
         })
         for name, size in (('editor.png', (1440, 960)), ('social-preview.png', (1280, 640))):
             with self.subTest(image=name), Image.open(copied['media/' + name]) as image:
@@ -176,19 +155,6 @@ class Discovery(unittest.TestCase):
                 self.assertEqual(image.size, size)
                 image.verify()
         self.assertEqual((self.about.attrs('img')[0]['width'], self.about.attrs('img')[0]['height']), ('1440', '960'))
-        with Image.open(copied['media/collaboration-preview.png']) as image:
-            self.assertEqual(image.format, 'PNG')
-            self.assertGreaterEqual(image.width, 1280)
-            self.assertGreaterEqual(image.height, 720)
-            image.verify()
-        for name in ('editing-walkthrough.mp4', 'collaboration-demo.mp4'):
-            data = copied['media/' + name].read_bytes()
-            self.assertLess(len(data), 5 * 1024 * 1024, 'Keep each opt-in demonstration bounded')
-            self.assertGreater(len(data), 10000)
-            self.assertEqual(data[4:8], b'ftyp', 'Actual MP4 container header is required')
-        self.assertNotEqual(hashlib.sha256(copied['media/editing-walkthrough.mp4'].read_bytes()).digest(),
-                            hashlib.sha256(copied['media/collaboration-demo.mp4'].read_bytes()).digest(),
-                            'Editing and collaboration must contain distinct recordings')
 
     def test_real_packager_asset_loop_keeps_about_and_image_bytes(self):
         # Execute the existing production asset loop on a disposable dist fixture.

@@ -24,7 +24,7 @@ ship with the package as OFL-<family>.txt.
 
 Independent fork modification notice
 ------------------------------------
-PhotoCraft Studio is the independent web adaptation maintained in FZ2000/photocraft.
+PhotoCraft Studio is the independent web adaptation maintained in airisorg/photocraft-studio.
 This fork adds a hosted workspace, HTTP service, cloud saves, permissions, sharing,
 and bounded native collaboration previews. README.md and docs/fork-code-map.md
 describe those changes. It is not affiliated with, sponsored by, or endorsed by
