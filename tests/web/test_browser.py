@@ -229,6 +229,25 @@ class BrowserAcceptance(unittest.TestCase):
         with zipfile.ZipFile(io.BytesIO(data)) as archive:
             return json.loads(archive.read('manifest.json'))['document']
 
+    def auth_opened_document(self, page, expected):
+        # The native bridge is available before the asynchronous project download
+        # and open finish. Establish the real document before injecting expiry.
+        expected_layers = [(layer['id'], layer['name']) for layer in expected['layers']]
+        deadline = time.monotonic()+10
+        document = None
+        while time.monotonic() < deadline:
+            document = self.inspect(page)['document']
+            if document is not None:
+                self.assertEqual((document['width'], document['height']),
+                                 (expected['width'], expected['height']))
+                self.assertEqual([(layer['id'], layer['name']) for layer in document['layers']],
+                                 expected_layers)
+                self.assertIn(document['activeLayer'], [layer[0] for layer in expected_layers])
+                return document
+            page.wait_for_timeout(50)
+        page.screenshot(path=str(ARTIFACTS/'session-project-open-timeout.png'))
+        self.fail(f'The expected native cloud document did not open: {document}')
+
     def test_01_workspace_new_canvas_button(self):
         self.assertEqual(self.page.title(), 'PhotoCraft Studio')
         self.click_workspace_action('Create a design')
@@ -2760,6 +2779,7 @@ class BrowserAcceptance(unittest.TestCase):
         other_context, other = self.context_page('?project='+pid, token=token)
         self.context, self.page = other_context, other
         try:
+            self.auth_opened_document(other, expected[0])
             self.db.execute('DELETE FROM photocraft.sessions WHERE account_id=%s', (collaborator,))
             self.execute('layer.renameLayer', {'name':'Retained after permission downgrade'})
             retained = self.inspect()['document']
@@ -3049,6 +3069,7 @@ class BrowserAcceptance(unittest.TestCase):
         self.auth_revision(pid, 1)
         self.page.wait_for_timeout(300)
         other_context, other = self.context_page('?project='+pid, token=token)
+        self.auth_opened_document(other, self.inspect()['document'])
         layers = self.inspect()['document']['layers']
         self.context.set_offline(True)
         self.execute('layer.renameLayer', {'layer':layers[0]['id'],'name':'Owner local shape'})
