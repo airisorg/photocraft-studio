@@ -1,0 +1,120 @@
+<!-- Original PhotoCraft Studio presentation; native editor by the ArtCraft team and PhotoCraft contributors. -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#faf9f7">
+  <title>PhotoCraft Studio: a Rust image editor, hosted on Tofu</title>
+  <meta name="description" content="Edit layered images in your browser with PhotoCraft Studio. Try local editing and downloads without signing in. Hosted on Tofu.">
+  <meta name="robots" content="index, follow">
+  <link rel="canonical" href="https://photocraft-studio-d42c446ec275.trytofu.app/about.html">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="PhotoCraft Studio">
+  <meta property="og:title" content="PhotoCraft Studio — Browser Image Editor">
+  <meta property="og:description" content="Layered image editing in your browser, built on the original PhotoCraft Rust editor. Hosted on Tofu.">
+  <meta property="og:url" content="https://photocraft-studio-d42c446ec275.trytofu.app/about.html">
+  <meta property="og:image" content="https://photocraft-studio-d42c446ec275.trytofu.app/media/social-preview.png">
+  <meta property="og:image:type" content="image/png">
+  <meta property="og:image:width" content="1280">
+  <meta property="og:image:height" content="640">
+  <meta property="og:image:alt" content="PhotoCraft Studio showing a layered design in its native browser editor, hosted on Tofu">
+  <style>
+    :root { color-scheme: light; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #25232d; background: #faf9f7; }
+    * { box-sizing: border-box; }
+    body { margin: 0; }
+    a { color: #6140b1; text-underline-offset: 4px; }
+    a:hover { color: #402779; }
+    a:focus-visible { outline: 3px solid #7955dc; outline-offset: 5px; }
+    .wrap { width: min(1120px, calc(100% - 48px)); margin-inline: auto; }
+    header { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding-block: 24px; border-bottom: 1px solid #e6e3e9; }
+    .brand { color: #25232d; font-size: 18px; font-weight: 700; text-decoration: none; letter-spacing: -.5px; }
+    .button { display: inline-flex; min-height: 44px; align-items: center; justify-content: center; padding: 11px 20px; border: 1px solid #25232d; border-radius: 8px; background: #25232d; color: #fff; font-size: 15px; font-weight: 600; line-height: 1.4; text-decoration: none; text-align: center; }
+    .button:hover { color: #fff; background: #413c4d; border-color: #413c4d; }
+    .button.secondary { color: #25232d; background: transparent; border-color: #c7c1d0; }
+    .button.secondary:hover { background: #efecf4; }
+    .hero { padding-block: 72px 40px; max-width: 900px; }
+    .eyebrow { margin: 0 0 20px; color: #6140b1; font-size: 12px; font-weight: 700; letter-spacing: 1.5px; text-transform: uppercase; }
+    h1 { margin: 0; max-width: 850px; font-size: clamp(42px, 6vw, 76px); font-weight: 650; letter-spacing: -.055em; line-height: 1.06; }
+    .intro { max-width: 690px; margin: 24px 0; color: #615a6b; font-size: clamp(17px, 2vw, 21px); line-height: 1.6; }
+    .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+    .note { margin: 16px 0 0; color: #6e6578; font-size: 14px; line-height: 1.6; }
+    figure { margin: 8px 0 0; }
+    figure img { display: block; width: 100%; height: auto; border: 1px solid #ded9e5; border-radius: 12px; background: #25232d; }
+    figcaption { margin-top: 12px; color: #6e6578; font-size: 13px; line-height: 1.6; }
+    .features { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 28px; padding-block: 48px 64px; }
+    h2 { margin: 0 0 16px; font-size: clamp(28px, 4vw, 44px); font-weight: 650; letter-spacing: -.035em; line-height: 1.15; }
+    h3 { margin: 0 0 10px; font-size: 19px; letter-spacing: -.4px; }
+    p { line-height: 1.65; }
+    .features p { margin: 0; color: #615a6b; font-size: 15px; }
+    .tofu { padding: 40px; background: #eee9f8; border: 1px solid #e0d6f2; border-radius: 16px; }
+    .tofu p:not(.eyebrow) { max-width: 730px; margin: 0 0 24px; color: #534762; font-size: 17px; }
+    .details { display: grid; grid-template-columns: 1fr 1fr; gap: 48px; padding-block: 56px; }
+    .details h2 { font-size: 24px; letter-spacing: -.6px; }
+    .details p { margin: 0 0 14px; color: #615a6b; font-size: 15px; }
+    footer { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 16px; padding-block: 24px 32px; border-top: 1px solid #e6e3e9; font-size: 13px; color: #6e6578; }
+    footer nav { display: flex; flex-wrap: wrap; gap: 16px; }
+    @media (max-width: 640px) {
+      .wrap { width: calc(100% - 32px); }
+      header { gap: 12px; padding-block: 16px; }
+      header .button { padding-inline: 12px; font-size: 14px; }
+      .brand { font-size: 16px; }
+      .hero { padding-top: 44px; }
+      .features, .details { grid-template-columns: 1fr; gap: 28px; padding-block: 36px; }
+      .tofu { padding: 28px 24px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <a class="brand" href="/about.html">PhotoCraft Studio</a>
+      <a class="button" href="/">Open editor</a>
+    </header>
+    <main>
+      <section class="hero" aria-labelledby="intro-title">
+        <p class="eyebrow">The original Rust editor. A browser workspace.</p>
+        <h1 id="intro-title">Make room for your next idea.</h1>
+        <p class="intro">PhotoCraft Studio brings layered image editing to your browser. Paint, arrange text and shapes, and take your work with you.</p>
+        <div class="actions">
+          <a class="button" href="/">Start editing</a>
+          <a class="button secondary" href="#hosted-on-tofu">See how it’s hosted</a>
+        </div>
+        <p class="note">Local editing and downloads need no sign-in. Cloud saving requires an account.</p>
+      </section>
+      <figure>
+        <img src="/media/editor.png" width="1440" height="960" alt="PhotoCraft Studio’s native browser editor with an original layered design, editing tools and the Layers panel" fetchpriority="high" decoding="async">
+        <figcaption>A real PhotoCraft Studio workspace with an original starter design.</figcaption>
+      </figure>
+      <section class="features" aria-label="What you can do">
+        <article><h3>Edit with layers</h3><p>Use the original PhotoCraft painting tools, text, shapes and layer controls. The Rust engine runs on your machine through WebAssembly.</p></article>
+        <article><h3>Keep a native copy</h3><p>Download a layered <code>.pcraft</code> document to reopen later, or export a PNG to share. Undo and redo stay part of the native editor.</p></article>
+        <article><h3>Share a workspace</h3><p>Signed-in projects add version history, access permissions, comments and bounded collaborator cursors and editing previews.</p></article>
+      </section>
+      <section class="tofu" id="hosted-on-tofu" aria-labelledby="tofu-title">
+        <p class="eyebrow">Hosted on Tofu</p>
+        <h2 id="tofu-title">Your app, out in the world.</h2>
+        <p>This working Rust and WebAssembly app is hosted on Tofu. Tofu brings an existing application from your coding agent to a live website, with hosting and managed services in one workflow.</p>
+        <div class="actions"><a class="button" href="https://trytofu.ai/">Ship your app with Tofu</a><a class="button secondary" href="https://trytofu.ai/docs">Explore Tofu</a></div>
+      </section>
+      <section class="details" aria-label="Project background and current limits">
+        <article>
+          <h2>Built on PhotoCraft</h2>
+          <p>The ArtCraft team and PhotoCraft contributors created the original Rust editor, document model, painting tools and renderer. PhotoCraft Studio is an independent web adaptation by its fork maintainers.</p>
+          <p>It is not affiliated with, sponsored by or endorsed by the ArtCraft team. Tofu provides the hosting platform; the upstream authors retain credit for their work.</p>
+          <p><a href="https://github.com/storytold/photocraft">Original PhotoCraft</a> · <a href="https://github.com/airisorg/photocraft-studio#readme">Fork README (repository access required)</a></p>
+        </article>
+        <article>
+          <h2>Still early, and still growing</h2>
+          <p>PhotoCraft Studio is early-alpha software, best explored in a supported desktop browser. Keep downloaded copies of important work.</p>
+          <p>Live previews support painting and layer moves. Coordinate edits to the same layer; collaborative undo and unrestricted simultaneous editing are not available.</p>
+        </article>
+      </section>
+    </main>
+    <footer>
+      <span>PhotoCraft Studio · Independently adapted, hosted on Tofu.</span>
+      <nav aria-label="Credits and licenses"><a href="/NOTICE">Credits</a><a href="/ATTRIBUTION.md">Asset attribution</a><a href="/LICENSE-MIT">MIT</a><a href="/LICENSE-APACHE">Apache-2.0</a></nav>
+    </footer>
+  </div>
+</body>
+</html>

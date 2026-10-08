@@ -1,10 +1,10 @@
 # Staying on upstream PhotoCraft
 
-This private repository preserves the Git history of
-[storytold/photocraft](https://github.com/storytold/photocraft). It is a private derivative,
-not a separate editor implementation. GitHub currently reports it as a private mirror,
-not a repository with GitHub's fork metadata. All native engine, document, codec, tool,
-command and egui changes continue to arrive through Git merges.
+This independent fork reuses the editor from
+[storytold/photocraft](https://github.com/storytold/photocraft), preserving its native engine,
+document model, codecs, tools, commands, and egui interface. This checkout retains upstream
+Git history and imports changes through Git merges; GitHub's fork metadata is not required.
+Publishing that history requires the review described in [the security policy](../SECURITY.md).
 
 ## Boundaries that keep updates manageable
 
@@ -18,8 +18,10 @@ command and egui changes continue to arrive through Git merges.
 
 ## Automatic path
 
-`.github/workflows/update-and-release.yml` is configured to run on main changes, manual
-dispatch, and a six-hour schedule. Scheduled jobs can be delayed by GitHub; updates are
+`.github/workflows/update-and-release.yml` has triggers for main changes, manual dispatch,
+and a six-hour schedule. Its preparation job runs only when the repository variable
+`PHOTOCRAFT_UPSTREAM_UPDATES_ENABLED` is explicitly enabled with `true`; absent that activation,
+no candidate is created or pushed. Scheduled jobs can be delayed by GitHub; updates are
 not instantaneous.
 
 1. Fetch `storytold/photocraft` main from its fixed upstream URL. Merge into an isolated
@@ -105,14 +107,23 @@ The first gate introduction needs a reviewed trusted-branch bootstrap: install t
 required suites and workflow in the trusted base/caller revision before expecting its
 container job to run. A PR base without the helper cannot validate its own newly proposed
 gate; do not work around that by executing candidate QA helpers or manufacturing a receipt.
-After the reviewed bootstrap and account restriction are resolved, run **Upstream and
-tested web release** against a fresh candidate. The first fully passing run creates
+Before enabling the repository variable, resolve the publication strategy and review
+the refs the pipeline will push. A merge can restore restricted artwork to a candidate
+or retain it in ancestry before later tests run. The opt-in guard prevents accidental
+activation; it does not certify a candidate or its Git history for public distribution.
+The current full-history publication gate fails on retained artwork and personal home
+paths. Do not enable this workflow in a public repository until those boundaries are
+resolved, and run the publication gate before pushing public candidates.
+
+After completing that review and the trusted bootstrap, and resolving the account
+restriction, set `PHOTOCRAFT_UPSTREAM_UPDATES_ENABLED=true` and run **Upstream and tested web release**
+against a fresh candidate. The first fully passing run creates
 `tofu-release`. Never bypass failing gates to make the update appear enabled.
 
 The existing Tofu app was uploaded as a ZIP; its GitHub source is null and automatic
 updates are disabled. After a passing release exists, the owner must use **Update code**
 on this app's **Overview** or **Versions** page, connect GitHub with their own grant,
-choose `FZ2000/photocraft`, branch `tofu-release`, repository root, and enable
+choose `airisorg/photocraft-studio`, branch `tofu-release`, repository root, and enable
 **Automatic updates** on the **Source** card in **Versions**. Keep the existing app,
 database and identity settings. This cannot be enabled by the coding-agent API.
 

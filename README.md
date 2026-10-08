@@ -1,8 +1,25 @@
 # PhotoCraft Studio
 
-PhotoCraft Studio is an independent web adaptation of [PhotoCraft](https://github.com/storytold/photocraft). The original PhotoCraft project was created by the ArtCraft team and the PhotoCraft contributors. Their Rust editor, document model, painting tools, file formats, and GPU compositor are the foundation of this project. Thank you to the upstream contributors.
+PhotoCraft Studio is a browser-based image editor with cloud projects, sharing, and collaboration.
 
-This fork is maintained independently in [FZ2000/photocraft](https://github.com/FZ2000/photocraft). It is not affiliated with, sponsored by, endorsed by, or an official release of the ArtCraft team. Please report issues in this fork to its maintainers.
+It is an independent fork of [PhotoCraft](https://github.com/storytold/photocraft), created by the ArtCraft team and PhotoCraft contributors. Their Rust editor, painting tools, document model, file formats, and GPU renderer remain its foundation. We thank the upstream contributors. This fork is maintained separately and is not affiliated with, sponsored by, or endorsed by the original project or the ArtCraft team.
+
+PhotoCraft Studio is deployed on [Tofu](https://trytofu.ai/), which helps your coding agent take an existing app online with hosting, a managed database, Google sign-in, and transactional email in one place. To take your own app from local development to the web, [try Tofu](https://trytofu.ai/) or explore its [documentation](https://trytofu.ai/docs).
+
+[![Deployed on Tofu](docs/media/deployed-on-tofu.svg)](https://trytofu.ai/)
+
+[Open the editor](https://photocraft-studio-d42c446ec275.trytofu.app/) · [Explore PhotoCraft Studio](https://photocraft-studio-d42c446ec275.trytofu.app/about.html) · [How we deployed with Tofu](docs/tofu-deployment.md)
+
+![PhotoCraft Studio running in a browser with an editable starter design, native tools and nine layers](docs/media/editor.png)
+
+<details>
+<summary>Watch a seven-second editing demo</summary>
+
+![A native layer moves, Undo restores the design, and Redo brings the change back](docs/media/native-editing-demo.gif)
+
+Recorded in the deployed editor with a fresh guest session. The original PhotoCraft engine moves a layer and restores the design through Undo and Redo.
+
+</details>
 
 ## What we added
 
@@ -22,11 +39,11 @@ The editor and this adaptation remain early-alpha software. A short local worklo
 
 Open [PhotoCraft Studio](https://photocraft-studio-d42c446ec275.trytofu.app/) in a supported desktop browser. Local editing and download do not require a cloud account. Cloud saving requires sign-in; collaboration also requires access to a shared project.
 
-With access to the private repository, build the native editor:
+To build the native editor from [airisorg/photocraft-studio](https://github.com/airisorg/photocraft-studio):
 
 ```sh
-git clone https://github.com/FZ2000/photocraft.git
-cd photocraft
+git clone https://github.com/airisorg/photocraft-studio.git
+cd photocraft-studio
 cargo run --release -p photocraft
 ```
 
@@ -47,19 +64,14 @@ The [fork code map](docs/fork-code-map.md) identifies added modules, modified up
 
 ## Documentation and contributing
 
-Start with [AGENTS.md](AGENTS.md) and the [contribution guide](docs/contributing.md). Keep the UI thin, preserve native file compatibility, and add a regression test for each bug fix.
+Report issues for this fork in [this repository](https://github.com/airisorg/photocraft-studio/issues). Start with [AGENTS.md](AGENTS.md) and the [contribution guide](docs/contributing.md). Keep the UI thin, preserve native file compatibility, and add a regression test for each bug fix.
 
 - [Architecture](docs/architecture.md) and [development](docs/development.md)
 - [Browser workspace and deployment](docs/web-cloud.md)
 - [Upstream update process](docs/upstream-updates.md)
 - [Collaboration architecture](docs/collaboration-architecture.md) and [performance evidence](docs/collaboration-performance.md)
 - [Security policy](SECURITY.md), [release review](docs/security-release-review.md), [asset attribution](ATTRIBUTION.md), and [required notices](NOTICE)
-
-## Hosted with Tofu
-
-[Tofu](https://trytofu.ai/) takes an existing app from your coding agent to a live website, bringing hosting, a managed database, sign-in, email, domains, and analytics into one workflow. PhotoCraft Studio uses Tofu for its hosted deployment and managed services. If your app works locally and you want to put it online, [try Tofu](https://trytofu.ai/) or read its [documentation](https://trytofu.ai/docs).
-
-This acknowledgment describes the deployment platform; it does not imply sponsorship or endorsement.
+- [Discovery, screenshots and sharing](docs/discovery.md)
 
 ## License and credits
 
