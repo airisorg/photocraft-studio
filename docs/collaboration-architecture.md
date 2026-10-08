@@ -8,13 +8,15 @@ the foundation; a second editor or a replacement document model is unnecessary.
 ## What exists today
 
 The browser edits locally through the original Rust engine. After the first cloud save,
-the adapter waits for 3.5 seconds of idle time before autosaving. It serializes a complete
+the adapter waits for 150 ms of idle time, with the pointer released, before autosaving. It serializes a complete
 native `.pcraft` document, uploads sequential 512 KiB chunks, and commits a version under a
 project row lock. A checksum and expected revision protect the commit. Another browser
-polls presence/revision every 1.5 seconds and downloads the committed document when its
+reads authorized live state/revision every 80 ms while visible, with at most one pending read,
+and downloads the committed document when its
 own document is unchanged and it is not actively interacting. Applying that remote version
 replaces the local document state and resets its undo history; older work remains in cloud
-version history. Continuous editing can defer autosave, so this is not live operation sync.
+version history. Continuous editing can defer autosave. Supported cursor and gesture previews
+use the separate transient path described below; they are not durable operation sync.
 
 The backend compares native manifests and content-addressed blobs when the base is stale.
 Compatible independent changes can merge. Same-property, raster-tile, ordering and document
@@ -22,8 +24,8 @@ conflicts preserve the local work and require a copy or comparison. This conserv
 is preferable to claiming that simultaneous painting has been resolved when it has not.
 
 Membership supports owner, edit and view roles. Comments, saved versions, public view links,
-email invitations and presence exist. Presence currently returns names, not live cursor
-coordinates or selection ownership. Invitations grant membership before attempting a sign-in
+email invitations and presence exist. Live state includes authenticated named cursors and
+bounded native Brush/Pencil/Eraser/Move previews, but not selection ownership. Invitations grant membership before attempting a sign-in
 email, so a mail failure can coexist with granted access. Provider acceptance does not prove
 arrival in an inbox. Shared links and invitation delivery are separate acceptance journeys.
 
@@ -43,10 +45,46 @@ request benchmark. [Canva describes](https://www.canva.com/newsroom/news/canva-c
 visible collaborator selections and contributions as they happen, alongside immediate comments.
 
 PhotoCraft Studio does not currently match that interaction contract. Missing capabilities
-include live cursors/selections, incremental edit delivery, predictable collaborative undo,
+include live selections, durable incremental edit delivery, predictable collaborative undo,
 same-object/stroke concurrency, reliable catch-up without whole-document downloads, and a
 measured hosted multi-user latency/capacity envelope. A working Share dialog is not evidence
 that those capabilities exist.
+
+## Bounded native live path
+
+`crates/ui-egui/src/collaboration.rs` is optional view state. Small hooks in the existing
+canvas capture resolved native gestures and reuse `LiveStroke::begin_with/push`, `moved`,
+document transforms and native damage-region rendering. Remote previews use COW documents
+separate from the real Session, document revision and undo. Only one remote drawing gesture
+is shown at a time; receiver-local work takes precedence. Unsupported channels, symmetry,
+duplicate moves and expensive or oversized strokes explicitly use saved-version updates.
+
+The Rust web adapter in `apps/photocraft-web/src/live.rs` coalesces writes at 40 ms, sends
+cumulative ordered gesture events, and keeps only one pending request per direction. Cookie
+and expected-account guards remain unchanged. Persisted tab/transport identities survive
+reload; wire gesture IDs continue increasing even when native counters restart. Hidden,
+unbound, signed-out and unavailable editors stop live transport. Acknowledged cancellation
+clears its payload; late previous-base rejection does not delay a newer admitted gesture.
+
+`apps/photocraft-cloud/src/live.rs` and the additive `002_live.sql` migration keep latest
+transient state shared across workers. Every request freshly admits its session, account,
+project state and role in the data statement. Revoked/expired publishers are filtered from
+new reads. Viewers may publish cursors but not drawing gestures. State expires after two
+seconds; duplicate/stale sequences do not extend the lease. Clients subtract the request
+elapsed time from the remaining lease and expire individual peers. A response admitted
+before revocation cannot be recalled from the network.
+
+Bounds are 64 KiB per update, 256 events, 1,024 points, eight active tabs per session,
+256 retained session watermarks and 64 active room slots; the native view shows at most
+32 peer cursors. Brush previews also have a conservative 16-million estimated dab-pixel
+work limit. Watermarks survive clear/expiry and disappear with their session. These are
+admission bounds, not demonstrated capacity or an unlimited multiplayer contract.
+
+The first transport uses existing HTTP/PostgreSQL credentials and needs no new provider
+secret. Supabase private Broadcast remains a later optimization: the opaque cookie does
+not become a Realtime JWT by exposing the anonymous key. The safe provider-session bridge,
+authorization/revocation contract and actual quotas in the [sub-500 plan](sub500-collaboration-plan.md)
+must be established before enabling that path.
 
 ## Known scaling costs
 
@@ -58,6 +96,13 @@ that those capabilities exist.
   lookup, presence upsert, active-name lookup, and revision lookup. The example above would
   imply roughly 3,333 SQL statements/second. Each worker has up to five database connections;
   more workers do not make the shared database or connection pool unlimited.
+- The new 80 ms live read interval adds up to 12.5 reads/second per visible bound client,
+  depending on request duration and browser scheduling. A moving client can publish up to
+  25 coalesced writes/second; unchanged active state heartbeats every 500 ms. Reads transfer
+  current cumulative peer state and writes acquire bounded per-session/project transaction
+  locks. This is a latency improvement with an explicit coordination cost; it is not the
+  final high-capacity transport. Provider push/streaming and incremental native persistence
+  remain necessary before claiming optimized large-room scalability.
 - Full-document transfers and full version blobs scale with document size and save frequency.
   Commits serialize per project, and the quota check sums retained version sizes. Raster
   uploads and merge work can dominate both latency and memory even when HTTP handlers are fast.

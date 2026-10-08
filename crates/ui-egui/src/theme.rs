@@ -114,6 +114,11 @@ pub struct Tokens {
 }
 
 impl Tokens {
+    /// Stable collaborative cursor identity across editor themes and display-state checks.
+    pub fn collaborator_color(&self) -> Color32 {
+        Color32::from_rgb(154, 107, 255)
+    }
+
     pub fn for_kind(kind: ThemeKind) -> Self {
         match kind {
             // Sampled from Photoshop 2026's default brightness (raw display values).

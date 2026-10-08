@@ -75,7 +75,7 @@ jobs:
         env:
           PUBLIC_DIR: dist/web
         run: |
-          python tests/web/probe_transaction_pool.py --binary target/debug/photocraft-cloud --output test-results/transaction-pool.json --expect-success --api-suite
+          python tests/web/probe_transaction_pool.py --binary target/debug/photocraft-cloud --output test-results/transaction-pool.json --expect-success --api-suite --live-suite
       - name: Start disposable service and run acceptance suites
         env:
           DATABASE_URL: postgresql://photocraft_test@127.0.0.1:55438/postgres
@@ -89,7 +89,11 @@ jobs:
           trap 'kill "$SERVER_PID"' EXIT
           python tests/web/wait_ready.py
           python tests/web/test_api.py
+          python tests/web/test_live.py
           python tests/web/test_browser.py
+          PHOTOCRAFT_PAINT_CALIBRATION=1 python -m unittest discover -s tests/web -p test_paint_latency.py
+          python tests/web/test_live_browser.py
+          python tests/web/benchmark_live_collaboration.py --samples 3 --latency-ms 0 50 100 --output test-results/live-paint.json --context 'GitHub shared runner; no owned parallel build; other host contention unknown'
           python packaging/web/tofu-package.py test-results/photocraft-tofu.zip
       - uses: actions/upload-artifact@v4
         if: always()

@@ -3,6 +3,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 mod invitations;
+mod live;
 mod merge;
 
 use axum::{
@@ -134,6 +135,7 @@ async fn ready_db(s: &App) -> Result<&PgPool> {
         query("SET LOCAL lock_timeout = '5s'").execute(&mut *tx).await?;
         query("SELECT pg_advisory_xact_lock(735193624)").execute(&mut *tx).await?;
         sqlx::Executor::execute(&mut *tx, include_str!("../migrations/001_cloud.sql")).await?;
+        sqlx::Executor::execute(&mut *tx, include_str!("../migrations/002_live.sql")).await?;
         tx.commit().await?;
         s.ready.store(true, Ordering::Release);
         Ok::<(), sqlx::Error>(())
@@ -325,6 +327,7 @@ pub fn router(s: App) -> Router {
         .route("/api/projects/{id}/comments", get(comments).post(add_comment))
         .route("/api/projects/{id}/comments/{comment}", put(resolve_comment))
         .route("/api/projects/{id}/presence", post(presence))
+        .route("/api/projects/{id}/live", get(live::get).put(live::put).layer(DefaultBodyLimit::max(65_536)))
         .layer(DefaultBodyLimit::max(CHUNK + 1024))
         .layer(middleware::from_fn_with_state(s.clone(), guard))
         .with_state(s)
