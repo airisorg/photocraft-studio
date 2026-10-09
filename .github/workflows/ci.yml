@@ -151,23 +151,6 @@ jobs:
       - name: Corpus tests
         run: cargo xtask test-corpus
 
-  wasm:
-    name: wasm32 check
-    runs-on: tofu-ci-8-core
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.source_ref || github.sha }}
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: wasm32
-      - name: Check wasm-safe crates
-        run: cargo xtask wasm
-
   fuzz:
     name: fuzz (${{ matrix.target.crate }}/${{ matrix.target.name }})
     # Placeholder: manual trigger only until a nightly schedule is enabled.

@@ -18,7 +18,6 @@ jobs:
     # Cold compilation consumes about 32 minutes before the complete browser,
     # collaboration and packaging suites start. Keep the full suite bounded.
     timeout-minutes: 120
-    timeout-minutes: 45
     services:
       postgres:
         image: postgres:16
