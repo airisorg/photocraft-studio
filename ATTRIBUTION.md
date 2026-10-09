@@ -95,12 +95,15 @@ not certify every native installer, operating-system image or linked system libr
 
 | Path | Title | Author | Source | License |
 |---|---|---|---|---|
-| `docs/media/editor.png`, `docs/media/workspace.png` | Actual hosted editor and guest workspace screenshots with an original starter design | PhotoCraft Studio contributors; editor UI by the ArtCraft team and PhotoCraft contributors | Captured from the deployed PhotoCraft Studio guest session; [capture notes](docs/media/README.md) | MIT OR Apache-2.0; underlying assets retain the notices above |
+| `docs/media/editor.png` | Actual local native editor screenshot with an original Night Shift / Roller Club poster | PhotoCraft Studio contributors (original illustration, composition and copy); editor UI by the ArtCraft team and PhotoCraft contributors | Captured from the same browser editor used for the local editing film; [capture notes](docs/media/README.md) | MIT OR Apache-2.0; bundled fonts and other underlying assets retain the notices above |
+| `docs/media/workspace.png` | Actual hosted guest workspace screenshot | PhotoCraft Studio contributors; editor UI by the ArtCraft team and PhotoCraft contributors | Captured from the deployed PhotoCraft Studio guest session; [capture notes](docs/media/README.md) | MIT OR Apache-2.0; underlying assets retain the notices above |
 | `docs/media/editing-walkthrough.mp4` | Native editing walkthrough | PhotoCraft Studio contributors; editor engine and UI by the ArtCraft team and PhotoCraft contributors | Actual local guest browser recording of PhotoCraft Studio, encoded with FFmpeg; [capture notes](docs/media/README.md) | MIT OR Apache-2.0; underlying assets retain the notices above |
 | `docs/media/collaboration-demo.mp4`, `docs/media/collaboration-preview.png` | Two-browser local collaboration recording and poster | PhotoCraft Studio contributors; editor engine and UI by the ArtCraft team and PhotoCraft contributors | Actual independent local browser recordings and disposable test workspace; [capture notes](docs/media/README.md) | MIT OR Apache-2.0; underlying assets retain the notices above |
 | `docs/media/social-preview.png`, `docs/media/deployed-on-tofu.svg` | Original social card and deployment badge | PhotoCraft Studio contributors | Original HTML/SVG composition using the real editor screenshot and plain-text deployment acknowledgment | MIT OR Apache-2.0; no trademark rights granted |
 
 The presentation uses plain text to identify Tofu as the hosting platform. It does not incorporate a Tofu logo or proprietary third-party design assets.
+
+The Night Shift / Roller Club illustration, layout and event copy in the editor screenshot and films are original demo artwork by PhotoCraft Studio contributors, licensed MIT OR Apache-2.0. The event and venue are fictional. Inter lettering uses the bundled font and its SIL OFL notice above; no stock photographs, third-party artwork or music were added.
 
 ## Test data (not committed, not shipped)
 
