@@ -5,12 +5,28 @@ candidate (read permission). This script is also exercised against local Git rem
 """
 import argparse
 import hashlib
+import importlib.util
 import json
 from pathlib import Path, PurePosixPath
 import re
 import subprocess
 import tempfile
 import zipfile
+
+
+# Load the trusted caller's checker before checkout/merge can replace its file.
+# Candidate code must never execute with the preparation/promotion write token.
+_publication_spec = importlib.util.spec_from_file_location(
+    "photocraft_publication", Path(__file__).with_name("check-publication.py"))
+publication = importlib.util.module_from_spec(_publication_spec)
+_publication_spec.loader.exec_module(publication)
+
+
+def check_candidate_publication(candidate):
+    report = publication.check(Path.cwd(), ref=sha(candidate))
+    if not report["passed"]:
+        raise ValueError("Candidate publication check failed; no candidate or release was pushed. "
+                         "Resolve restricted history/privacy/notices and rerun with Gitleaks available.")
 
 
 def git(*args, cwd=None, check=True):
@@ -41,6 +57,7 @@ def prepare(branch, upstream_url='https://github.com/storytold/photocraft.git'):
             git('merge', '--abort')
             raise RuntimeError('Upstream conflicts; main and deployment are unchanged:\n' + conflicts)
     candidate = git('rev-parse', 'HEAD').stdout.strip()
+    check_candidate_publication(candidate)
     released = git('ls-remote', 'origin', 'refs/heads/tofu-release').stdout.strip()
     if released:
         git('fetch', 'origin', 'tofu-release')
@@ -88,6 +105,7 @@ def promote(base, candidate, upstream, branch, package):
         raise ValueError('Main changed during acceptance; validate the newer revision before promotion')
     git('merge-base', '--is-ancestor', base, candidate)
     git('merge-base', '--is-ancestor', upstream, candidate)
+    check_candidate_publication(candidate)
     remote = git('remote', 'get-url', 'origin').stdout.strip()
     with tempfile.TemporaryDirectory(prefix='photocraft-release-') as folder:
         dest = Path(folder)

@@ -146,6 +146,14 @@ Same-base clear, Cancel, unavailable input and project rebinding keep their ordi
 clear behavior. This bounded retention changes neither saved revisions nor native
 document/history and is not proof of which peer owns a commit.
 
+A publisher downgraded to viewer can still have an authorized cursor. If the server
+is already ahead of the receiver's installed revision, that cursor-only response
+does not distinguish downgrade from a pending install: the previously admitted
+preview can remain until its original lease or canonical installation. The server
+returns no gesture bytes and rejects new editing gestures from the viewer. This
+bounded stale visual is not immediate downgrade clearing; removing access, session
+expiry or peer absence still clears the preview when observed.
+
 Bounds are 64 KiB per update, 256 events, 1,024 points, eight active tabs per session,
 256 retained session watermarks and 64 active room slots; the native view shows at most
 32 peer cursors. Brush previews also have a conservative 16-million estimated dab-pixel

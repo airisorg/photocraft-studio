@@ -130,6 +130,64 @@ class PublicationHistory(unittest.TestCase):
                             self.assertEqual(marker.read_text().splitlines(), ['-y', '--profile', 'minimal',
                                              '--default-host', 'x86_64-unknown-freebsd', '--default-toolchain', 'stable'])
 
+    def test_nfpm_download_pin_and_fail_closed_installation(self):
+        root = Path(__file__).resolve().parents[2]
+        source = (root/'.github/workflows/release.yml').read_text()
+        pins = {
+            'amd64': '3f1cf344bd0b57373ca55636a78c08b0491f7293d609a456a9ac3b0b150fda97',
+            'arm64': '27419eb382695a7942be8ad52259f3ec1854fad001b3ae4baed34ce39a223b97',
+        }
+        self.assertIn('NFPM_VERSION: 2.47.0', source)
+        step = source.split('      - name: Install verified nFPM\n', 1)[1].split('\n      - ', 1)[0]
+        self.assertIn('NFPM_DEB_ARCH: ${{ matrix.deb }}', step)
+        self.assertIn('NFPM_DEB_SHA256: ${{ matrix.nfpm_sha256 }}', step)
+        block = textwrap.dedent(step.split('        run: |\n', 1)[1])
+        self.assertNotIn('${{', block, 'Shell source must not interpolate workflow expressions')
+        payload = b'Harmless synthetic DEB bytes; never installed or executed.\n'
+        fixture_digest = hashlib.sha256(payload).hexdigest()
+        with tempfile.TemporaryDirectory() as directory:
+            temp = Path(directory)
+            binaries = temp/'bin'
+            binaries.mkdir()
+            programs = {
+                'curl': '#!'+sys.executable+'\nimport os,sys\nfrom pathlib import Path\n'
+                        'assert sys.argv[-1] == "https://github.com/goreleaser/nfpm/releases/download/v2.47.0/nfpm_2.47.0_"+os.environ["NFPM_DEB_ARCH"]+".deb"\n'
+                        'data='+repr(payload)+'\n'
+                        'if os.environ["FIXTURE_MODE"] == "tampered": data += b"corruption"\n'
+                        'Path(sys.argv[sys.argv.index("--output")+1]).write_bytes(data)\n'
+                        'with open(os.environ["FIXTURE_LOG"],"a") as f: f.write("download\\n")\n'
+                        'if os.environ["FIXTURE_MODE"] == "download-error": sys.exit(22)\n',
+                'sha256sum': '#!'+sys.executable+'\nimport hashlib,os,sys\nfrom pathlib import Path\n'
+                             'assert sys.argv[1:] == ["--check","--status"]\n'
+                             'expected,name=sys.stdin.read().rstrip("\\n").split("  ",1)\n'
+                             'with open(os.environ["FIXTURE_LOG"],"a") as f: f.write("checksum\\n")\n'
+                             'sys.exit(0 if hashlib.sha256(Path(name).read_bytes()).hexdigest()==expected else 1)\n',
+                'sudo': '#!'+sys.executable+'\nimport os,sys\nfrom pathlib import Path\n'
+                        'assert sys.argv[1:3] == ["dpkg","-i"] and len(sys.argv)==4\n'
+                        'assert Path(sys.argv[3]).read_bytes()=='+repr(payload)+'\n'
+                        'with open(os.environ["FIXTURE_LOG"],"a") as f: f.write("install\\n")\n',
+            }
+            for name, content in programs.items():
+                path=binaries/name
+                path.write_text(content)
+                path.chmod(0o700)
+            for arch, pin in pins.items():
+                self.assertRegex(source, r'deb: '+arch+r', nfpm_sha256: '+pin+r'\s*}')
+                for mode in ['tampered', 'download-error', 'wrong-pin', 'valid']:
+                    with self.subTest(arch=arch, mode=mode):
+                        log=temp/'commands'
+                        log.write_text('')
+                        environment={**os.environ, 'PATH':str(binaries)+':/usr/bin:/bin',
+                                     'RUNNER_TEMP':str(temp), 'NFPM_VERSION':'2.47.0',
+                                     'NFPM_DEB_ARCH':arch, 'NFPM_DEB_SHA256':'0'*64 if mode=='wrong-pin' else fixture_digest,
+                                     'FIXTURE_MODE':mode, 'FIXTURE_LOG':str(log)}
+                        result=subprocess.run(['/bin/bash', '-c', block], env=environment, capture_output=True)
+                        self.assertEqual(result.returncode==0, mode=='valid', result.stderr.decode())
+                        expected=['download'] if mode=='download-error' else ['download','checksum']
+                        if mode=='valid': expected.append('install')
+                        self.assertEqual(log.read_text().splitlines(), expected)
+                        self.assertEqual(list(temp.glob('photocraft-nfpm.*')), [], 'Remove only the owned download directory')
+
     def test_privileged_workflow_actions_are_immutable(self):
         root = Path(__file__).resolve().parents[2]
         for name in ["release.yml", "update-and-release.yml"]:
