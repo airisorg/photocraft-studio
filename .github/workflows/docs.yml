@@ -27,12 +27,11 @@ concurrency:
 
 jobs:
   build:
-    if: github.event.pull_request.head.repo.full_name == github.repository
     name: mdBook build
-    runs-on: tofu-ci-2-core
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
       - name: Install mdBook
         run: cargo install mdbook --version 0.4.52 --locked
       - name: Build documentation
