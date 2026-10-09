@@ -61,9 +61,10 @@ class BrowserReadiness(browser_tests.BrowserAcceptance):
                        'true' if self._testMethodName.startswith('test_35') else 'false'))
         return super().load(page, query, expected_document)
 
-    def open_more_copy(self, more, label, page=None):
-        if self._testMethodName != 'test_conflict_copy_waits_for_menu_frame':
-            return super().open_more_copy(more, label, page)
+    def open_more_target(self, more, label, row, page=None):
+        if self._testMethodName not in {'test_conflict_copy_waits_for_menu_frame',
+                                        'test_22_sharing_comments_and_history_controls'}:
+            return super().open_more_target(more, label, row, page)
         page = page or self.page
         # Hold a real native frame before the More click. Both clicks in the old
         # fixed-200-ms sequence would arrive before the popup exists. Only RAF
@@ -80,12 +81,25 @@ class BrowserReadiness(browser_tests.BrowserAcceptance):
           window.__releaseMenuFrame = () => {
             if (restored) return;
             restored = true;
+            proof.releasedAt = performance.now();
             window.requestAnimationFrame = original;
             if (proof.startedAt !== undefined)
               proof.releasedAfterMs = performance.now() - proof.startedAt;
             for (const callback of held.splice(0)) original(callback);
           };
         }''')
+        if self._testMethodName == 'test_22_sharing_comments_and_history_controls':
+            page.evaluate(r"""() => {
+              const original = window.fetch.bind(window);
+              window.fetch = (...args) => {
+                const input = args[0];
+                const url = new URL(typeof input === 'string' ? input : input.url, location.href);
+                const method = (args[1]?.method || input.method || 'GET').toUpperCase();
+                if (method === 'GET' && /^\/api\/projects\/[^/]+\/versions$/.test(url.pathname))
+                  (window.__ciMenuFrame.historyRequests ||= []).push(performance.now());
+                return original(...args);
+              };
+            }""")
         try:
             page.mouse.move(0, 0)
             page.wait_for_function('window.__ciMenuFrame.heldFrames > 0', polling=25, timeout=3000)
@@ -93,19 +107,29 @@ class BrowserReadiness(browser_tests.BrowserAcceptance):
               window.__ciMenuFrame.startedAt = performance.now();
               setTimeout(window.__releaseMenuFrame, 750);
             }''')
-            return super().open_more_copy(more, label, page)
+            return super().open_more_target(more, label, row, page)
         finally:
             observation = page.evaluate('''() => {
               window.__releaseMenuFrame();
               const {heldFrames, releasedAfterMs} = window.__ciMenuFrame;
               return {heldFrames, releasedAfterMs};
             }''')
-            (browser_tests.ARTIFACTS/'conflict-menu-frame-delay.json').write_text(
+            filename = 'history-menu-frame-delay.json' if row == 4 else 'conflict-menu-frame-delay.json'
+            (browser_tests.ARTIFACTS/filename).write_text(
                 json.dumps(observation, indent=2)+'\n')
             self.assertGreater(observation['heldFrames'], 0, 'No native popup frame was held')
             self.assertIsNotNone(observation['releasedAfterMs'])
             self.assertGreaterEqual(observation['releasedAfterMs'], 750,
-                                    'The native frame must remain delayed beyond the old 200 ms click')
+                                    'The native frame must remain delayed beyond the old fixed click')
+
+    def test_22_sharing_comments_and_history_controls(self):
+        super().test_22_sharing_comments_and_history_controls()
+        observation = self.page.evaluate('window.__ciMenuFrame')
+        (browser_tests.ARTIFACTS/'history-menu-request-order.json').write_text(
+            json.dumps(observation, indent=2)+'\n')
+        self.assertEqual(len(observation.get('historyRequests', [])), 1)
+        self.assertGreater(observation['historyRequests'][0], observation['releasedAt'],
+                           'History must be requested after the held native popup frame is released')
 
     def test_conflict_copy_waits_for_menu_frame(self):
         super().test_13_conflicting_browser_edits_preserve_a_copy()
