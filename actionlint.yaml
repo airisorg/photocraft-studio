@@ -1,0 +1,6 @@
+# The airisorg brain-managed fleet's runner labels (shared across all org repos;
+# see airisorg/.github's fleet-job.yml for the one-line contract).
+self-hosted-runner:
+  labels:
+    - tofu-ci-8-core
+    - tofu-ci-2-core
