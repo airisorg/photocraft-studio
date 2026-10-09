@@ -1801,17 +1801,15 @@ class BrowserAcceptance(unittest.TestCase):
         # The stale invite's first GET is deliberately ignored. Returning to A
         # starts a fresh current-generation GET before its native row is painted.
         current, controls = self.wait_rendered(refreshed_members, 'invitation-returned-a-old-result-ignored')
-        held[0].fulfill(json={'ok': True})
-        self.page.wait_for_timeout(450)
-        current = picture('invitation-returned-a-old-result-ignored.png')
-        controls = sharing_invitation_controls(current)
         self.assertEqual(len(controls['roles']), 2, 'Completing the old write must refresh actual project membership')
         pixels = current.load()
         status_ink = sum(max(abs(a-b) for a, b in zip(pixels[x,y], controls['background'])) > 40
                          for y in range(controls['send'][3]+4, controls['roles'][1][1])
                          for x in range(controls['send'][0], controls['email'][2]+120))
         self.assertLess(status_ink, 10, 'An old invitation result appeared in the reopened project dialog')
-        click(controls['send'])
+        with self.page.expect_request(lambda request: request.url == member_path.replace('/members', '/invite')
+                                      and request.method == 'POST'):
+            click(controls['send'])
         self.assertEqual(len(held), 2, 'An old success cleared the newly typed address')
         self.assertEqual(held[1].request.post_data_json['email'], email)
         held[1].fulfill(status=502, json={'error': 'Synthetic retry stopped; no email was sent'})
@@ -2091,8 +2089,6 @@ class BrowserAcceptance(unittest.TestCase):
             self.page.wait_for_timeout(250)
             rect = workspace_template_previews(picture('copy-template-gallery.png'), has_quick_actions=False)[0]
             self.open_template_preview(rect, 'same-session-template')
-            self.page.mouse.click((rect[0]+rect[2])/2, (rect[1]+rect[3])/2)
-            self.page.wait_for_timeout(650)
             self.assertIsNotNone(self.inspect()['document'])
 
         def wait_saved(pid):
@@ -2210,7 +2206,6 @@ class BrowserAcceptance(unittest.TestCase):
             self.page.keyboard.type(title)
             self.page.wait_for_timeout(150)
             rect = self.wait_rendered(workspace_project_card, 'project-open-search-card')['preview']
-            rect = workspace_project_card(Image.open(io.BytesIO(self.page.screenshot())))['preview']
             self.page.mouse.click((rect[0]+rect[2])/2, (rect[1]+rect[3])/2)
             self.page.wait_for_timeout(150)
             return rect
@@ -2229,9 +2224,11 @@ class BrowserAcceptance(unittest.TestCase):
                 picture(f'project-open-{outcome}-duplicate-pending.png')
                 self.assertEqual(len(held), 1, 'The same pending card started duplicate downloads')
                 choose('Async project B')
-                self.page.wait_for_timeout(650)
+                self.wait_cloud_body('/api/projects/'+projects[1]+'/content', f'project-open-{outcome}-b')
+                self.wait_opened_document(self.page, expected_b)
                 self.assertEqual(self.inspect()['document']['width'], 422)
                 before = picture(f'project-open-{outcome}-b-current.png')
+                body_count = self.cloud_body_count()
                 if outcome == 'success':
                     held[0].fulfill(response=held[0].fetch())
                 else:
@@ -2240,7 +2237,6 @@ class BrowserAcceptance(unittest.TestCase):
                                      f'project-open-{outcome}-late-a', after=body_count,
                                      status=200 if outcome == 'success' else 503)
                 self.wait_opened_document(self.page, expected_b)
-                self.page.wait_for_timeout(650)
                 after = picture(f'project-open-{outcome}-a-ignored.png')
                 self.assertEqual(self.inspect()['document']['width'], 422, 'An older open replaced the more recent project choice')
                 footer = (0, before.height-27, 1100, before.height)
@@ -2305,7 +2301,8 @@ class BrowserAcceptance(unittest.TestCase):
 
         def menu_action(offset):
             card = self.wait_rendered(workspace_project_card, 'project-list-menu-card')
-            self.open_project_card_menu(card, f'project-list-menu-{offset}')
+            self.page.mouse.click(card['card'][2]-32, card['preview'][3]+28)
+            self.page.wait_for_timeout(100)
             with self.page.expect_response(lambda r: r.url == BASE+'/api/projects/'+pid and r.request.method == 'PATCH') as changed:
                 self.page.mouse.click(card['card'][2]+5, card['preview'][3]+offset)
             self.assertTrue(changed.value.ok)
@@ -2331,18 +2328,26 @@ class BrowserAcceptance(unittest.TestCase):
                     self.page.wait_for_timeout(25)
                 self.assertEqual(len(held), index+1)
                 self.assertEqual(next(p for p in stale[-1] if p['id'] == pid)['trashed'], not trashed)
-                with self.page.expect_response(lambda r: r.url == BASE+'/api/projects' and r.request.method == 'GET'):
+                body_count = self.cloud_body_count()
+                with self.page.expect_response(lambda r: r.url == BASE+'/api/projects' and r.request.method == 'GET') as listed:
                     menu_action(223)  # Trash/restore produces a newer list response.
+                self.assertTrue(listed.value.ok)
+                self.assertEqual(next(p for p in listed.value.json() if p['id'] == pid)['trashed'], trashed)
+                self.wait_cloud_body('/api/projects', f'project-list-{trashed}-current', after=body_count,
+                                     project=pid, trashed=trashed)
                 self.page.mouse.move(0, 0)
-                self.page.wait_for_timeout(200)
+                empty = self.wait_rendered(empty_workspace, f'project-list-{trashed}-empty-ready')
                 before = picture(f'project-list-trashed-{trashed}-current.png')
                 with self.assertRaises(AssertionError):
                     workspace_project_card(before)
+                body_count = self.cloud_body_count()
                 held[-1].fulfill(json=stale[-1])
-                self.page.wait_for_timeout(250)
+                self.wait_cloud_body('/api/projects', f'project-list-{trashed}-stale', after=body_count,
+                                     project=pid, trashed=not trashed)
                 after = picture(f'project-list-trashed-{trashed}-stale-ignored.png')
                 with self.assertRaises(AssertionError, msg='An old list response restored a card removed by a newer mutation'):
                     workspace_project_card(after)
+                self.assertEqual(empty_workspace(after), empty, 'An old list changed the actual completed empty panel')
                 self.assertEqual(next(p for p in self.projects() if p['id'] == pid)['trashed'], trashed)
 
 
@@ -3038,8 +3043,6 @@ class BrowserAcceptance(unittest.TestCase):
         self.page.wait_for_timeout(250)
         rect = workspace_template_previews(picture('inactive-save-template-gallery'), has_quick_actions=False)[0]
         self.open_template_preview(rect, 'inactive-save-template')
-        self.page.mouse.click((rect[0]+rect[2])/2, (rect[1]+rect[3])/2)
-        self.page.wait_for_timeout(650)
         second_document = self.inspect()['document']
         self.assertNotEqual(second_document['width'], 515)
         count = len(self.projects())
