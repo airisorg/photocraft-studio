@@ -19,7 +19,7 @@ concurrency:
 
 jobs:
   lint:
-    runs-on: tofu-ci-2-core
+    runs-on: ubuntu-latest
     env:
       ACTIONLINT_VERSION: 1.7.12
     steps:
