@@ -329,6 +329,90 @@ class BrowserAcceptance(unittest.TestCase):
         page.screenshot(path=str(ARTIFACTS/'session-project-open-timeout.png'))
         self.fail(f'The expected native cloud document did not open: {document}')
 
+    def observe_cloud_body_reads(self, page=None):
+        # gloo-net consumes JSON via Response.text and binary via arrayBuffer.
+        # Observe the actual response methods, not a clone or response headers.
+        (page or self.page).evaluate(r"""() => {
+          if (window.__cloudBodyReads) return;
+          const original = window.fetch.bind(window);
+          window.__cloudBodyReads = [];
+          window.fetch = async (...args) => {
+            const input = args[0];
+            const url = new URL(typeof input === 'string' ? input : input.url, location.href);
+            const method = (args[1]?.method || input.method || 'GET').toUpperCase();
+            const response = await original(...args);
+            if (method !== 'GET' || !/^\/api\/projects(?:\/[^/]+(?:\/content)?)?$/.test(url.pathname)) return response;
+            const row = {path: url.pathname, status: response.status};
+            window.__cloudBodyReads.push(row);
+            for (const name of ['text', 'arrayBuffer']) {
+              const read = response[name].bind(response);
+              response[name] = async () => {
+                const value = await read();
+                row.bodyUsed = response.bodyUsed;
+                row.bytes = typeof value === 'string' ? new TextEncoder().encode(value).length : value.byteLength;
+                if (name === 'text') { try { row.value = JSON.parse(value); } catch (_) {} }
+                row.consumedAt = performance.now();
+                return value;
+              };
+            }
+            return response;
+          };
+        }""")
+
+    def cloud_body_count(self, page=None):
+        return (page or self.page).evaluate('window.__cloudBodyReads.length')
+
+    def wait_cloud_body(self, path, label, *, after=0, status=200, project=None, trashed=None, page=None):
+        page = page or self.page
+        predicate = """wanted => window.__cloudBodyReads.slice(wanted.after).some(row =>
+          row.path === wanted.path && row.status === wanted.status && row.bodyUsed && row.consumedAt !== undefined &&
+          (wanted.project === null || (Array.isArray(row.value) && row.value.some(project =>
+            project.id === wanted.project && project.trashed === wanted.trashed))))"""
+        wanted = {'path': path, 'after': after, 'status': status, 'project': project, 'trashed': trashed}
+        deadline = time.monotonic()+10
+        ready = page.evaluate(predicate, wanted)
+        while not ready and time.monotonic() < deadline:
+            page.wait_for_timeout(50)
+            ready = page.evaluate(predicate, wanted)
+        self.assertTrue(ready, 'The application did not consume the expected response body')
+        # ui.inspect is drained in app.logic before cloud.update. Advance two
+        # actual native frames after body completion before testing stale state.
+        first = self.inspect(page)['frame']
+        deadline = time.monotonic()+10
+        current = first
+        while current < first+2 and time.monotonic() < deadline:
+            current = self.inspect(page)['frame']
+        self.assertGreaterEqual(current, first+2, 'The native app did not process frames after the response body')
+        rows = page.evaluate("""after => window.__cloudBodyReads.slice(after).map(({path, status, bytes, bodyUsed, consumedAt}) =>
+          ({path, status, bytes, bodyUsed, consumedAt}))""", after)
+        (ARTIFACTS/(label+'-body-read.json')).write_text(json.dumps(
+            {'responses': rows, 'first_frame': first, 'assertion_frame': current}, indent=2)+'\n')
+
+    def open_template_preview(self, rect, label):
+        with self.page.expect_response(lambda response: '/templates/' in response.url
+                                       and response.url.endswith('.pcraft') and response.request.method == 'GET') as opened:
+            self.page.mouse.click((rect[0]+rect[2])/2, (rect[1]+rect[3])/2)
+        self.assertTrue(opened.value.ok, 'The actual template download failed')
+        data = opened.value.body()
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            expected = json.loads(archive.read('manifest.json'))['document']
+        # Engine inspection enumerates the native layer stack top-to-bottom,
+        # the reverse of the file's bottom-to-top manifest order.
+        layers = [(layer['id'], layer['name']) for layer in reversed(expected['layers'])]
+        deadline = time.monotonic()+10
+        document = None
+        while time.monotonic() < deadline:
+            document = self.inspect()['document']
+            if (document is not None and document['name'] == expected['name']
+                and (document['width'], document['height']) == (expected['size']['width'], expected['size']['height'])
+                and [(layer['id'], layer['name']) for layer in document['layers']] == layers):
+                self.assertIn(document['activeLayer'], [layer[0] for layer in layers])
+                self.page.screenshot(path=str(ARTIFACTS/(label+'-opened.png')))
+                return document
+            self.page.wait_for_timeout(50)
+        self.page.screenshot(path=str(ARTIFACTS/(label+'-timeout.png')))
+        self.fail('The downloaded template did not become the expected active native document')
+
     def test_01_workspace_new_canvas_button(self):
         self.assertEqual(self.page.title(), 'PhotoCraft Studio — Browser Image Editor')
         self.click_workspace_action('Create a design')
@@ -1669,17 +1753,37 @@ class BrowserAcceptance(unittest.TestCase):
                                                data={'email': email, 'role': 'edit'}).ok)
         self.db.execute('INSERT INTO photocraft.invitation_deliveries(id,project_id,sender_id,email,status) VALUES(%s,%s,%s,%s,%s)',
                         (str(uuid.uuid4()), first['id'], self.accounts[-1], email, 'sent'))
-        held[0].fulfill(json={'ok': True})
-        self.page.wait_for_timeout(450)
-        current = picture('invitation-returned-a-old-result-ignored.png')
-        controls = sharing_invitation_controls(current)
+        with self.page.expect_response(lambda response: response.url == member_path
+                                       and response.request.method == 'GET') as refreshed:
+            held[0].fulfill(json={'ok': True})
+        self.assertTrue(refreshed.value.ok)
+        self.assertTrue(any(member['email'] == email and member['role'] == 'edit'
+                            for member in refreshed.value.json()))
+
+        previous_geometry = None
+
+        def refreshed_members(image):
+            nonlocal previous_geometry
+            controls = sharing_invitation_controls(image)
+            self.assertEqual(len(controls['roles']), 2,
+                             'The refreshed member role has not been painted yet')
+            geometry = (controls['email'], controls['send'], controls['roles'])
+            previous, previous_geometry = previous_geometry, geometry
+            self.assertEqual(geometry, previous, 'The sharing dialog is still recentering around its new member row')
+            return image.convert('RGB'), controls
+
+        # The stale invite's first GET is deliberately ignored. Returning to A
+        # starts a fresh current-generation GET before its native row is painted.
+        current, controls = self.wait_rendered(refreshed_members, 'invitation-returned-a-old-result-ignored')
         self.assertEqual(len(controls['roles']), 2, 'Completing the old write must refresh actual project membership')
         pixels = current.load()
         status_ink = sum(max(abs(a-b) for a, b in zip(pixels[x,y], controls['background'])) > 40
                          for y in range(controls['send'][3]+4, controls['roles'][1][1])
                          for x in range(controls['send'][0], controls['email'][2]+120))
         self.assertLess(status_ink, 10, 'An old invitation result appeared in the reopened project dialog')
-        click(controls['send'])
+        with self.page.expect_request(lambda request: request.url == member_path.replace('/members', '/invite')
+                                      and request.method == 'POST'):
+            click(controls['send'])
         self.assertEqual(len(held), 2, 'An old success cleared the newly typed address')
         self.assertEqual(held[1].request.post_data_json['email'], email)
         held[1].fulfill(status=502, json={'error': 'Synthetic retry stopped; no email was sent'})
@@ -1958,8 +2062,7 @@ class BrowserAcceptance(unittest.TestCase):
             self.page.mouse.click(100, 199)
             self.page.wait_for_timeout(250)
             rect = workspace_template_previews(picture('copy-template-gallery.png'), has_quick_actions=False)[0]
-            self.page.mouse.click((rect[0]+rect[2])/2, (rect[1]+rect[3])/2)
-            self.page.wait_for_timeout(650)
+            self.open_template_preview(rect, 'same-session-template')
             self.assertIsNotNone(self.inspect()['document'])
 
         def wait_saved(pid):
@@ -2061,6 +2164,8 @@ class BrowserAcceptance(unittest.TestCase):
                 self.page.wait_for_timeout(100)
             self.assertTrue(self.context.request.patch(BASE+'/api/projects/'+pid, headers={'Origin': BASE}, data={'title': title}).ok)
             projects.append(pid)
+        expected_b = self.inspect()['document']
+        self.assertEqual((expected_b['width'], expected_b['height']), (422, 280))
 
         def picture(name):
             data = self.page.screenshot(scale='css')
@@ -2074,7 +2179,7 @@ class BrowserAcceptance(unittest.TestCase):
             self.page.keyboard.press('ControlOrMeta+A')
             self.page.keyboard.type(title)
             self.page.wait_for_timeout(150)
-            rect = workspace_project_card(Image.open(io.BytesIO(self.page.screenshot())))['preview']
+            rect = self.wait_rendered(workspace_project_card, 'project-open-search-card')['preview']
             self.page.mouse.click((rect[0]+rect[2])/2, (rect[1]+rect[3])/2)
             self.page.wait_for_timeout(150)
             return rect
@@ -2083,6 +2188,7 @@ class BrowserAcceptance(unittest.TestCase):
             with self.subTest(late_response=outcome):
                 self.context.unroute(BASE+'/api/projects/'+projects[0])
                 self.load(self.page)
+                self.observe_cloud_body_reads()
                 held = []
                 self.context.route(BASE+'/api/projects/'+projects[0], lambda route: held.append(route))
                 rect = choose('Async project A')
@@ -2092,14 +2198,19 @@ class BrowserAcceptance(unittest.TestCase):
                 picture(f'project-open-{outcome}-duplicate-pending.png')
                 self.assertEqual(len(held), 1, 'The same pending card started duplicate downloads')
                 choose('Async project B')
-                self.page.wait_for_timeout(650)
+                self.wait_cloud_body('/api/projects/'+projects[1]+'/content', f'project-open-{outcome}-b')
+                self.wait_opened_document(self.page, expected_b)
                 self.assertEqual(self.inspect()['document']['width'], 422)
                 before = picture(f'project-open-{outcome}-b-current.png')
+                body_count = self.cloud_body_count()
                 if outcome == 'success':
                     held[0].fulfill(response=held[0].fetch())
                 else:
                     held[0].fulfill(status=503, json={'error': 'Synthetic superseded project failure'})
-                self.page.wait_for_timeout(650)
+                self.wait_cloud_body('/api/projects/'+projects[0]+('/content' if outcome == 'success' else ''),
+                                     f'project-open-{outcome}-late-a', after=body_count,
+                                     status=200 if outcome == 'success' else 503)
+                self.wait_opened_document(self.page, expected_b)
                 after = picture(f'project-open-{outcome}-a-ignored.png')
                 self.assertEqual(self.inspect()['document']['width'], 422, 'An older open replaced the more recent project choice')
                 footer = (0, before.height-27, 1100, before.height)
@@ -2114,6 +2225,7 @@ class BrowserAcceptance(unittest.TestCase):
         self.return_to_workspace()
         self.page.mouse.click(100, 249)
         self.page.wait_for_timeout(200)
+        self.observe_cloud_body_reads()
         held, stale = [], []
         phase = {'hold': False}
 
@@ -2132,8 +2244,32 @@ class BrowserAcceptance(unittest.TestCase):
             (ARTIFACTS/name).write_bytes(data)
             return Image.open(io.BytesIO(data)).convert('RGB')
 
+        def empty_workspace(image):
+            # The two native empty-state captions occupy the first panel below
+            # search. A pending-list spinner has only one caption and must not
+            # satisfy the no-resurrection assertion merely by hiding all cards.
+            search = workspace_controls(image)['search']
+            crop = image.convert('RGB').crop((search[0]+20, search[3]+24,
+                                               image.width-36, search[3]+120))
+            pixels = crop.load()
+            rows = [y for y in range(crop.height)
+                    if sum(max(pixels[x, y]) < 170 for x in range(crop.width)) >= 3]
+            bands = []
+            for y in rows:
+                if not bands or y-bands[-1][-1] > 2:
+                    bands.append([y])
+                else:
+                    bands[-1].append(y)
+            self.assertEqual(len(bands), 2, 'The completed native empty-state title and help must be painted')
+            for band in bands:
+                self.assertGreaterEqual(len(band), 8)
+                self.assertLessEqual(band[-1]-band[0]+1, 24)
+            with self.assertRaises(AssertionError):
+                workspace_project_card(image)
+            return crop.tobytes()
+
         def menu_action(offset):
-            card = workspace_project_card(Image.open(io.BytesIO(self.page.screenshot())))
+            card = self.wait_rendered(workspace_project_card, 'project-list-menu-card')
             self.page.mouse.click(card['card'][2]-32, card['preview'][3]+28)
             self.page.wait_for_timeout(100)
             with self.page.expect_response(lambda r: r.url == BASE+'/api/projects/'+pid and r.request.method == 'PATCH') as changed:
@@ -2145,24 +2281,33 @@ class BrowserAcceptance(unittest.TestCase):
             with self.subTest(trashed=trashed):
                 if not trashed:
                     self.load(self.page)  # Give this subcase its authoritative current trash state.
+                    self.observe_cloud_body_reads()
                     self.page.mouse.click(100, 399)
                     self.page.wait_for_timeout(150)
                 phase['hold'] = True
                 menu_action(185)  # Star/unstar starts a real list refresh with the old trash state.
                 self.assertEqual(len(held), index+1)
                 self.assertEqual(next(p for p in stale[-1] if p['id'] == pid)['trashed'], not trashed)
-                with self.page.expect_response(lambda r: r.url == BASE+'/api/projects' and r.request.method == 'GET'):
+                body_count = self.cloud_body_count()
+                with self.page.expect_response(lambda r: r.url == BASE+'/api/projects' and r.request.method == 'GET') as listed:
                     menu_action(223)  # Trash/restore produces a newer list response.
+                self.assertTrue(listed.value.ok)
+                self.assertEqual(next(p for p in listed.value.json() if p['id'] == pid)['trashed'], trashed)
+                self.wait_cloud_body('/api/projects', f'project-list-{trashed}-current', after=body_count,
+                                     project=pid, trashed=trashed)
                 self.page.mouse.move(0, 0)
-                self.page.wait_for_timeout(200)
+                empty = self.wait_rendered(empty_workspace, f'project-list-{trashed}-empty-ready')
                 before = picture(f'project-list-trashed-{trashed}-current.png')
                 with self.assertRaises(AssertionError):
                     workspace_project_card(before)
+                body_count = self.cloud_body_count()
                 held[-1].fulfill(json=stale[-1])
-                self.page.wait_for_timeout(250)
+                self.wait_cloud_body('/api/projects', f'project-list-{trashed}-stale', after=body_count,
+                                     project=pid, trashed=not trashed)
                 after = picture(f'project-list-trashed-{trashed}-stale-ignored.png')
                 with self.assertRaises(AssertionError, msg='An old list response restored a card removed by a newer mutation'):
                     workspace_project_card(after)
+                self.assertEqual(empty_workspace(after), empty, 'An old list changed the actual completed empty panel')
                 self.assertEqual(next(p for p in self.projects() if p['id'] == pid)['trashed'], trashed)
 
 
@@ -2789,8 +2934,7 @@ class BrowserAcceptance(unittest.TestCase):
         self.page.mouse.click(100, 199)
         self.page.wait_for_timeout(250)
         rect = workspace_template_previews(picture('inactive-save-template-gallery'), has_quick_actions=False)[0]
-        self.page.mouse.click((rect[0]+rect[2])/2, (rect[1]+rect[3])/2)
-        self.page.wait_for_timeout(650)
+        self.open_template_preview(rect, 'inactive-save-template')
         second_document = self.inspect()['document']
         self.assertNotEqual(second_document['width'], 515)
         count = len(self.projects())

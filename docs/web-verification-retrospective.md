@@ -3,6 +3,31 @@
 2026-10-07. This is an open acceptance plan, not a declaration of complete Figma, Canva,
 Photoshop, or native PhotoCraft parity. The web adapter must preserve the original editor.
 
+## Demo purpose and asynchronous completion — 2026-10-09
+
+The original collaboration poster demonstrated synchronized marks but did not give a
+viewer a useful creative story. The replacement develops an original roller-night
+poster: typography and composition from one editor, hand-drawn details from the other,
+then a matching saved result after reload. All artwork uses native PhotoCraft layers and
+tools. Review covers readable framing, complete footers, meaningful actions, accurate
+captions, original speed and decoded motion around preview/save/reopen boundaries.
+Local controlled-account footage remains distinct from hosted or inbox acceptance.
+
+Linux CI also exposed an invitation test that inspected membership before the current
+refresh arrived. Controlled real-response probes reproduced that failure and the native
+dialog’s subsequent recentering. A server-side grant and an HTTP response header do not
+prove that the user can see and click the finished control. The corrected prerequisite
+awaits a successful response, the actual member row, stable native geometry and the next
+request; the original draft, role and stale-banner assertions remain.
+
+The same audit found project-switch/list assertions running before delayed bodies arrived,
+including passes that had not yet exercised the late result. Template assertions also
+ran before the real native file arrived. Preserve the failing traces, delay the correct
+real body without changing its status or contents, await consumption and the resulting
+native state, then run the original persistence and isolation assertions. Test pacing
+cannot replace an explicit completion boundary. Focused local regressions and the final
+exact-revision CI gate are separate evidence; a local pass does not clear a failed run.
+
 ## Why the defects escaped
 
 The release evidence was too narrow for the claims being made. Build success, an HTTP 200,
