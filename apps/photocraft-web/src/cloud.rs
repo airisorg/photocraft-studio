@@ -1728,6 +1728,7 @@ impl Cloud {
                             self.project_data(&ctx, &b.id, "members", format!("/api/projects/{}/members", b.id));
                         }
                         let can_save = !self.session_paused() && !self.busy && self.pending_document.is_none() && app.session.active().is_some();
+                        let can_save = !self.session_paused() && !self.busy && app.session.active().is_some();
                         let retry_save = self.user.is_some()
                             && binding.as_ref().is_none_or(|b| b.can_edit())
                             && (self.error || binding.as_ref().is_some_and(|b| b.revision == 0));
@@ -1770,6 +1771,7 @@ impl Cloud {
                                 }
                             }
                             if ui.add_enabled(can_save, egui::Button::new("Save a copy")).clicked() {
+                            if ui.add_enabled(!self.session_paused(), egui::Button::new("Save a copy")).clicked() {
                                 self.save(app, &ctx, true);
                                 ui.close();
                             }
@@ -2088,17 +2090,10 @@ impl Cloud {
                     if items.is_empty() {
                         egui::Frame::new().fill(t.card).corner_radius(t.radius_lg).inner_margin(24).show(ui, |ui| {
                             ui.set_min_width((ui.available_width() - 48.).max(100.));
-                            if self.user.is_some() && self.projects_loading {
-                                ui.horizontal(|ui| {
-                                    ui.spinner();
-                                    ui.label(RichText::new("Loading your projects…").size(18.).strong().color(home::INK));
-                                });
-                            } else {
-                                let (title, help) = home::empty_message(&self.filter, !self.search.trim().is_empty(), self.user.is_some());
-                                ui.label(RichText::new(title).size(18.).strong().color(home::INK));
-                                home::vertical_gap(ui, home::RELATED_GAP);
-                                ui.label(RichText::new(help).color(home::MUTED));
-                            }
+                            let (title, help) = home::empty_message(&self.filter, !self.search.trim().is_empty(), self.user.is_some());
+                            ui.label(RichText::new(title).size(18.).strong().color(home::INK));
+                            home::vertical_gap(ui, home::RELATED_GAP);
+                            ui.label(RichText::new(help).color(home::MUTED));
                         });
                     }
                     let cols = home::grid_columns(ui.available_width(), 240., 6);

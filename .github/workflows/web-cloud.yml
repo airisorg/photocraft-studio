@@ -18,6 +18,7 @@ jobs:
     # Cold compilation consumes about 32 minutes before the complete browser,
     # collaboration and packaging suites start. Keep the full suite bounded.
     timeout-minutes: 120
+    timeout-minutes: 45
     services:
       postgres:
         image: postgres:16
@@ -125,6 +126,7 @@ jobs:
           python tests/web/test_workspace_loading.py -f
           python tests/web/test_browser_readiness.py -f
           python tests/web/test_browser.py -f
+          python tests/web/test_browser.py
           PHOTOCRAFT_PAINT_CALIBRATION=1 python -m unittest discover -s tests/web -p test_paint_latency.py
           python tests/web/test_live_browser.py
           python tests/web/benchmark_live_collaboration.py --samples 3 --latency-ms 0 50 100 --output test-results/live-paint.json --context 'GitHub shared runner; no owned parallel build; other host contention unknown'
