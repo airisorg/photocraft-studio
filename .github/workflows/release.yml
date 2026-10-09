@@ -375,9 +375,15 @@ jobs:
           key: release-web
       - name: Install trunk
         run: |
-          curl -fsSL "https://github.com/trunk-rs/trunk/releases/download/v${TRUNK_VERSION}/trunk-x86_64-unknown-linux-gnu.tar.gz" \
-            | tar -xz -C "$HOME/.cargo/bin" trunk
-          trunk --version
+          set -eu
+          trunk_dir=$(mktemp -d "$RUNNER_TEMP/photocraft-trunk.XXXXXX")
+          trap 'rm -rf -- "$trunk_dir"' EXIT HUP INT TERM
+          curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL --connect-timeout 15 --max-time 120 --max-filesize 16777216 \
+            --output "$trunk_dir/trunk.tar.gz" \
+            "https://github.com/trunk-rs/trunk/releases/download/v${TRUNK_VERSION}/trunk-x86_64-unknown-linux-gnu.tar.gz"
+          printf '%s  %s\n' 'f2b4680cd239693a646a2795e4633c625328d7b2a044fbe749fa3a2fe9e7036b' "$trunk_dir/trunk.tar.gz" | sha256sum --check --status
+          tar -xzf "$trunk_dir/trunk.tar.gz" -C "$HOME/.cargo/bin" trunk
+          "$HOME/.cargo/bin/trunk" --version
       - name: Apply version override
         if: inputs.version != ''
         run: cargo xtask version set "$PHOTOCRAFT_VERSION"

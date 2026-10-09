@@ -158,7 +158,7 @@ The remapped artifact above has zero home-path matches; every browser and hardwa
 timing gate was rerun against its exact hash. Earlier receipts remain retained as
 superseded evidence rather than being attributed to the replacement artifact.
 
-## Publication boundary
+## Publication boundary from the earlier review
 
 Gitleaks inspected 412 reachable commits and found zero secrets before remediation. A separate object scan found eight historical restricted brand paths, three home-path-containing blob revisions across two repository paths, and 53 author email identities requiring manual review. The current restricted artwork was already removed; the current fork checkpoint path is now redacted. History remains unchanged.
 
@@ -187,5 +187,48 @@ The browser/cloud resolved Rust graphs now carry a verified notice bundle: 322 d
 The separate runtime bundle contains 13 files (501,723 bytes), preserving Rust 1.95.0 standard-library notices, compiler-builtins/libm licenses and pinned LLVM compiler-rt credits. The actual WASM producer and authentic text hashes are checked offline; the Docker build rejects a mismatched Rust release/source commit. Six runtime-notice regressions pass. Full toolchain redistribution, Debian base-image/system-library inventories and native installers remain separate distribution scopes.
 
 Provider-wide abuse controls, actual database/worker quotas, full RSS/slow-consumer limits, CSP compatibility, provider-account revocation mirroring, real invitation receipt and hosted two-user edit-to-render latency remain distinct acceptance items. Existing opaque app sessions last seven days; this review does not add a provider revocation feed. Supported live previews still have room/session/event bounds and do not provide general simultaneous editing or collaborative undo.
+
+## Source publication preparation — 2026-10-08
+
+This preparation changes publication tooling, tests, workflows and documentation.
+The Rust editor, HTTP service, renderer, assets and deployed browser build from
+`8177c2a` are unchanged. It is preparation for an early-alpha source release,
+not a new production-capacity or simultaneous-editing claim.
+
+Independent review found two weaknesses in the publication scan. Candidate-owned
+Gitleaks configuration and ignore files could hide a finding, and ordinary Git
+patch output omitted content introduced only by a merge resolution. The trusted
+checker now scans Git metadata with embedded rules, an owned empty ignore file,
+disabled inline exclusions and explicit raw merge diffs. External diff drivers
+and text conversion are disabled. Ten actual-scanner regressions exercise these
+boundaries, including linked worktrees and exact-commit scope. Preparation and
+promotion check the candidate before remote writes; the candidate cannot replace
+the preloaded checker.
+
+The scanner installer accepts only checksum-pinned Gitleaks 8.30.0 Linux x64
+release bytes, validates the archive and installs one regular binary into a new
+owned directory. CI checks full candidate ancestry from a complete checkout.
+The nfpm, Trunk and automatically downloaded AppImageTool binaries now have
+verified release checksums before installation or execution; cached AppImageTool
+bytes are verified too. Explicitly supplied or preinstalled tools remain the
+operator's responsibility. Privileged external Actions already use full commit
+IDs, verified against their official repositories.
+
+The combined local publication, upstream-update, installer and discovery suite
+passed 43 cases, with one PowerShell-only case skipped on macOS. The current
+backend passed 41 authentication, authorization, archive and startup checks, and
+seven live-handoff checks. Disposable workers and databases were removed without
+changing shared rows. These results are local evidence; exact-source GitHub and
+Linux container execution remain separate gates.
+
+An isolated history-filtered copy preserves the current source tree and contributor
+identities while excluding restricted historical artwork, temporary test output
+and personal path prefixes. The proposed publication uses a fresh repository and
+keeps the original repository, objects and Actions history private for recovery.
+No original repository history or visibility has been changed by this preparation.
+The final copy must pass its own full-history gate before publication; the owner
+must approve the repository transition. Automatic upstream updates remain disabled
+until a sanitized import path is implemented and reviewed, as described in the
+[update guide](upstream-updates.md).
 
 A successful local request benchmark is not a 1,000-user whole-application guarantee. Use errors, successful-request latency, scheduling lag, completion ratio, per-client progress, database contention and bytes together. Preserve every failed stage. The hosting deployment and a normal live journey require separate recorded evidence.
