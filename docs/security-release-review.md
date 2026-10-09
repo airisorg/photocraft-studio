@@ -239,3 +239,5 @@ workflow settings, then run its publication check before changing visibility.
 Historical artifacts stay in the private archive.
 
 A successful local request benchmark is not a 1,000-user whole-application guarantee. Use errors, successful-request latency, scheduling lag, completion ratio, per-client progress, database contention and bytes together. Preserve every failed stage. The hosting deployment and a normal live journey require separate recorded evidence.
+
+_Check re-armed on the scrubbed history; see multi-project-fleet.md for the fleet contract._
