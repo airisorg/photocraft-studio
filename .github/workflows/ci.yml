@@ -132,24 +132,20 @@ jobs:
 
   wasm:
     name: wasm32 check
+    runs-on: tofu-ci-8-core
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.source_ref || github.sha }}
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
         with:
-          key: corpus
-      - name: Restore test corpora
-        uses: actions/cache@v4
-        with:
-          path: corpus/
-          key: corpus-${{ hashFiles('xtask/src/corpus_pins.rs', 'xtask/*.sha256') }}
-      - name: Fetch and verify corpora
-        run: cargo xtask corpus --all
-      - name: Corpus tests
-        run: cargo xtask test-corpus
+          key: wasm32
+      - name: Check wasm-safe crates
+        run: cargo xtask wasm
 
   fuzz:
     name: fuzz (${{ matrix.target.crate }}/${{ matrix.target.name }})
