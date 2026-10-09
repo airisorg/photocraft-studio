@@ -157,7 +157,12 @@ class BrowserAcceptance(unittest.TestCase):
         self.db.execute('INSERT INTO photocraft.accounts(id,email,name) VALUES(%s,%s,%s)', (ident, ident+'@example.invalid', 'Browser tester'))
         self.db.execute('INSERT INTO photocraft.sessions(hash,account_id) VALUES(%s,%s)', (hashlib.sha256(token.encode()).hexdigest(), ident))
         self.context.add_cookies([{'name': 'pc_session', 'value': token, 'url': BASE, 'httpOnly': True, 'sameSite': 'Lax'}])
-        self.load(self.page)
+        # The native bridge can exist while /me is still pending. The app
+        # dispatches its authenticated project list only after adopting that user.
+        with self.page.expect_response(lambda r: r.url == BASE+'/api/projects' and r.request.method == 'GET',
+                                       timeout=20000) as listed:
+            self.load(self.page)
+        self.assertTrue(listed.value.ok, 'The browser did not finish authenticated workspace startup')
         return token
 
     def projects(self):
@@ -173,6 +178,53 @@ class BrowserAcceptance(unittest.TestCase):
                 return projects[0]
             self.page.wait_for_timeout(250)
         self.fail(f'Cloud revision {revision} never committed')
+
+    def wait_rendered(self, inspect_image, label, page=None, timeout=10000):
+        """Wait for the actual native control frame before sending its next input."""
+        page = page or self.page
+        deadline = time.monotonic()+timeout/1000
+        failure = None
+        while time.monotonic() < deadline:
+            picture = page.screenshot(scale='css')
+            try:
+                result = inspect_image(Image.open(io.BytesIO(picture)))
+                (ARTIFACTS/(label+'.png')).write_bytes(picture)
+                return result
+            except AssertionError as error:
+                failure = error
+            page.wait_for_timeout(50)
+        (ARTIFACTS/(label+'-timeout.png')).write_bytes(picture)
+        self.fail(f'{label} did not become ready: {failure}')
+
+    def save_first_project(self):
+        # Database revision visibility precedes delivery/processing of the save
+        # ACK. The browser's post-save list is dispatched by Message::Saved.
+        # Keep wait_revision a server-only helper for intentional delayed-ACK tests.
+        with self.page.expect_response(lambda r: r.url == BASE+'/api/projects' and r.request.method == 'GET',
+                                       timeout=20000) as listed:
+            self.page.mouse.click(1320, 32)
+            project = self.wait_revision(1)
+        self.assertTrue(listed.value.ok)
+        self.assertTrue(any(p['id'] == project['id'] and p['revision'] >= 1 for p in listed.value.json()))
+        self.wait_rendered(lambda image: assert_header_geometry(self, image, ['More', 'Comments', 'Save', 'Share']),
+                           'first-save-acknowledged')
+        return project
+
+    def open_sharing(self):
+        controls = self.wait_rendered(lambda image: assert_header_geometry(self, image, ['More', 'Comments', 'Save', 'Share']),
+                                      'sharing-header-ready')
+        share = controls[3]
+        with self.page.expect_response(lambda r: r.url.endswith('/members') and r.request.method == 'GET',
+                                       timeout=10000) as members:
+            self.page.mouse.click((share[0]+share[2])/2, (share[1]+share[3])/2)
+        self.assertTrue(members.value.ok)
+        expected_roles = 1+len(members.value.json())
+        def ready(image):
+            controls = sharing_invitation_controls(image)
+            self.assertEqual(len(controls['roles']), expected_roles,
+                             'The sharing form must paint its permission controls before input')
+            return controls
+        return self.wait_rendered(ready, 'sharing-dialog-ready')
 
     def auth_frame(self, label):
         data = self.page.screenshot(scale='css')
@@ -362,13 +414,11 @@ class BrowserAcceptance(unittest.TestCase):
     def test_08_public_view_opens_in_separate_browser(self):
         self.signed_in()
         self.new()
-        self.page.mouse.click(1320,32)
-        project = self.wait_revision(1)
+        project = self.save_first_project()
         response = self.context.request.post(BASE+f"/api/projects/{project['id']}/share", headers={'Origin':BASE})
         self.assertTrue(response.ok)
         key = response.json()['url'].split('share=')[1]
-        _, visitor = self.context_page('?share='+key)
-        visitor.wait_for_timeout(500)
+        _, visitor = self.context_page('?share='+key, expected_document=self.inspect()['document'])
         self.assertEqual(self.inspect(visitor)['document']['width'], 320)
         self.assertEqual(self.projects()[0]['revision'], 1)
 
@@ -473,8 +523,7 @@ class BrowserAcceptance(unittest.TestCase):
     def test_13_conflicting_browser_edits_preserve_a_copy(self):
         token = self.signed_in()
         self.new()
-        self.page.mouse.click(1320,32)
-        project = self.wait_revision(1)
+        project = self.save_first_project()
         other_context, second = self.context_page('?project='+project['id'], token=token,
                                                  expected_document=self.inspect()['document'])
         self.assertIsNotNone(self.inspect(second)['document'])
@@ -483,14 +532,18 @@ class BrowserAcceptance(unittest.TestCase):
         self.execute('edit.fill', {'color':'#0000ff'}, page=second)
         self.execute('edit.fill', {'color':'#ff0000'})
         self.wait_revision(2)
-        other_context.set_offline(False)
-        second.mouse.click(1258,32)
-        second.wait_for_timeout(2000)
+        with second.expect_response(lambda r: '/api/uploads/' in r.url and r.url.endswith('/commit')
+                                    and r.request.method == 'POST' and r.status == 409, timeout=20000):
+            other_context.set_offline(False)
+            second.mouse.click(1258,32)
+        def conflict_ready(image):
+            controls = assert_header_geometry(self, image, ['More', 'Comments', 'Retry save', 'Share'])
+            self.assertGreaterEqual(controls[2][2]-controls[2][0], 80, 'The conflict response has not painted Retry save')
+            return controls
+        more = self.wait_rendered(conflict_ready, 'conflict-ready', second)[0]
         self.assertTrue(self.inspect(second)['document']['canUndo'])
         self.assertEqual(self.projects()[0]['revision'], 2, 'A stale browser overwrote the saved document')
         second.screenshot(path=str(ARTIFACTS/'conflict-preserved.png'))
-        more = assert_header_geometry(self, Image.open(io.BytesIO(second.screenshot())),
-                                      ['More', 'Comments', 'Retry save', 'Share'])[0]
         second.mouse.click((more[0]+more[2])/2, (more[1]+more[3])/2)
         second.wait_for_timeout(200)
         second.mouse.click(more[0]+30, 64)
@@ -725,10 +778,8 @@ class BrowserAcceptance(unittest.TestCase):
     def test_22_sharing_comments_and_history_controls(self):
         self.signed_in()
         self.new(640,480)
-        self.page.mouse.click(1320,32)
-        project = self.wait_revision(1)
-        self.page.mouse.click(1328,32)
-        self.page.wait_for_timeout(200)
+        project = self.save_first_project()
+        self.open_sharing()
         self.page.mouse.click(850,406)
         self.page.wait_for_timeout(150)
         self.page.screenshot(path=str(ARTIFACTS/'share-role-dropdown.png'))
@@ -837,10 +888,8 @@ class BrowserAcceptance(unittest.TestCase):
     def test_26_sharing_window_blocks_canvas_painting(self):
         self.signed_in()
         self.new(640,480)
-        self.page.mouse.click(1320,32)
-        self.wait_revision(1)
-        self.page.mouse.click(1328,32)
-        self.page.wait_for_timeout(300)
+        self.save_first_project()
+        self.open_sharing()
         before=self.inspect()['document']['history']
         self.page.mouse.move(200,400)
         self.page.mouse.down()
@@ -887,14 +936,12 @@ class BrowserAcceptance(unittest.TestCase):
     def test_28_collaborator_permission_menu_and_escape(self):
         self.signed_in()
         self.new(640,480)
-        self.page.mouse.click(1320,32)
-        project=self.wait_revision(1)
+        project=self.save_first_project()
         path=BASE+'/api/projects/'+project['id']+'/members'
         self.assertTrue(self.context.request.put(path,headers={'Origin':BASE},
             data={'email':'collaborator@example.invalid','role':'edit'}).ok)
         self.page.wait_for_timeout(350)
-        self.page.mouse.click(1328,32)
-        self.page.wait_for_timeout(300)
+        self.open_sharing()
         self.page.mouse.click(850,470)
         self.page.wait_for_timeout(200)
         self.page.screenshot(path=str(ARTIFACTS/'member-access-menu.png'))

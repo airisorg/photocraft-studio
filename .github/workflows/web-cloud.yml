@@ -15,7 +15,9 @@ concurrency:
 jobs:
   acceptance:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # Cold compilation consumes about 32 minutes before the complete browser,
+    # collaboration and packaging suites start. Keep the full suite bounded.
+    timeout-minutes: 120
     services:
       postgres:
         image: postgres:16
@@ -116,7 +118,10 @@ jobs:
           python tests/web/test_archive_security.py
           python tests/web/test_renderer_startup.py
           python tests/web/test_discovery_browser.py
-          python tests/web/test_browser.py
+          # Report the first failed journey immediately instead of losing its
+          # traceback to a job timeout. A passing run still executes every case.
+          python tests/web/test_browser.py -f
+          python tests/web/test_browser_readiness.py -f
           PHOTOCRAFT_PAINT_CALIBRATION=1 python -m unittest discover -s tests/web -p test_paint_latency.py
           python tests/web/test_live_browser.py
           python tests/web/benchmark_live_collaboration.py --samples 3 --latency-ms 0 50 100 --output test-results/live-paint.json --context 'GitHub shared runner; no owned parallel build; other host contention unknown'
