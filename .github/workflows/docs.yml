@@ -27,6 +27,7 @@ concurrency:
 
 jobs:
   build:
+    if: github.event.pull_request.head.repo.full_name == github.repository
     name: mdBook build
     runs-on: tofu-ci-2-core
     steps:
