@@ -3,8 +3,14 @@
 This independent fork reuses the editor from
 [storytold/photocraft](https://github.com/storytold/photocraft), preserving its native engine,
 document model, codecs, tools, commands, and egui interface. This checkout retains upstream
-Git history and imports changes through Git merges; GitHub's fork metadata is not required.
+Git history and has an importer based on Git merges; GitHub's fork metadata is not required.
 Publishing that history requires the review described in [the security policy](../SECURITY.md).
+
+The public-source preparation excludes restricted historical artwork, temporary test
+output and private checkpoint paths. Filtering changes commit identifiers; it does not
+replace the editor or remove contributor credits. Keep the original repository private
+for recovery. A sanitized public history must not merge the original upstream ancestry
+back in: an approved sanitized import path is required before activating automatic updates.
 
 ## Boundaries that keep updates manageable
 
@@ -26,7 +32,12 @@ not instantaneous.
 
 1. Fetch `storytold/photocraft` main from its fixed upstream URL. Merge into an isolated
    candidate descended from our current main. Never replace our tree with upstream files.
-2. A conflict stops the run without changing main or the deployed branch. A candidate is
+2. A conflict stops the run without changing main or the deployed branch. Before any
+   candidate push, the trusted caller's publication checker scans that exact candidate
+   and its ancestors, including required notices and a successful Gitleaks scan. Missing
+   Gitleaks, private paths or restricted historical marks stop the push. The checker is
+   loaded before merging, so candidate code cannot replace it in the write-permission job.
+   Promotion repeats this check. A candidate is
    retained under `automation/upstream-*` when acceptance fails so it can be inspected.
 3. Call the existing CI and browser/cloud workflows at the candidate's full commit SHA:
    native tests on Linux/macOS/Windows, corpora, layering, WASM, lint, generated scorecard,
@@ -48,6 +59,11 @@ not instantaneous.
    keeps the prior live app.
 8. An unchanged scheduled check does not rebuild or redeploy. Successful candidates are
    removed after promotion; failed candidates remain for investigation.
+
+This ancestry importer intentionally refuses the original upstream history after public
+history sanitization. Keep `PHOTOCRAFT_UPSTREAM_UPDATES_ENABLED` unset until a sanitized
+upstream import has passed review and the same acceptance gates. The scheduler and tested
+promotion support remain in place; automatic upstream deployment is not currently enabled.
 
 Reusable workflows are called explicitly because a push made with `GITHUB_TOKEN` must not
 be assumed to trigger another workflow. Acceptance jobs have read permission and do not

@@ -12,9 +12,10 @@ def git(root, *args):
     return subprocess.check_output(["git", *args], cwd=root, stderr=subprocess.DEVNULL)
 
 
-def history(root):
+def history(root, ref=None):
     objects = {}
-    for line in git(root, "rev-list", "--objects", "--all").splitlines():
+    revisions = [ref] if ref else ["--all"]
+    for line in git(root, "rev-list", "--objects", *revisions).splitlines():
         fields = line.split(b" ", 1)
         if len(fields) == 2:
             objects.setdefault(fields[0], set()).add(fields[1])
@@ -56,18 +57,18 @@ def history(root):
         process.wait()
     if process.returncode:
         raise RuntimeError("Git object scan failed")
-    identities = set(git(root, "log", "--all", "--format=%ae").splitlines())
+    identities = set(git(root, "log", *revisions, "--format=%ae").splitlines())
     return {"textBlobCount": text_blobs, "personalHomePathBlobCount": home_blobs,
             "restrictedBrandPathCount": len(restricted), "authorIdentityCountForManualReview": len(identities)}
 
 
-def secrets(root):
+def secrets(root, ref=None):
     tool = shutil.which("gitleaks")
     if tool is None:
         return {"status": "unavailable", "findings": None}
     with tempfile.TemporaryDirectory() as temporary:
         report = Path(temporary)/"redacted.json"
-        result = subprocess.run([tool, "git", str(root), "--log-opts=--all", "--redact=100",
+        result = subprocess.run([tool, "git", str(root), "--log-opts=" + (ref or "--all"), "--redact=100",
                                  "--no-banner", "--no-color", "--report-format=json",
                                  "--report-path", str(report), "--timeout=180"],
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=200)
@@ -77,16 +78,25 @@ def secrets(root):
         return {"status": "checked", "findings": len(found)}
 
 
-def check(root):
+def check(root, ref=None):
     root = Path(root).resolve()
-    report = {"sourceCommit": git(root, "rev-parse", "HEAD").decode().strip(),
+    if ref is not None and not re.fullmatch(r"[0-9a-f]{40}", ref):
+        raise ValueError("Publication ref must be a full commit SHA")
+    report = {"sourceCommit": git(root, "rev-parse", ref or "HEAD").decode().strip(),
               "dirty": bool(git(root, "status", "--porcelain")),
-              "scope": "All locally reachable refs; values are intentionally redacted",
-              "history": history(root), "secrets": secrets(root)}
+              "scope": ("Exact candidate and its ancestors" if ref else "All locally reachable refs") + "; values are intentionally redacted",
+              "history": history(root, ref), "secrets": secrets(root, ref)}
     required = ["LICENSE-MIT", "LICENSE-APACHE", "NOTICE", "ATTRIBUTION.md", "SECURITY.md",
                 "assets/fonts/OFL-Inter.txt", "assets/fonts/OFL-JetBrainsMono.txt",
                 "assets/icons/LICENSE-lucide.txt", "assets/dict/LICENSE-SCOWL.txt"]
-    report["missingNoticeCount"] = sum(not (root/name).is_file() for name in required)
+    if ref:
+        # A tree/symlink at the right name is not a distributable notice file.
+        entries = [git(root, "ls-tree", ref, "--", name).split() for name in required]
+        report["missingNoticeCount"] = sum(not entry or entry[0] not in {b"100644", b"100755"}
+                                          or entry[1] != b"blob" for entry in entries)
+    else:
+        report["missingNoticeCount"] = sum(not (root/name).is_file() or (root/name).is_symlink()
+                                          for name in required)
     report["passed"] = (not report["dirty"] and report["missingNoticeCount"] == 0
                         and report["history"]["personalHomePathBlobCount"] == 0
                         and report["history"]["restrictedBrandPathCount"] == 0
@@ -98,8 +108,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[2])
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--ref", help="Full candidate SHA; default inspects every local ref")
     args = parser.parse_args()
-    result = check(args.root)
+    result = check(args.root, args.ref)
     encoded = json.dumps(result, indent=2)+"\n"
     if args.output:
         args.output.write_text(encoded)

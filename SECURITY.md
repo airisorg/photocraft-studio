@@ -1,5 +1,7 @@
 # Security reporting and release boundaries
 
+Modified by PhotoCraft Studio on 2026-10-08 to document this independent fork's reporting and release policy; upstream license and attribution notices remain unchanged.
+
 Please report a vulnerability privately to the repository maintainer. Use
 [GitHub private vulnerability reporting](https://github.com/airisorg/photocraft-studio/security/advisories/new)
 when that feature is enabled; otherwise contact the maintainer through their

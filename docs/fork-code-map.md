@@ -11,9 +11,15 @@ The original crates keep their names and layer boundaries. `geom`, `cms`, `color
 These directories are reused source, not immutable vendor copies. Do not assume every line under `crates/` is unchanged upstream. Targeted changes include UI styling, window behavior, native collaboration previews, browser-safe service hooks, and separately tested correctness fixes in several native crates. Compare a specific path with the imported upstream reference when reviewing ownership:
 
 ```sh
-git diff 3a3984075a1fd06d1af3e660aa376ee5368c4f73 -- crates/ui-egui/src/canvas.rs
-git log --oneline 3a3984075a1fd06d1af3e660aa376ee5368c4f73..HEAD -- crates/engine
+git fetch --no-tags https://github.com/storytold/photocraft.git 3a3984075a1fd06d1af3e660aa376ee5368c4f73
+git diff FETCH_HEAD -- crates/ui-egui/src/canvas.rs
+git diff --stat FETCH_HEAD -- crates apps
 ```
+
+The reference is the original public upstream commit. Sanitized publication history can
+use different commit identifiers while preserving the same source and contributor credits.
+The comparison fetch above is local; do not push original upstream refs into a sanitized
+public repository. The [publication policy](../SECURITY.md) still applies to new refs.
 
 ## Added adapters
 
@@ -47,6 +53,14 @@ The web entry point, bootstrap, and Cargo manifests in `apps/photocraft-web` exi
 - `SECURITY.md` is the reporting entry point. [The release review](security-release-review.md) distinguishes fixed defects, unresolved risks, local results, and actual hosted observations.
 - `LICENSE-MIT`, `LICENSE-APACHE`, `NOTICE`, and `ATTRIBUTION.md` preserve licensing and asset provenance. Restricted upstream brand artwork is removed from the current modified tree; retaining its license does not authorize using its marks.
 - Local `outputs/`, test accounts, database contents, credentials, caches, corpus files, and `log/` entries are not application source or public release artifacts. Inspect tracked files and reachable history separately before changing repository visibility.
+
+### Generated files changed by this fork
+
+`Cargo.lock` differs from the imported upstream reference because Cargo resolves this fork's added dependencies. Cargo generates its contents; it is not a manually authored dependency list. Keep it committed and use `--locked` when building or collecting dependency notices. The notice bundle records its exact hash.
+
+`docs/scorecard.md` also differs from the imported reference. The original `xtask/src/scorecard.rs` generator renders the committed performance baseline, checklist files and current source inspection. Regenerate it with `cargo xtask scorecard`, and verify it with `cargo xtask scorecard --check`. A hand-written header would make that exact-output check fail. Generated scorecard values are not a new hosted performance measurement; dated browser and service measurements live in the fork's verification documents.
+
+These entries record PhotoCraft Studio's generated-file changes without altering the upstream licenses or the generators' output formats.
 
 ## Update boundary
 
