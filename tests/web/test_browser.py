@@ -212,16 +212,19 @@ class BrowserAcceptance(unittest.TestCase):
         return project
 
     def open_more_copy(self, more, label, page=None):
+        return self.open_more_target(more, label, 0, page)
+
+    def open_more_target(self, more, label, row, page=None):
         page = page or self.page
         page.mouse.click((more[0]+more[2])/2, (more[1]+more[3])/2)
-        # These are the first two native popup captions (Save a copy and
-        # Download .pcraft), relative to the measured More control. A processed
-        # conflict response does not mean the subsequent popup frame has painted.
+        # Require the first two native popup captions (Save a copy and Download
+        # .pcraft) plus the requested caption, relative to the measured More
+        # control. Input/response delivery does not mean the popup has painted.
         def ready(image):
             image = image.convert('RGB')
-            captions = []
-            for row in range(2):
-                rect = (more[0]+8, more[3]+5+row*30, more[0]+85, more[3]+29+row*30)
+            captions = {}
+            for index in sorted({0, 1, row}):
+                rect = (more[0]+8, more[3]+5+index*30, more[0]+85, more[3]+29+index*30)
                 crop = image.crop(rect)
                 background = Counter(crop.getpixel((x,y)) for y in range(crop.height)
                                      for x in range(crop.width)).most_common(1)[0][0]
@@ -230,8 +233,8 @@ class BrowserAcceptance(unittest.TestCase):
                 self.assertGreater(len(ink), 70, 'The native More popup caption is not painted')
                 self.assertLessEqual(max(y for x,y in ink)-min(y for x,y in ink), 16,
                                      'The sample does not isolate a native popup caption')
-                captions.append(((rect[0]+rect[2])/2, (rect[1]+rect[3])/2))
-            return captions[0]
+                captions[index] = ((rect[0]+rect[2])/2, (rect[1]+rect[3])/2)
+            return captions[row]
         return self.wait_rendered(ready, label, page)
 
     def open_sharing(self):
@@ -443,10 +446,11 @@ class BrowserAcceptance(unittest.TestCase):
         self.execute('shape.create', {'kind': 'ellipse', 'rect': [60, 40, 100, 90], 'fill': '#9278ff', 'name': 'Violet circle'})
         self.execute('type.create', {'x': 25, 'y': 210, 'text': 'Made in PhotoCraft', 'size': 18, 'color': '#221144'})
         before = self.inspect()['document']
-        self.page.mouse.click(1238,32)
-        self.page.wait_for_timeout(200)
+        more = self.wait_rendered(lambda image: assert_header_geometry(self, image, ['More', 'Save']),
+                                  'native-download-header-ready')[0]
+        target = self.open_more_target(more, 'native-download-menu-ready', 1)
         with self.page.expect_download() as event:
-            self.page.mouse.click(1270,94)
+            self.page.mouse.click(*target)
         path = ARTIFACTS / 'native-roundtrip.pcraft'
         event.value.save_as(path)
         self.assertTrue(zipfile.is_zipfile(path))
@@ -469,10 +473,11 @@ class BrowserAcceptance(unittest.TestCase):
     def test_05_psd_export_and_reimport(self):
         self.new()
         self.execute('shape.create', {'kind': 'rect', 'rect': [40,40,100,80], 'fill': '#9278ff', 'name': 'Card'})
-        self.page.mouse.click(1238,32)
-        self.page.wait_for_timeout(200)
+        more = self.wait_rendered(lambda image: assert_header_geometry(self, image, ['More', 'Save']),
+                                  'psd-export-header-ready')[0]
+        target = self.open_more_target(more, 'psd-export-menu-ready', 3)
         with self.page.expect_download() as event:
-            self.page.mouse.click(1270,154)
+            self.page.mouse.click(*target)
         path = ARTIFACTS / 'layered-roundtrip.psd'
         event.value.save_as(path)
         self.assertEqual(path.read_bytes()[:4], b'8BPS')
@@ -864,6 +869,39 @@ class BrowserAcceptance(unittest.TestCase):
 
 
 
+    def open_project_card_menu(self, card, label, page=None):
+        """Open an owned completed-card menu and require all five painted rows."""
+        page = page or self.page
+        page.mouse.click(card['card'][2]-32, card['preview'][3]+28)
+        def ready(image):
+            # The owned completed-card popup has five native captions.
+            # Measure their painted ink inside the popup, using the
+            # pre-popup card/preview geometry (the popup can overlap
+            # the card's outline). A closed card has no five rows.
+            pixels = image.convert('RGB').load()
+            left, right = card['card'][2]-38, card['card'][2]+68
+            top, bottom = card['preview'][3]+50, card['preview'][3]+244
+            rows = [y for y in range(top, bottom)
+                    if sum(max(pixels[x, y]) < 110 for x in range(left, right)) >= 3]
+            bands = []
+            for y in rows:
+                if not bands or y-bands[-1][-1] > 2:
+                    bands.append([y])
+                else:
+                    bands[-1].append(y)
+            self.assertEqual(len(bands), 5, 'Completed-card menu captions are not all painted')
+            centers = []
+            for band in bands:
+                self.assertTrue(8 <= band[-1]-band[0]+1 <= 20, 'Menu caption is clipped or merged')
+                centers.append((band[0]+band[-1])/2)
+            self.assertTrue(all(32 <= b-a <= 44 for a, b in zip(centers, centers[1:])),
+                            'Completed-card menu rows overlap or are missing')
+            self.assertTrue(card['preview'][3]+206 < centers[-1] < card['preview'][3]+238,
+                            'Trash/Restore caption is outside its click target')
+            return [(band[0], band[-1]+1) for band in bands]
+
+        return self.wait_rendered(ready, label, page)
+
     def test_21_project_menu_star_trash_and_restore(self):
         self.signed_in()
         self.new(640,480)
@@ -876,10 +914,8 @@ class BrowserAcceptance(unittest.TestCase):
             with self.subTest(action=(field,expected)):
                 self.page.mouse.click(100,nav)
                 self.page.wait_for_timeout(150)
-                card = workspace_project_card(Image.open(io.BytesIO(self.page.screenshot())))
-                self.page.mouse.click(card['card'][2]-32, card['preview'][3]+28)
-                self.page.wait_for_timeout(150)
-                self.page.screenshot(path=str(ARTIFACTS/f'project-menu-{field}-{expected}.png'))
+                card = self.wait_rendered(workspace_project_card, f'project-menu-{field}-{expected}-card')
+                self.open_project_card_menu(card, f'project-menu-{field}-{expected}')
                 with self.page.expect_response(lambda r: r.url==BASE+'/api/projects/'+project['id'] and r.request.method=='PATCH') as event:
                     self.page.mouse.click(card['card'][2]+5, card['preview'][3]+row)
                 self.assertTrue(event.value.ok)
@@ -889,9 +925,8 @@ class BrowserAcceptance(unittest.TestCase):
                 self.assertEqual(current[field],expected)
         self.page.mouse.click(100,249)
         self.page.wait_for_timeout(150)
-        card = workspace_project_card(Image.open(io.BytesIO(self.page.screenshot())))
-        self.page.mouse.click(card['card'][2]-32, card['preview'][3]+28)
-        self.page.wait_for_timeout(150)
+        card = self.wait_rendered(workspace_project_card, 'project-details-card')
+        self.open_project_card_menu(card, 'project-details-menu')
         self.page.mouse.click(card['card'][2]+5, card['preview'][3]+147)
         self.page.wait_for_timeout(150)
         self.page.screenshot(path=str(ARTIFACTS/'project-details.png'))
@@ -938,11 +973,11 @@ class BrowserAcceptance(unittest.TestCase):
         self.assertEqual(comments[0]['body'],'Keep the native PhotoCraft controls.')
         self.page.screenshot(path=str(ARTIFACTS/'comments-posted.png'))
         self.page.keyboard.press('Escape')
-        self.page.wait_for_timeout(150)
-        self.page.mouse.click(1170,32)
-        self.page.wait_for_timeout(150)
+        more = self.wait_rendered(lambda image: assert_header_geometry(self, image, ['More', 'Comments', 'Save', 'Share']),
+                                  'history-header-ready')[0]
+        target = self.open_more_target(more, 'history-menu-ready', 4)
         with self.page.expect_response(lambda r: r.url.endswith('/versions')) as event:
-            self.page.mouse.click(1200,183)
+            self.page.mouse.click(*target)
         self.assertTrue(event.value.ok)
         self.assertEqual(len(event.value.json()),1)
         self.page.wait_for_timeout(150)
@@ -1454,36 +1489,7 @@ class BrowserAcceptance(unittest.TestCase):
                     self.return_to_workspace()
                     card = self.wait_rendered(workspace_project_card, 'first-save-reopened-card')
                     # The standard completed-card menu follows its preview/title row.
-                    self.page.mouse.click(card['card'][2]-32, card['preview'][3]+28)
-
-                    def completed_menu(image):
-                        # The owned completed-card popup has five native captions.
-                        # Measure their painted ink inside the popup, using the
-                        # pre-popup card/preview geometry (the popup can overlap
-                        # the card's outline). A closed card has no five rows.
-                        pixels = image.convert('RGB').load()
-                        left, right = card['card'][2]-38, card['card'][2]+68
-                        top, bottom = card['preview'][3]+50, card['preview'][3]+244
-                        rows = [y for y in range(top, bottom)
-                                if sum(max(pixels[x, y]) < 110 for x in range(left, right)) >= 3]
-                        bands = []
-                        for y in rows:
-                            if not bands or y-bands[-1][-1] > 2:
-                                bands.append([y])
-                            else:
-                                bands[-1].append(y)
-                        self.assertEqual(len(bands), 5, 'Completed-card menu captions are not all painted')
-                        centers = []
-                        for band in bands:
-                            self.assertTrue(8 <= band[-1]-band[0]+1 <= 20, 'Menu caption is clipped or merged')
-                            centers.append((band[0]+band[-1])/2)
-                        self.assertTrue(all(32 <= b-a <= 44 for a, b in zip(centers, centers[1:])),
-                                        'Completed-card menu rows overlap or are missing')
-                        self.assertTrue(card['preview'][3]+206 < centers[-1] < card['preview'][3]+238,
-                                        'Move to Trash caption is outside its click target')
-                        return [(band[0], band[-1]+1) for band in bands]
-
-                    menu_bands = self.wait_rendered(completed_menu, 'first-save-completed-menu')
+                    menu_bands = self.open_project_card_menu(card, 'first-save-completed-menu')
                     (ARTIFACTS/'first-save-completed-menu-bands.json').write_text(json.dumps(menu_bands)+'\n')
                     trash(pid, (card['card'][2]-42, card['preview'][3]+206,
                                 card['card'][2]+78, card['preview'][3]+238))
@@ -2270,8 +2276,7 @@ class BrowserAcceptance(unittest.TestCase):
 
         def menu_action(offset):
             card = self.wait_rendered(workspace_project_card, 'project-list-menu-card')
-            self.page.mouse.click(card['card'][2]-32, card['preview'][3]+28)
-            self.page.wait_for_timeout(100)
+            self.open_project_card_menu(card, f'project-list-menu-{offset}')
             with self.page.expect_response(lambda r: r.url == BASE+'/api/projects/'+pid and r.request.method == 'PATCH') as changed:
                 self.page.mouse.click(card['card'][2]+5, card['preview'][3]+offset)
             self.assertTrue(changed.value.ok)
@@ -2310,6 +2315,68 @@ class BrowserAcceptance(unittest.TestCase):
                 self.assertEqual(empty_workspace(after), empty, 'An old list changed the actual completed empty panel')
                 self.assertEqual(next(p for p in self.projects() if p['id'] == pid)['trashed'], trashed)
 
+
+    def blocked_sign_in_warning(self, image):
+        # Actual native Studio caption mask, in CSS pixels at the desktop fixture
+        # size: "Download your other unsaved documents before signing in. Browser
+        # recovery keeps only the last visited document." This matches the whole
+        # glyph shape, not merely an unrelated orange notice. It is not OCR;
+        # different fonts/layouts fail closed. Allow one pixel of raster alignment.
+        import base64
+        import zlib
+        packed = (
+            'eNrdWItuAyEMs///pyetJbYD3LFHtUc10RY4kjjGyUqS2Lx4NLXcdLTvxir58We6ixdn9CXeBUvyC2Gdun+/mZdI89bK9gl+0GNe'
+            'PPMfuPO9GX4ReV7HHR4Y/Bp33lFhocPnFXusxeh8e+yhPtfUOODxVp/HTh/zNN1t2g7f9zwRcZBthZleD3LL/LOox/cxw+SOGXx+'
+            'b5543FhEYCBZEnqw/nBO2oPdItIAEQkT4AntDNsF4PTQBkjPMf4KHxshfmkclK0vmibKOV+35a0JKj1ghbI9CPQUN2/sasitXPKI'
+            'ApaoWbowcnEX62LR4tDp7l6EzEZb89ulMMNvfqF7F7BkTnsyZsA93yx7aJ5xGCuGw/wLDMzHPECk7d7RrtOQo7yJdRP88JTGDFb8'
+            'RYiJAixBkaMegu9ccceZBr9gOtxjrYgMGN1cGTChiGWrkeaZzKpmuUBKj1SGXAcqzwvAcQ945477SperOovo3MEZd6xAB3fahY8D'
+            'TrnTVAZs+9DhYDQNn+EOGJJCyPQqVkzA5HyFJq1rQPSiU4o1cUdeqsZYPWBoABOsQ+5kFh0GhCDL3lxQYt+mZk1KOWtllPm8xMua'
+            '5Tu4OM4kuRe2YsR1zcJ1zerFZoFC6M5cUaPgBd2bKKucsddhph5FadzULFh7QszwoZX1RdaXNcu7XKeRdN4bV3qb7S2rtXRNx4xw'
+            '3mF6Rwgc9MoYIptNd2/XW9Pnjd+2Vw7uZK/sWZE8RPefvbLlahqRjWhcuZNeeeJOOg1Ep+BiFm16s7brlZeAs7cdr/2n8ne/+JPx'
+            '8ZMA888mgP+GOstf+173G+A5jvwLCXgDih8GFQ=='
+        )
+        image = image.convert('RGB')
+        pixels = image.load()
+        points = {(x,y) for y in range(image.height-27,image.height-1) for x in range(min(700,image.width))
+                  if pixels[x,y][0] > 150 and pixels[x,y][1] > 70
+                  and pixels[x,y][0] > pixels[x,y][2]*1.5 and pixels[x,y][1] > pixels[x,y][2]*1.2}
+        self.assertTrue(points, 'The blocked-sign-in warning is absent')
+        left,top,right,bottom = min(x for x,y in points),min(y for x,y in points),max(x for x,y in points)+1,max(y for x,y in points)+1
+        self.assertLessEqual(abs(right-left-572), 2, 'The complete blocked-sign-in caption is not visible')
+        self.assertLessEqual(abs(bottom-top-10), 1, 'The blocked-sign-in caption has unexpected line height')
+        actual = {(x-left,y-top) for x,y in points}
+        bits = zlib.decompress(base64.b64decode(packed))
+        expected = {(x,y) for y in range(10) for x in range(572) if bits[y*572+x]}
+        scores = []
+        for dy in (-1,0,1):
+            for dx in (-1,0,1):
+                shifted = {(x+dx,y+dy) for x,y in actual}
+                scores.append(len(shifted & expected)/len(shifted | expected))
+        self.assertGreaterEqual(max(scores), .75, 'The warning is not the blocked-sign-in caption')
+        return {'rect': [left,top,right,bottom], 'glyph_iou': max(scores)}
+
+    def open_guest_sign_in(self, label):
+        controls = self.wait_rendered(lambda image: assert_header_geometry(self, image, ['More', 'Save']),
+                                      label+'-header-ready')
+        self.page.mouse.move(0, 0)
+        before = Image.open(io.BytesIO(self.page.screenshot(scale='css')))
+        avatar = controls[-1]
+        self.page.mouse.click((avatar[0]+avatar[2])/2, (avatar[1]+avatar[3])/2)
+        self.page.mouse.move(0, 0)
+        def ready(image):
+            actions = native_overlay_actions(before, image)
+            self.assertEqual(len(actions), 1, 'The native guest menu must show its Google action')
+            left,top,right,bottom = actions[0]
+            self.assertAlmostEqual(right-left, 260, delta=2)
+            self.assertAlmostEqual(bottom-top, 42, delta=2)
+            crop = image.convert('RGB').crop((left+8,top+4,right-8,bottom-4))
+            background = Counter(crop.getdata()).most_common(1)[0][0]
+            ink = [(x,y) for y in range(crop.height) for x in range(crop.width)
+                   if max(abs(a-b) for a,b in zip(crop.getpixel((x,y)), background)) > 35]
+            self.assertGreater(len(ink), 70, 'The native Google action caption is not painted')
+            self.assertLessEqual(max(y for x,y in ink)-min(y for x,y in ink), 16)
+            return ((left+right)/2, (top+bottom)/2)
+        return self.wait_rendered(ready, label+'-menu-ready')
 
     def test_44_browser_recovery_keeps_one_last_visited_copy_per_scope(self):
         observations = []
@@ -2376,15 +2443,21 @@ class BrowserAcceptance(unittest.TestCase):
         self.execute('document.activate', {'document': 1})
         self.stroke()
         self.execute('document.activate', {'document': 0})
-        self.context.route('**/api/config', lambda route: route.fulfill(json={'cloud': True, 'signIn': True}))
         redirects = []
         self.context.route('**/auth/login', lambda route: (redirects.append(route.request.url),
                            route.fulfill(content_type='text/html', body='<h1>Unexpected sign-in redirect</h1>')))
-        self.page.wait_for_timeout(2200)
-        self.page.mouse.click(1400, 32)
-        self.page.wait_for_timeout(150)
-        self.page.mouse.click(1270, 170)
-        self.page.wait_for_timeout(300)
+        with self.page.expect_response(lambda response: response.url == BASE+'/api/config'
+                                       and response.ok and response.json().get('signIn') is True,
+                                       timeout=10000):
+            self.context.route('**/api/config', lambda route: route.fulfill(json={'cloud': True, 'signIn': True}))
+        before = Image.open(io.BytesIO(self.page.screenshot(scale='css')))
+        before.save(ARTIFACTS/'one-recovery-sign-in-before.png')
+        with self.assertRaises(AssertionError):
+            self.blocked_sign_in_warning(before)
+        target = self.open_guest_sign_in('one-recovery-sign-in')
+        self.page.mouse.click(*target)
+        warning = self.wait_rendered(self.blocked_sign_in_warning, 'one-recovery-sign-in-blocked-ready')
+        (ARTIFACTS/'one-recovery-sign-in-warning.json').write_text(json.dumps(warning, indent=2)+'\n')
         self.assertEqual(redirects, [], 'Signing in discarded unsaved tabs that one recovery entry cannot preserve')
         self.assertEqual(self.inspect()['document']['width'], 461)
         self.page.screenshot(path=str(ARTIFACTS/'one-recovery-sign-in-unsaved-tabs-preserved.png'))
