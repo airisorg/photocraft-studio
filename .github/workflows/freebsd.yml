@@ -30,7 +30,7 @@ permissions:
 jobs:
   freebsd:
     name: FreeBSD 14 (build + test + package)
-    runs-on: tofu-ci-8-core
+    runs-on: ubuntu-latest
     timeout-minutes: 300
     steps:
       - uses: actions/checkout@v4

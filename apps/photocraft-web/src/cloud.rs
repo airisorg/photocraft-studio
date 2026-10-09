@@ -1771,7 +1771,6 @@ impl Cloud {
                                 }
                             }
                             if ui.add_enabled(can_save, egui::Button::new("Save a copy")).clicked() {
-                            if ui.add_enabled(!self.session_paused(), egui::Button::new("Save a copy")).clicked() {
                                 self.save(app, &ctx, true);
                                 ui.close();
                             }
