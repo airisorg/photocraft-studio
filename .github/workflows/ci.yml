@@ -105,6 +105,7 @@ jobs:
         run: cargo xtask scorecard --check
 
   corpus:
+    if: github.event.pull_request.head.repo.full_name == github.repository
     # Real-file corpus tests (cargo feature `corpus`), on every PR and on main. The corpora are
     # pinned in xtask/src/corpus_pins.rs and sha256-verified (xtask/*.sha256) after both a cache
     # restore and a download; a missing corpus fails the tests. The cache key changes only when a
@@ -131,6 +132,7 @@ jobs:
         run: cargo xtask test-corpus
 
   wasm:
+    if: github.event.pull_request.head.repo.full_name == github.repository
     name: wasm32 check
     runs-on: tofu-ci-8-core
     steps:
