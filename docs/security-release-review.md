@@ -231,4 +231,11 @@ must approve the repository transition. Automatic upstream updates remain disabl
 until a sanitized import path is implemented and reviewed, as described in the
 [update guide](upstream-updates.md).
 
+For a source-only publication, keep native release and Windows ARM64 package
+workflows disabled in the public repository until their complete dependency and
+runtime redistribution inventories are reviewed. The source and platform tests
+remain available. Start the fresh repository with Actions paused, verify those
+workflow settings, then run its publication check before changing visibility.
+Historical artifacts stay in the private archive.
+
 A successful local request benchmark is not a 1,000-user whole-application guarantee. Use errors, successful-request latency, scheduling lag, completion ratio, per-client progress, database contention and bytes together. Preserve every failed stage. The hosting deployment and a normal live journey require separate recorded evidence.
