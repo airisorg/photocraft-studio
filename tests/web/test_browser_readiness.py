@@ -22,6 +22,7 @@ CASES = (
     'test_22_sharing_comments_and_history_controls',
     'test_26_sharing_window_blocks_canvas_painting',
     'test_28_collaborator_permission_menu_and_escape',
+    'test_35_failed_first_upload_preserves_work_and_can_retry_or_trash',
     'test_save_copy_waits_for_pending_ack',
     'test_conflict_copy_waits_for_menu_frame',
 )
@@ -42,9 +43,11 @@ class BrowserReadiness(browser_tests.BrowserAcceptance):
             const input = args[0];
             const url = new URL(typeof input === 'string' ? input : input.url, location.href);
             const response = await original(...args);
+            const method = (args[1]?.method || (typeof input === 'string' ? 'GET' : input.method) || 'GET').toUpperCase();
             const kind = url.pathname === '/api/me' ? 'account' :
               (/^\/api\/uploads\/[^/]+\/commit$/.test(url.pathname) ? 'commit' :
-              (/^\/api\/share\/[^/]+\/content$/.test(url.pathname) ? 'public-content' : null));
+              (/^\/api\/share\/[^/]+\/content$/.test(url.pathname) ? 'public-content' :
+              (__DELAY_PROJECT_LISTS__ && method === 'GET' && url.pathname === '/api/projects' ? 'projects-list' : null)));
             if (kind) {
               const ms = kind === 'commit' ? 2500 : 1200;
               const begin = performance.now();
@@ -54,7 +57,8 @@ class BrowserReadiness(browser_tests.BrowserAcceptance):
             }
             return response;
           };
-        })()''')
+        })()'''.replace('__DELAY_PROJECT_LISTS__',
+                       'true' if self._testMethodName.startswith('test_35') else 'false'))
         return super().load(page, query, expected_document)
 
     def open_more_copy(self, more, label, page=None):
@@ -238,6 +242,10 @@ class BrowserReadiness(browser_tests.BrowserAcceptance):
             if self._testMethodName.startswith('test_08'):
                 self.assertTrue(any(r['kind'] == 'public-content' and r['status'] == 200 for r in receipt),
                                 'Actual public download delivery delay did not run')
+            if self._testMethodName.startswith('test_35'):
+                current = self.page.evaluate('window.__ciDeliveryDelays || []')
+                self.assertTrue(any(r['kind'] == 'projects-list' and r['status'] == 200 for r in current),
+                                'The reloaded browser did not receive an actual delayed project list')
             if self._testMethodName.startswith('test_13') or self._testMethodName == 'test_conflict_copy_waits_for_menu_frame':
                 self.assertTrue(any(r['kind'] == 'commit' and r['status'] == 409 for r in receipt),
                                 'Actual conflict delivery delay did not run')

@@ -120,8 +120,11 @@ jobs:
           python tests/web/test_discovery_browser.py
           # Report the first failed journey immediately instead of losing its
           # traceback to a job timeout. A passing run still executes every case.
-          python tests/web/test_browser.py -f
+          # Exercise deliberately delayed startup/save frames before the long
+          # base suite so a readiness regression gets its own early traceback.
+          python tests/web/test_workspace_loading.py -f
           python tests/web/test_browser_readiness.py -f
+          python tests/web/test_browser.py -f
           PHOTOCRAFT_PAINT_CALIBRATION=1 python -m unittest discover -s tests/web -p test_paint_latency.py
           python tests/web/test_live_browser.py
           python tests/web/benchmark_live_collaboration.py --samples 3 --latency-ms 0 50 100 --output test-results/live-paint.json --context 'GitHub shared runner; no owned parallel build; other host contention unknown'
