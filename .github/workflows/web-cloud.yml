@@ -139,7 +139,7 @@ jobs:
           retention-days: 7
   container-package:
     needs: acceptance
-    runs-on: tofu-ci-8-core
+    runs-on: ubuntu-latest
     timeout-minutes: 35
     steps:
       # Fresh runner and caller-revision orchestration/tests. Candidate code is
