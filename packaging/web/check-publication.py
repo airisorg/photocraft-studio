@@ -1,6 +1,7 @@
 """Read-only publication gate; never print discovered identifiers or secret text."""
 import argparse
 import json
+import os
 from pathlib import Path
 import re
 import shutil
@@ -66,15 +67,40 @@ def secrets(root, ref=None):
     tool = shutil.which("gitleaks")
     if tool is None:
         return {"status": "unavailable", "findings": None}
-    with tempfile.TemporaryDirectory() as temporary:
-        report = Path(temporary)/"redacted.json"
-        result = subprocess.run([tool, "git", str(root), "--log-opts=" + (ref or "--all"), "--redact=100",
+    root = Path(root).resolve()
+    # Gitleaks also loads <target>/.gitleaksignore even with an explicit ignore
+    # flag. Git history is available from its administrative directory without
+    # exposing the candidate checkout's policy files to that implicit lookup.
+    git_dir = git(root, "rev-parse", "--absolute-git-dir").decode().strip()
+    with tempfile.TemporaryDirectory(prefix="photocraft-publication-policy-") as temporary:
+        policy = Path(temporary)
+        report = policy/"redacted.json"
+        config = policy/"trusted.toml"
+        ignore = policy/"empty.ignore"
+        # The candidate is data, including its scanner configuration and comments.
+        # Only Gitleaks' embedded default rules may define this publication gate.
+        config.write_text("[extend]\nuseDefault = true\n")
+        ignore.write_text("")
+        environment = {key: value for key, value in os.environ.items()
+                       if key not in {"GITLEAKS_CONFIG", "GITLEAKS_CONFIG_TOML"}}
+        # Ordinary `git log -p` omits merge diffs. Inspect each parent and force
+        # raw text so merge resolutions or diff attributes cannot hide content.
+        log_opts = "--diff-merges=separate --text --no-ext-diff --no-textconv " + (ref or "--all")
+        result = subprocess.run([tool, "git", git_dir, "--log-opts=" + log_opts, "--redact=100",
+                                 "--config", str(config), "--gitleaks-ignore-path", str(ignore),
+                                 "--ignore-gitleaks-allow",
                                  "--no-banner", "--no-color", "--report-format=json",
                                  "--report-path", str(report), "--timeout=180"],
+                                cwd=policy, env=environment,
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=200)
         if result.returncode not in {0, 1}:
             return {"status": "error", "findings": None}
-        found = json.loads(report.read_text()) if report.exists() else []
+        try:
+            found = json.loads(report.read_text())
+        except (OSError, ValueError):
+            return {"status": "error", "findings": None}
+        if not isinstance(found, list) or bool(found) != (result.returncode == 1):
+            return {"status": "error", "findings": None}
         return {"status": "checked", "findings": len(found)}
 
 

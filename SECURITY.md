@@ -26,6 +26,9 @@ should identify the source revision, tested artifact, and deployment evidence.
   retained restricted brand artwork and personal home paths, and reports only
   counts and categories. Fetch the refs intended for publication first. It does
   not inspect unavailable refs or prove that all sensitive information is absent.
+  The scan uses embedded Gitleaks rules; candidate configuration, ignore files and
+  inline allow comments cannot suppress findings. The source publication workflow
+  installs the checksum-pinned scanner and tests those boundaries.
 - Review Git author identities and public contact details separately. Secret
   scanners cannot decide whether a person consented to publishing their identity.
 - Keep the upstream copyright, both project licenses, `NOTICE`, asset licenses,

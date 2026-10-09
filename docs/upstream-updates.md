@@ -129,9 +129,11 @@ Before enabling the repository variable, resolve the publication strategy and re
 the refs the pipeline will push. A merge can restore restricted artwork to a candidate
 or retain it in ancestry before later tests run. The opt-in guard prevents accidental
 activation; it does not certify a candidate or its Git history for public distribution.
-The current full-history publication gate fails on retained artwork and personal home
-paths. Do not enable this workflow in a public repository until those boundaries are
-resolved, and run the publication gate before pushing public candidates.
+The original private history fails the full-history publication gate on retained artwork
+and personal home paths. A prepared sanitized copy must pass its own full-history scan;
+that does not approve importing the original ancestry later. Keep automatic updates
+disabled until the sanitized import boundary is reviewed, and run the publication gate
+before pushing public candidates.
 
 After completing that review and the trusted bootstrap, set
 `PHOTOCRAFT_UPSTREAM_UPDATES_ENABLED=true` and run **Upstream and tested web release**
