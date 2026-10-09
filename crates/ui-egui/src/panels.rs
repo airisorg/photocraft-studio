@@ -1784,10 +1784,6 @@ fn layer_row(
     if let Some(done) = crate::layer_row_ui::rename_field(ui, l.id.0, edit_rect) {
         actions.push(done);
     }
-    let edit_rect = Rect::from_min_max(pos2(x - 3.0, rect.center().y - 11.0), pos2(name_right.max(x + 40.0), rect.center().y + 11.0));
-    if let Some(done) = crate::layer_row_ui::rename_field(ui, l.id.0, edit_rect) {
-        actions.push(done);
-    }
     // Right-click context menu.
     resp.context_menu(|ui| {
         // Right-clicking inside a multi-selection keeps it and acts on every selected layer.

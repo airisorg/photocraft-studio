@@ -448,26 +448,6 @@ pub fn handle(app: &mut PhotocraftApp, ctx: &egui::Context, req: &ControlRequest
                         continue;
                     }
                 }
-                if matches!(s("button"), Some("secondary" | "right")) {
-                    let down = matches!(ev, ToolEvent::Down { .. });
-                    // Right-click with the Move tool, or ⌘/Ctrl+right-click: list the layers there.
-                    if crate::layer_pick_ui::is_gesture(app.ui.tool, mods) {
-                        if down {
-                            app.ui.canvas_tool_menu = None;
-                            crate::layer_pick_ui::open(app, screen_point(app, x, y), x, y);
-                        }
-                        continue;
-                    }
-                    if crate::canvas_tool_menu::applies(app.ui.tool) {
-                        if down {
-                            crate::canvas_tool_menu::open(app, app.ui.tool, screen_point(app, x, y));
-                        }
-                        continue;
-                    }
-                    if !crate::paint_mouse::pointer_secondary(app, down, mods, screen_point(app, x, y)) {
-                        continue;
-                    }
-                }
                 // A simulated pen: tilt/rotation reach the stroke like a real stylus's (see `stylus`).
                 let tilt = |k: &str| e.get(k).and_then(Value::as_f64).map(|v| v as f32);
                 let pen = (tilt("tiltX"), tilt("tiltY"), tilt("rotation"));

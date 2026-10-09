@@ -75,6 +75,7 @@ jobs:
             # The checkout is synced in under another owner; let tests that call git read it.
             git config --global --add safe.directory "*"
             rustc --version
+            export CARGO_BUILD_JOBS=2 CARGO_INCREMENTAL=0 CARGO_PROFILE_TEST_DEBUG=0
             CARGO_PROFILE_DEV_DEBUG=0 cargo build --workspace --all-targets --locked --features heif
             CARGO_PROFILE_DEV_DEBUG=0 cargo test --workspace --locked --features heif --exclude photocraft-ui-egui
             CARGO_PROFILE_DEV_DEBUG=0 cargo test -p photocraft-ui-egui --locked --lib

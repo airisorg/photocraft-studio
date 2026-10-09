@@ -1702,30 +1702,6 @@ pub fn canvas_view(app: &mut PhotocraftApp, ui: &mut egui::Ui, idx: usize, rect:
         if buttons.started
             && let Some(p) = ui.input(|i| i.pointer.press_origin()).filter(|p| rect.contains(*p)).or(response.interact_pointer_pos())
         {
-            let d = xf.to_doc(p);
-            app.ui.canvas_tool_menu = None;
-            crate::layer_pick_ui::open(app, [p.x, p.y], d[0], d[1]);
-        }
-        if response.secondary_clicked()
-            && !crate::layer_pick_ui::is_gesture(tool, mods)
-            && let Some(p) = response.interact_pointer_pos()
-        {
-            crate::canvas_tool_menu::open(app, tool, [p.x, p.y]);
-        }
-        // The (temporary) Hand pans above; its gestures never reach the tool underneath.
-        if tool == Tool::Hand {
-            (buttons.started, buttons.dragged, buttons.stopped) = (false, false, false);
-        }
-        // Zoom tool drags: scrubby zoom or a zoom rectangle (zoom_tool.rs); clicks step below.
-        if tool == Tool::Zoom && crate::zoom_tool::drag(app, &ctx, &mut view, &xf, &buttons, response.interact_pointer_pos()) {
-            (buttons.started, buttons.dragged, buttons.stopped) = (false, false, false);
-        }
-        // A drag is only recognised once the pointer has moved past egui's click distance: the
-        // gesture starts where the button went down, not where it is now (#123).
-        let gesture_active_before = app.drag.is_some();
-        if buttons.started
-            && let Some(p) = ui.input(|i| i.pointer.press_origin()).filter(|p| rect.contains(*p)).or(response.interact_pointer_pos())
-        {
             if tool == Tool::Move && app.ui.transform.is_none() {
                 begin_transform_controls_at(app, &ctx, &xf, p);
             }
