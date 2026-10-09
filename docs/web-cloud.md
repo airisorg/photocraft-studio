@@ -189,8 +189,9 @@ bypass to the deployed application, and refuse to seed accounts on non-loopback 
   editor keyboard commands, but a full accessible DOM editor is not claimed.
 - Phone and tablet layouts are tested at emulated viewport sizes. Physical-device touch,
   stylus pressure, browser memory pressure and Home Screen installation need device evidence.
-- Recovery stores the current document in IndexedDB after an idle interval. Before sign-in, all
-  guest tabs are saved there and remain recoverable after authentication. It is not a
+- Recovery stores one most recently visited document in IndexedDB after an idle interval;
+  visiting another document replaces that copy. Before sign-in redirects, other unsaved
+  documents must be downloaded so they are not lost. It is not a
   service-worker cache of the application and does not promise an offline first visit.
 - Collaboration combines durable native revisions with bounded named cursors and supported
   gesture previews. Independent manifest changes merge; conflicting edits are preserved as

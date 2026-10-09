@@ -97,6 +97,36 @@ class LiveHandoff(LiveScale):
         self.member(self.pid, 1, 'edit')
         self.assertEqual(self.snapshots(), ([], []))
 
+    def test_handoff_viewer_cursor_ahead_hides_old_gesture_and_denies_edit(self):
+        cursor = {'x': 20, 'y': 20}
+        self.put(self.state(cursor=cursor, gesture=self.ended()), session=self.editor)
+        original = self.stored()
+        self.upload(self.pid, base=1)
+        before = self.req(self.owner, 'GET', f'/api/projects/{self.pid}').json()
+        self.member(self.pid, 1, 'view')
+        # A viewer's authorized cursor keeps this peer present even while the
+        # receiver has not installed revision2. The server must hide old bytes.
+        for peers in self.snapshots():
+            self.assertEqual(len(peers), 1)
+            peer = peers[0]
+            self.assertEqual((peer['actor'], peer['tab']), (self.accounts[1][0], self.tab))
+            self.assertEqual(peer['cursor'], cursor)
+            self.assertEqual(peer['baseRevision'], 1)
+            self.assertIsNone(peer['gesture'])
+            self.assertGreater(peer['ttlMs'], 0)
+            self.assertLessEqual(peer['ttlMs'], 2000)
+        self.assertEqual(self.stored(), original, 'Reading downgraded metadata renewed the lease')
+        self.put(self.state(2, baseRevision=2, gesture=self.ended()), session=self.editor, status=403)
+        self.assertEqual(self.stored(), original, 'Denied editing changed stored sequence or lease')
+        self.assertTrue(self.put(self.state(2, baseRevision=2, cursor=cursor), session=self.editor)['accepted'])
+        self.assertIsNone(self.stored()[4], 'A fresh viewer cursor kept the editing payload')
+        for peers in self.snapshots():
+            self.assertEqual(peers[0]['cursor'], cursor)
+            self.assertIsNone(peers[0]['gesture'])
+        after = self.req(self.owner, 'GET', f'/api/projects/{self.pid}').json()
+        self.assertEqual((before['revision'], before['content']['sha256']),
+                         (after['revision'], after['content']['sha256']))
+
     def test_handoff_session_expiry_and_logout_remove_metadata(self):
         session, digest = self.actor(account=1)
         other, _ = self.actor(account=1)
