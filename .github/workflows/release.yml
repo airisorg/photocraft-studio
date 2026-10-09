@@ -226,9 +226,6 @@ jobs:
             "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_${NFPM_DEB_ARCH}.deb"
           printf '%s  %s\n' "$NFPM_DEB_SHA256" "$nfpm_dir/nfpm.deb" | sha256sum --check --status
           sudo dpkg -i "$nfpm_dir/nfpm.deb"
-          curl -fsSL -o "$RUNNER_TEMP/nfpm.deb" \
-            "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_${{ matrix.deb }}.deb"
-          sudo dpkg -i "$RUNNER_TEMP/nfpm.deb"
       - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
