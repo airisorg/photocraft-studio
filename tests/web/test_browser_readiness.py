@@ -7,6 +7,7 @@ so a visible database revision cannot substitute for the native UI receiving its
 save acknowledgment. The original journey assertions are reused unchanged.
 """
 import hashlib
+import io
 import json
 import time
 from collections import Counter
@@ -163,6 +164,7 @@ class BrowserReadiness(browser_tests.BrowserAcceptance):
                 regions = [(more[0]+8, more[3]+5+row*30, more[0]+85, more[3]+29+row*30)
                            for row in range(2)]
                 values = []
+                signature = []
                 for rect in regions:
                     crop = image.crop(rect)
                     background = Counter(crop.getpixel((x,y)) for y in range(crop.height) for x in range(crop.width)).most_common(1)[0][0]
@@ -175,8 +177,62 @@ class BrowserReadiness(browser_tests.BrowserAcceptance):
                     contrast = sorted(v for x,y,v in ink)[int(len(ink)*.9)]
                     values.append({'contrast':contrast, 'glyph_pixels':len(ink),
                                    'click':[(rect[0]+rect[2])/2, (rect[1]+rect[3])/2]})
-                return values
-            return self.wait_rendered(captions, label)
+                    signature.append({'rect':rect, 'background':background,
+                                      'contrast':contrast, 'glyph_pixels':len(ink),
+                                      'rgb_sha256':hashlib.sha256(crop.tobytes()).hexdigest(),
+                                      'mask_sha256':hashlib.sha256(bytes(
+                                          int(max(abs(a-b) for a,b in zip(pixel, background)) > 20)
+                                          for pixel in crop.getdata())).hexdigest(),
+                                      'bounds':[min(x for x,y,v in ink), min(y for x,y,v in ink),
+                                                max(x for x,y,v in ink), max(y for x,y,v in ink)]})
+                return values, signature
+
+            # egui fades popup areas in over 200ms. A readable early caption is
+            # not yet a valid enabled/disabled contrast calibration. Require
+            # unchanged pixels on fresh native frames across the fade window.
+            started = time.monotonic()
+            samples = []
+            stable = []
+            previous_frame = -1
+            failure = None
+            proof = {'minimum_samples':3, 'minimum_stable_ms':200, 'timeout_ms':10000,
+                     'samples':samples, 'settled':False}
+            try:
+                while time.monotonic()-started < 10:
+                    frame = self.inspect()['frame']
+                    if frame <= previous_frame:
+                        self.page.wait_for_timeout(25)
+                        continue
+                    previous_frame = frame
+                    picture = self.page.screenshot(scale='css')
+                    image = Image.open(io.BytesIO(picture)).convert('RGB')
+                    sample = {'frame':frame, 'elapsed_ms':(time.monotonic()-started)*1000}
+                    samples.append(sample)
+                    sample['image'] = f'{label}-caption-sample-{len(samples):03}.png'
+                    image.crop((more[0]+8, more[3]+5, more[0]+85, more[3]+59)).save(
+                        artifacts/sample['image'])
+                    try:
+                        values, signature = captions(image)
+                    except AssertionError as error:
+                        failure = str(error)
+                        sample['not_ready'] = failure
+                        stable = []
+                    else:
+                        sample['signature'] = signature
+                        stable = stable+[sample] if stable and signature == stable[-1]['signature'] else [sample]
+                        span = sample['elapsed_ms']-stable[0]['elapsed_ms']
+                        if len(stable) >= 3 and span >= 200:
+                            proof.update({'settled':True, 'stable_samples':len(stable),
+                                          'stable_span_ms':span,
+                                          'stable_frames':[row['frame'] for row in stable]})
+                            (artifacts/(label+'.png')).write_bytes(picture)
+                            return values
+                    self.page.wait_for_timeout(50)
+                (artifacts/(label+'-timeout.png')).write_bytes(picture)
+                self.fail(f'Native popup captions did not settle: samples={len(samples)}, '
+                          f'stable_samples={len(stable)}, last_caption_error={failure}')
+            finally:
+                (artifacts/(label+'-settling.json')).write_text(json.dumps(proof, indent=2)+'\n')
 
         enabled = menu('copy-ready-before-save')
         self.page.keyboard.press('Escape')
