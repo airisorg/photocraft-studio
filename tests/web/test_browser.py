@@ -1313,8 +1313,7 @@ class BrowserAcceptance(unittest.TestCase):
                 self.assertFalse(any('/share' in url or '/invite' in url or '/members' in url
                                      for _, url in requests), 'Incomplete project offered cloud sharing')
                 self.return_to_workspace()
-                self.page.wait_for_timeout(300)
-                card = workspace_project_card(picture(f'first-save-{outcome}-incomplete-card.png'))
+                card = self.wait_rendered(workspace_project_card, f'first-save-{outcome}-incomplete-card')
                 self.assertEqual(len(card['buttons']), 2, 'Incomplete card needs visible Retry save and Move to Trash')
                 opened = [(method, url) for method, url in requests if method == 'GET' and url == BASE+'/api/projects/'+pid]
                 click(card['preview'])
@@ -1338,19 +1337,29 @@ class BrowserAcceptance(unittest.TestCase):
                     picture('first-save-incomplete-trashed.png')
                 else:
                     failure['enabled'] = False
-                    click(card['buttons'][0])
-                    saved = self.wait_revision(1)
+                    with self.page.expect_response(lambda response: response.url == BASE+'/api/projects'
+                                                   and response.request.method == 'GET', timeout=20000) as listed:
+                        click(card['buttons'][0])
+                        saved = self.wait_revision(1)
+                    self.assertTrue(listed.value.ok)
+                    self.assertTrue(any(p['id'] == pid and p['revision'] >= 1 for p in listed.value.json()),
+                                    'The browser did not receive the completed project after retry')
                     self.assertEqual(saved['id'], pid, 'Retry created another project instead of completing the first one')
                     self.assertEqual(len(self.projects()), 2, 'Retry left an extra empty project behind')
                     self.assertEqual(self.inspect()['document']['layers'], before['layers'])
-                    self.page.wait_for_timeout(250)
-                    assert_header_geometry(self, picture('first-save-retry-completed.png'), ['More', 'Comments', 'Save', 'Share'])
+                    self.wait_rendered(lambda image: assert_header_geometry(self, image, ['More', 'Comments', 'Save', 'Share']),
+                                       'first-save-retry-completed')
                     # Reload clears the native session; reopen through the actual workspace card.
-                    self.load(self.page)
+                    with self.page.expect_response(lambda response: response.url == BASE+'/api/projects'
+                                                   and response.request.method == 'GET', timeout=20000) as listed:
+                        self.load(self.page)
+                    self.assertTrue(listed.value.ok)
+                    self.assertTrue(any(p['id'] == pid and p['revision'] >= 1 for p in listed.value.json()),
+                                    'The reloaded workspace did not receive the completed project')
                     self.assertIsNone(self.inspect()['document'])
-                    card = workspace_project_card(picture('first-save-completed-list.png'))
+                    card = self.wait_rendered(workspace_project_card, 'first-save-completed-list')
                     click(card['preview'])
-                    self.page.wait_for_timeout(700)
+                    self.wait_opened_document(self.page, before)
                     restored = self.inspect()['document']
                     self.assertIsNotNone(restored)
                     self.assertEqual((restored['width'], restored['height']), (362, 248))
@@ -1359,12 +1368,39 @@ class BrowserAcceptance(unittest.TestCase):
                     restored_pixels = Image.open(self.download('file.export.quickExportAsPng')).convert('RGBA').tobytes()
                     self.assertEqual(restored_pixels, original_pixels, 'Reopened cloud document pixels differ from the local work')
                     self.return_to_workspace()
-                    self.page.wait_for_timeout(200)
-                    card = workspace_project_card(picture('first-save-reopened-card.png'))
+                    card = self.wait_rendered(workspace_project_card, 'first-save-reopened-card')
                     # The standard completed-card menu follows its preview/title row.
                     self.page.mouse.click(card['card'][2]-32, card['preview'][3]+28)
-                    self.page.wait_for_timeout(200)
-                    picture('first-save-completed-menu.png')
+
+                    def completed_menu(image):
+                        # The owned completed-card popup has five native captions.
+                        # Measure their painted ink inside the popup, using the
+                        # pre-popup card/preview geometry (the popup can overlap
+                        # the card's outline). A closed card has no five rows.
+                        pixels = image.convert('RGB').load()
+                        left, right = card['card'][2]-38, card['card'][2]+68
+                        top, bottom = card['preview'][3]+50, card['preview'][3]+244
+                        rows = [y for y in range(top, bottom)
+                                if sum(max(pixels[x, y]) < 110 for x in range(left, right)) >= 3]
+                        bands = []
+                        for y in rows:
+                            if not bands or y-bands[-1][-1] > 2:
+                                bands.append([y])
+                            else:
+                                bands[-1].append(y)
+                        self.assertEqual(len(bands), 5, 'Completed-card menu captions are not all painted')
+                        centers = []
+                        for band in bands:
+                            self.assertTrue(8 <= band[-1]-band[0]+1 <= 20, 'Menu caption is clipped or merged')
+                            centers.append((band[0]+band[-1])/2)
+                        self.assertTrue(all(32 <= b-a <= 44 for a, b in zip(centers, centers[1:])),
+                                        'Completed-card menu rows overlap or are missing')
+                        self.assertTrue(card['preview'][3]+206 < centers[-1] < card['preview'][3]+238,
+                                        'Move to Trash caption is outside its click target')
+                        return [(band[0], band[-1]+1) for band in bands]
+
+                    menu_bands = self.wait_rendered(completed_menu, 'first-save-completed-menu')
+                    (ARTIFACTS/'first-save-completed-menu-bands.json').write_text(json.dumps(menu_bands)+'\n')
                     trash(pid, (card['card'][2]-42, card['preview'][3]+206,
                                 card['card'][2]+78, card['preview'][3]+238))
                     picture('first-save-completed-trashed.png')
