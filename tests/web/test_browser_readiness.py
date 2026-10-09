@@ -7,7 +7,9 @@ so a visible database revision cannot substitute for the native UI receiving its
 save acknowledgment. The original journey assertions are reused unchanged.
 """
 import hashlib
+import io
 import json
+import time
 from collections import Counter
 
 from PIL import Image
@@ -162,6 +164,7 @@ class BrowserReadiness(browser_tests.BrowserAcceptance):
                 regions = [(more[0]+8, more[3]+5+row*30, more[0]+85, more[3]+29+row*30)
                            for row in range(2)]
                 values = []
+                signature = []
                 for rect in regions:
                     crop = image.crop(rect)
                     background = Counter(crop.getpixel((x,y)) for y in range(crop.height) for x in range(crop.width)).most_common(1)[0][0]
@@ -174,8 +177,62 @@ class BrowserReadiness(browser_tests.BrowserAcceptance):
                     contrast = sorted(v for x,y,v in ink)[int(len(ink)*.9)]
                     values.append({'contrast':contrast, 'glyph_pixels':len(ink),
                                    'click':[(rect[0]+rect[2])/2, (rect[1]+rect[3])/2]})
-                return values
-            return self.wait_rendered(captions, label)
+                    signature.append({'rect':rect, 'background':background,
+                                      'contrast':contrast, 'glyph_pixels':len(ink),
+                                      'rgb_sha256':hashlib.sha256(crop.tobytes()).hexdigest(),
+                                      'mask_sha256':hashlib.sha256(bytes(
+                                          int(max(abs(a-b) for a,b in zip(pixel, background)) > 20)
+                                          for pixel in crop.getdata())).hexdigest(),
+                                      'bounds':[min(x for x,y,v in ink), min(y for x,y,v in ink),
+                                                max(x for x,y,v in ink), max(y for x,y,v in ink)]})
+                return values, signature
+
+            # egui fades popup areas in over 200ms. A readable early caption is
+            # not yet a valid enabled/disabled contrast calibration. Require
+            # unchanged pixels on fresh native frames across the fade window.
+            started = time.monotonic()
+            samples = []
+            stable = []
+            previous_frame = -1
+            failure = None
+            proof = {'minimum_samples':3, 'minimum_stable_ms':200, 'timeout_ms':10000,
+                     'samples':samples, 'settled':False}
+            try:
+                while time.monotonic()-started < 10:
+                    frame = self.inspect()['frame']
+                    if frame <= previous_frame:
+                        self.page.wait_for_timeout(25)
+                        continue
+                    previous_frame = frame
+                    picture = self.page.screenshot(scale='css')
+                    image = Image.open(io.BytesIO(picture)).convert('RGB')
+                    sample = {'frame':frame, 'elapsed_ms':(time.monotonic()-started)*1000}
+                    samples.append(sample)
+                    sample['image'] = f'{label}-caption-sample-{len(samples):03}.png'
+                    image.crop((more[0]+8, more[3]+5, more[0]+85, more[3]+59)).save(
+                        artifacts/sample['image'])
+                    try:
+                        values, signature = captions(image)
+                    except AssertionError as error:
+                        failure = str(error)
+                        sample['not_ready'] = failure
+                        stable = []
+                    else:
+                        sample['signature'] = signature
+                        stable = stable+[sample] if stable and signature == stable[-1]['signature'] else [sample]
+                        span = sample['elapsed_ms']-stable[0]['elapsed_ms']
+                        if len(stable) >= 3 and span >= 200:
+                            proof.update({'settled':True, 'stable_samples':len(stable),
+                                          'stable_span_ms':span,
+                                          'stable_frames':[row['frame'] for row in stable]})
+                            (artifacts/(label+'.png')).write_bytes(picture)
+                            return values
+                    self.page.wait_for_timeout(50)
+                (artifacts/(label+'-timeout.png')).write_bytes(picture)
+                self.fail(f'Native popup captions did not settle: samples={len(samples)}, '
+                          f'stable_samples={len(stable)}, last_caption_error={failure}')
+            finally:
+                (artifacts/(label+'-settling.json')).write_text(json.dumps(proof, indent=2)+'\n')
 
         enabled = menu('copy-ready-before-save')
         self.page.keyboard.press('Escape')
@@ -339,6 +396,23 @@ class MembershipReadiness(browser_tests.BrowserAcceptance):
 class ProjectResponseReadiness(browser_tests.BrowserAcceptance):
     """Keep actual project bodies pending past the former fixed-sleep assertions."""
 
+    def capture_project_list_snapshot(self, route):
+        response = super().capture_project_list_snapshot(route)
+        payload = response.body()
+        snapshot = response.json()
+        entry = {'status': response.status, 'bytes': len(payload),
+                 'sha256': hashlib.sha256(payload).hexdigest(),
+                 'trashed': [row['trashed'] for row in snapshot],
+                 'minimumMs': 1200, 'receivedAt': time.monotonic()*1000}
+        self._project_capture_delays = getattr(self, '_project_capture_delays', [])
+        self._project_capture_delays.append(entry)
+        # Keep the actual successful response pending beyond the old 150 ms
+        # capture assumption. Both stale snapshots must exercise this boundary.
+        self.page.wait_for_timeout(entry['minimumMs'])
+        entry['deliveredAt'] = time.monotonic()*1000
+        entry['elapsedMs'] = entry['deliveredAt']-entry['receivedAt']
+        return response
+
     def load(self, page, query='', expected_document=None):
         if page.url.startswith(browser_tests.BASE+'/'):
             self._project_body_delays = getattr(self, '_project_body_delays', []) + page.evaluate(
@@ -392,6 +466,17 @@ class ProjectResponseReadiness(browser_tests.BrowserAcceptance):
                                  'Both B opens and the superseded successful A download must complete')
                 self.assertEqual(sum(row['kind'] == 'stale-error' and row['status'] == 503 for row in events), 1)
             else:
+                captures = getattr(self, '_project_capture_delays', [])
+                (browser_tests.ARTIFACTS/(self._testMethodName+'-capture-delays.json')).write_text(
+                    json.dumps(captures, indent=2)+'\n')
+                self.assertEqual(len(captures), 2, 'Both real stale-list captures must finish')
+                self.assertEqual([row['status'] for row in captures], [200, 200])
+                self.assertEqual([row['trashed'] for row in captures], [[False], [True]])
+                for row in captures:
+                    self.assertGreater(row['bytes'], 0)
+                    self.assertEqual(len(row['sha256']), 64)
+                    self.assertIn('deliveredAt', row)
+                    self.assertGreaterEqual(row['elapsedMs'], 1200)
                 self.assertEqual(sum(row['kind'] == 'list' and row['status'] == 200 for row in events), 4,
                                  'Both current and both superseded list bodies must complete')
                 self.assertEqual(sorted(row['patches'] for row in events), [1, 1, 2, 2])
