@@ -8,6 +8,7 @@ save acknowledgment. The original journey assertions are reused unchanged.
 """
 import hashlib
 import json
+import time
 from collections import Counter
 
 from PIL import Image
@@ -339,6 +340,23 @@ class MembershipReadiness(browser_tests.BrowserAcceptance):
 class ProjectResponseReadiness(browser_tests.BrowserAcceptance):
     """Keep actual project bodies pending past the former fixed-sleep assertions."""
 
+    def capture_project_list_snapshot(self, route):
+        response = super().capture_project_list_snapshot(route)
+        payload = response.body()
+        snapshot = response.json()
+        entry = {'status': response.status, 'bytes': len(payload),
+                 'sha256': hashlib.sha256(payload).hexdigest(),
+                 'trashed': [row['trashed'] for row in snapshot],
+                 'minimumMs': 1200, 'receivedAt': time.monotonic()*1000}
+        self._project_capture_delays = getattr(self, '_project_capture_delays', [])
+        self._project_capture_delays.append(entry)
+        # Keep the actual successful response pending beyond the old 150 ms
+        # capture assumption. Both stale snapshots must exercise this boundary.
+        self.page.wait_for_timeout(entry['minimumMs'])
+        entry['deliveredAt'] = time.monotonic()*1000
+        entry['elapsedMs'] = entry['deliveredAt']-entry['receivedAt']
+        return response
+
     def load(self, page, query='', expected_document=None):
         if page.url.startswith(browser_tests.BASE+'/'):
             self._project_body_delays = getattr(self, '_project_body_delays', []) + page.evaluate(
@@ -392,6 +410,17 @@ class ProjectResponseReadiness(browser_tests.BrowserAcceptance):
                                  'Both B opens and the superseded successful A download must complete')
                 self.assertEqual(sum(row['kind'] == 'stale-error' and row['status'] == 503 for row in events), 1)
             else:
+                captures = getattr(self, '_project_capture_delays', [])
+                (browser_tests.ARTIFACTS/(self._testMethodName+'-capture-delays.json')).write_text(
+                    json.dumps(captures, indent=2)+'\n')
+                self.assertEqual(len(captures), 2, 'Both real stale-list captures must finish')
+                self.assertEqual([row['status'] for row in captures], [200, 200])
+                self.assertEqual([row['trashed'] for row in captures], [[False], [True]])
+                for row in captures:
+                    self.assertGreater(row['bytes'], 0)
+                    self.assertEqual(len(row['sha256']), 64)
+                    self.assertIn('deliveredAt', row)
+                    self.assertGreaterEqual(row['elapsedMs'], 1200)
                 self.assertEqual(sum(row['kind'] == 'list' and row['status'] == 200 for row in events), 4,
                                  'Both current and both superseded list bodies must complete')
                 self.assertEqual(sorted(row['patches'] for row in events), [1, 1, 2, 2])

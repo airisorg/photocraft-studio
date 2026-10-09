@@ -2267,6 +2267,11 @@ class BrowserAcceptance(unittest.TestCase):
                 self.assertEqual(before.crop(footer).tobytes(), after.crop(footer).tobytes(),
                                  'A superseded open changed the current project status')
 
+    def capture_project_list_snapshot(self, route):
+        # Overridden only by the adversarial readiness replay; normal journeys
+        # return the real response immediately, without a synthetic delay.
+        return route.fetch()
+
     def test_43_stale_project_lists_cannot_undo_visible_trash_or_restore(self):
         self.signed_in()
         self.new(455, 288)
@@ -2282,7 +2287,7 @@ class BrowserAcceptance(unittest.TestCase):
         def listing(route):
             if phase['hold']:
                 phase['hold'] = False
-                stale.append(route.fetch().json())
+                stale.append(self.capture_project_list_snapshot(route).json())
                 held.append(route)
             else:
                 route.continue_()
@@ -2339,6 +2344,15 @@ class BrowserAcceptance(unittest.TestCase):
                     self.page.wait_for_timeout(150)
                 phase['hold'] = True
                 menu_action(185)  # Star/unstar starts a real list refresh with the old trash state.
+                # PATCH headers do not mean its following GET has finished
+                # route.fetch()/JSON capture. Wait for the actual held snapshot.
+                capture_deadline = time.monotonic()+10
+                while len(held) < index+1 or len(stale) < index+1:
+                    if time.monotonic() >= capture_deadline:
+                        self.fail(f'Project list capture timed out: held={len(held)}, '
+                                  f'snapshots={len(stale)}, expected={index+1}, '
+                                  f'capture_requested={not phase["hold"]}')
+                    self.page.wait_for_timeout(25)
                 self.assertEqual(len(held), index+1)
                 self.assertEqual(next(p for p in stale[-1] if p['id'] == pid)['trashed'], not trashed)
                 with self.page.expect_response(lambda r: r.url == BASE+'/api/projects' and r.request.method == 'GET'):
