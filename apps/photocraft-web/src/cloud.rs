@@ -1728,7 +1728,6 @@ impl Cloud {
                             self.project_data(&ctx, &b.id, "members", format!("/api/projects/{}/members", b.id));
                         }
                         let can_save = !self.session_paused() && !self.busy && self.pending_document.is_none() && app.session.active().is_some();
-                        let can_save = !self.session_paused() && !self.busy && app.session.active().is_some();
                         let retry_save = self.user.is_some()
                             && binding.as_ref().is_none_or(|b| b.can_edit())
                             && (self.error || binding.as_ref().is_some_and(|b| b.revision == 0));
