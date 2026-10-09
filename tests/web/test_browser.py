@@ -15,6 +15,7 @@ import unittest
 from urllib.parse import urlparse
 import uuid
 import zipfile
+from collections import Counter
 
 from PIL import Image
 from playwright.sync_api import sync_playwright
@@ -209,6 +210,29 @@ class BrowserAcceptance(unittest.TestCase):
         self.wait_rendered(lambda image: assert_header_geometry(self, image, ['More', 'Comments', 'Save', 'Share']),
                            'first-save-acknowledged')
         return project
+
+    def open_more_copy(self, more, label, page=None):
+        page = page or self.page
+        page.mouse.click((more[0]+more[2])/2, (more[1]+more[3])/2)
+        # These are the first two native popup captions (Save a copy and
+        # Download .pcraft), relative to the measured More control. A processed
+        # conflict response does not mean the subsequent popup frame has painted.
+        def ready(image):
+            image = image.convert('RGB')
+            captions = []
+            for row in range(2):
+                rect = (more[0]+8, more[3]+5+row*30, more[0]+85, more[3]+29+row*30)
+                crop = image.crop(rect)
+                background = Counter(crop.getpixel((x,y)) for y in range(crop.height)
+                                     for x in range(crop.width)).most_common(1)[0][0]
+                ink = [(x,y) for y in range(crop.height) for x in range(crop.width)
+                       if max(abs(a-b) for a,b in zip(crop.getpixel((x,y)), background)) > 20]
+                self.assertGreater(len(ink), 70, 'The native More popup caption is not painted')
+                self.assertLessEqual(max(y for x,y in ink)-min(y for x,y in ink), 16,
+                                     'The sample does not isolate a native popup caption')
+                captions.append(((rect[0]+rect[2])/2, (rect[1]+rect[3])/2))
+            return captions[0]
+        return self.wait_rendered(ready, label, page)
 
     def open_sharing(self):
         controls = self.wait_rendered(lambda image: assert_header_geometry(self, image, ['More', 'Comments', 'Save', 'Share']),
@@ -541,12 +565,13 @@ class BrowserAcceptance(unittest.TestCase):
             self.assertGreaterEqual(controls[2][2]-controls[2][0], 80, 'The conflict response has not painted Retry save')
             return controls
         more = self.wait_rendered(conflict_ready, 'conflict-ready', second)[0]
-        self.assertTrue(self.inspect(second)['document']['canUndo'])
+        local_copy = self.inspect(second)['document']
+        self.assertTrue(local_copy['canUndo'])
         self.assertEqual(self.projects()[0]['revision'], 2, 'A stale browser overwrote the saved document')
+        original = self.auth_revision(project['id'], 2)
         second.screenshot(path=str(ARTIFACTS/'conflict-preserved.png'))
-        second.mouse.click((more[0]+more[2])/2, (more[1]+more[3])/2)
-        second.wait_for_timeout(200)
-        second.mouse.click(more[0]+30, 64)
+        copy = self.open_more_copy(more, 'conflict-copy-menu-ready', second)
+        second.mouse.click(*copy)
         deadline=time.monotonic()+15
         while time.monotonic()<deadline:
             projects=self.projects()
@@ -555,6 +580,25 @@ class BrowserAcceptance(unittest.TestCase):
             second.wait_for_timeout(300)
         else:
             self.fail('Save a copy did not retain the conflicting browser document')
+        copy_id = next(p['id'] for p in projects if p['id'] != project['id'])
+        copy_meta = self.auth_revision(copy_id, 1)
+        self.assertNotEqual(copy_meta['content']['sha256'], original['content']['sha256'])
+        self.load(second, '?project='+copy_id, expected_document=local_copy)
+        with second.expect_download() as exported:
+            self.command('ui.menu.invoke', {'id':'file.export.quickExportAsPng'}, page=second)
+        copy_path = ARTIFACTS/'conflict-copy-reloaded.png'
+        exported.value.save_as(copy_path)
+        self.assertIsNone(exported.value.failure())
+        copy_pixels = Image.open(copy_path).convert('RGB')
+        self.assertEqual(copy_pixels.size, (320, 240))
+        self.assertEqual(copy_pixels.tobytes(), bytes((0, 0, 255))*320*240,
+                         'The reloaded saved copy lost the conflicting browser pixels')
+        original_pixels = Image.open(self.download('file.export.quickExportAsPng')).convert('RGB')
+        self.assertEqual(original_pixels.size, (320, 240))
+        self.assertEqual(original_pixels.tobytes(), bytes((255, 0, 0))*320*240)
+        original_after = self.auth_revision(project['id'], 2)
+        self.assertEqual(original_after['revision'], 2, 'Saving a copy advanced the original project')
+        self.assertEqual(original_after['content']['sha256'], original['content']['sha256'])
 
     def test_14_templates_keep_editable_text_and_shapes(self):
         for slug in ['noise', 'sunday', 'next', 'soul', 'softform', 'afterhours']:
