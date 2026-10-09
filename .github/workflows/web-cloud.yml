@@ -14,7 +14,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   acceptance:
-    runs-on: ubuntu-latest
+    runs-on: tofu-ci-8-core
     # Cold compilation consumes about 32 minutes before the complete browser,
     # collaboration and packaging suites start. Keep the full suite bounded.
     timeout-minutes: 120
@@ -138,7 +138,7 @@ jobs:
           retention-days: 7
   container-package:
     needs: acceptance
-    runs-on: ubuntu-latest
+    runs-on: tofu-ci-8-core
     timeout-minutes: 35
     steps:
       # Fresh runner and caller-revision orchestration/tests. Candidate code is
