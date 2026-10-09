@@ -158,6 +158,7 @@ The remapped artifact above has zero home-path matches; every browser and hardwa
 timing gate was rerun against its exact hash. Earlier receipts remain retained as
 superseded evidence rather than being attributed to the replacement artifact.
 
+## Publication boundary from the earlier review
 ## Publication boundary
 
 Gitleaks inspected 412 reachable commits and found zero secrets before remediation. A separate object scan found eight historical restricted brand paths, three home-path-containing blob revisions across two repository paths, and 53 author email identities requiring manual review. The current restricted artwork was already removed; the current fork checkpoint path is now redacted. History remains unchanged.

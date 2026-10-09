@@ -130,6 +130,156 @@ class PublicationHistory(unittest.TestCase):
                             self.assertEqual(marker.read_text().splitlines(), ['-y', '--profile', 'minimal',
                                              '--default-host', 'x86_64-unknown-freebsd', '--default-toolchain', 'stable'])
 
+    def test_nfpm_download_pin_and_fail_closed_installation(self):
+        root = Path(__file__).resolve().parents[2]
+        source = (root/'.github/workflows/release.yml').read_text()
+        pins = {
+            'amd64': '3f1cf344bd0b57373ca55636a78c08b0491f7293d609a456a9ac3b0b150fda97',
+            'arm64': '27419eb382695a7942be8ad52259f3ec1854fad001b3ae4baed34ce39a223b97',
+        }
+        self.assertIn('NFPM_VERSION: 2.47.0', source)
+        step = source.split('      - name: Install verified nFPM\n', 1)[1].split('\n      - ', 1)[0]
+        self.assertIn('NFPM_DEB_ARCH: ${{ matrix.deb }}', step)
+        self.assertIn('NFPM_DEB_SHA256: ${{ matrix.nfpm_sha256 }}', step)
+        block = textwrap.dedent(step.split('        run: |\n', 1)[1])
+        self.assertNotIn('${{', block, 'Shell source must not interpolate workflow expressions')
+        payload = b'Harmless synthetic DEB bytes; never installed or executed.\n'
+        fixture_digest = hashlib.sha256(payload).hexdigest()
+        with tempfile.TemporaryDirectory() as directory:
+            temp = Path(directory)
+            binaries = temp/'bin'
+            binaries.mkdir()
+            programs = {
+                'curl': '#!'+sys.executable+'\nimport os,sys\nfrom pathlib import Path\n'
+                        'assert sys.argv[-1] == "https://github.com/goreleaser/nfpm/releases/download/v2.47.0/nfpm_2.47.0_"+os.environ["NFPM_DEB_ARCH"]+".deb"\n'
+                        'data='+repr(payload)+'\n'
+                        'if os.environ["FIXTURE_MODE"] == "tampered": data += b"corruption"\n'
+                        'Path(sys.argv[sys.argv.index("--output")+1]).write_bytes(data)\n'
+                        'with open(os.environ["FIXTURE_LOG"],"a") as f: f.write("download\\n")\n'
+                        'if os.environ["FIXTURE_MODE"] == "download-error": sys.exit(22)\n',
+                'sha256sum': '#!'+sys.executable+'\nimport hashlib,os,sys\nfrom pathlib import Path\n'
+                             'assert sys.argv[1:] == ["--check","--status"]\n'
+                             'expected,name=sys.stdin.read().rstrip("\\n").split("  ",1)\n'
+                             'with open(os.environ["FIXTURE_LOG"],"a") as f: f.write("checksum\\n")\n'
+                             'sys.exit(0 if hashlib.sha256(Path(name).read_bytes()).hexdigest()==expected else 1)\n',
+                'sudo': '#!'+sys.executable+'\nimport os,sys\nfrom pathlib import Path\n'
+                        'assert sys.argv[1:3] == ["dpkg","-i"] and len(sys.argv)==4\n'
+                        'assert Path(sys.argv[3]).read_bytes()=='+repr(payload)+'\n'
+                        'with open(os.environ["FIXTURE_LOG"],"a") as f: f.write("install\\n")\n',
+            }
+            for name, content in programs.items():
+                path=binaries/name
+                path.write_text(content)
+                path.chmod(0o700)
+            for arch, pin in pins.items():
+                self.assertRegex(source, r'deb: '+arch+r', nfpm_sha256: '+pin+r'\s*}')
+                for mode in ['tampered', 'download-error', 'wrong-pin', 'valid']:
+                    with self.subTest(arch=arch, mode=mode):
+                        log=temp/'commands'
+                        log.write_text('')
+                        environment={**os.environ, 'PATH':str(binaries)+':/usr/bin:/bin',
+                                     'RUNNER_TEMP':str(temp), 'NFPM_VERSION':'2.47.0',
+                                     'NFPM_DEB_ARCH':arch, 'NFPM_DEB_SHA256':'0'*64 if mode=='wrong-pin' else fixture_digest,
+                                     'FIXTURE_MODE':mode, 'FIXTURE_LOG':str(log)}
+                        result=subprocess.run(['/bin/bash', '-c', block], env=environment, capture_output=True)
+                        self.assertEqual(result.returncode==0, mode=='valid', result.stderr.decode())
+                        expected=['download'] if mode=='download-error' else ['download','checksum']
+                        if mode=='valid': expected.append('install')
+                        self.assertEqual(log.read_text().splitlines(), expected)
+                        self.assertEqual(list(temp.glob('photocraft-nfpm.*')), [], 'Remove only the owned download directory')
+
+    def verified_tool_fixture(self, block, expected_url, pins, *, appimage_arch=None):
+        """Execute the original shell with harmless transfers/install targets only."""
+        payload = b'#!/bin/sh\nprintf "execute\\n" >> "$FIXTURE_LOG"\n'
+        digest = hashlib.sha256(payload).hexdigest()
+        for pin in pins:
+            self.assertIn(pin, block)
+            block = block.replace(pin, digest)
+        # Keep the shell logic; redirect only its ordinary runner output directory.
+        block = block.replace('$HOME/.cargo/bin', '$FIXTURE_BIN')
+        with tempfile.TemporaryDirectory() as directory:
+            temp = Path(directory)
+            binaries = temp/'bin';binaries.mkdir()
+            cache = temp/'cache';cache.mkdir()
+            target = temp/'cargo-bin';target.mkdir()
+            programs = {
+                'curl': '#!'+sys.executable+'\nimport os,sys\nfrom pathlib import Path\n'
+                        'assert sys.argv[-1] == os.environ["FIXTURE_URL"]\n'
+                        'data='+repr(payload)+'\n'
+                        'if os.environ["FIXTURE_MODE"] == "tampered": data += b"changed"\n'
+                        'Path(sys.argv[sys.argv.index("--output")+1]).write_bytes(data)\n'
+                        'with open(os.environ["FIXTURE_LOG"],"a") as f: f.write("download\\n")\n'
+                        'if os.environ["FIXTURE_MODE"] == "download-error": sys.exit(22)\n',
+                'sha256sum': '#!'+sys.executable+'\nimport hashlib,os,sys\nfrom pathlib import Path\n'
+                             'assert sys.argv[1:] == ["--check","--status"]\n'
+                             'expected,name=sys.stdin.read().rstrip("\\n").split("  ",1)\n'
+                             'with open(os.environ["FIXTURE_LOG"],"a") as f: f.write("checksum\\n")\n'
+                             'sys.exit(0 if hashlib.sha256(Path(name).read_bytes()).hexdigest()==expected else 1)\n',
+                'tar': '#!'+sys.executable+'\nimport os,sys\nfrom pathlib import Path\n'
+                       'assert sys.argv[1] == "-xzf" and sys.argv[3] == "-C" and sys.argv[5:] == ["trunk"]\n'
+                       'assert Path(sys.argv[2]).read_bytes()=='+repr(payload)+'\n'
+                       'target=Path(sys.argv[4])/"trunk"\n'
+                       'target.write_bytes('+repr(payload)+');target.chmod(0o700)\n'
+                       'with open(os.environ["FIXTURE_LOG"],"a") as f: f.write("extract\\n")\n',
+            }
+            for name, content in programs.items():
+                path=binaries/name;path.write_text(content);path.chmod(0o700)
+            log=temp/'commands'
+            modes=['tampered','download-error','valid']
+            if appimage_arch: modes += ['cached-valid','cached-tampered']
+            for mode in modes:
+                with self.subTest(architecture=appimage_arch,mode=mode):
+                    for path in cache.iterdir(): path.unlink()
+                    for path in target.iterdir(): path.unlink()
+                    log.write_text('')
+                    if mode.startswith('cached-'):
+                        cached=cache/('appimagetool-1.9.1-'+appimage_arch+'.AppImage')
+                        cached.write_bytes(payload+(b'changed' if mode=='cached-tampered' else b''))
+                        cached.chmod(0o700)
+                    env={**os.environ,'PATH':str(binaries)+':/usr/bin:/bin','RUNNER_TEMP':str(temp),
+                         'FIXTURE_BIN':str(target),'CARGO_TARGET_DIR':str(cache),
+                         'APPIMAGETOOL':'','ARCH':appimage_arch or 'x86_64','TRUNK_VERSION':'0.21.14',
+                         'FIXTURE_MODE':mode,'FIXTURE_LOG':str(log),'FIXTURE_URL':expected_url}
+                    script=block+('\n"$TOOL" --version\n' if appimage_arch else '')
+                    result=subprocess.run(['/bin/bash','-euo','pipefail','-c',script],env=env,capture_output=True)
+                    valid=mode in ['valid','cached-valid']
+                    self.assertEqual(result.returncode==0,valid,result.stderr.decode())
+                    events=log.read_text().splitlines()
+                    if mode=='download-error': expected=['download']
+                    elif mode=='cached-tampered': expected=['checksum']
+                    elif mode=='cached-valid': expected=['checksum','execute']
+                    elif mode=='tampered': expected=['download','checksum']
+                    elif appimage_arch: expected=['download','checksum','checksum','execute']
+                    else: expected=['download','checksum','extract','execute']
+                    self.assertEqual(events,expected)
+                    self.assertEqual(list(temp.glob('photocraft-trunk.*')),[])
+                    self.assertEqual(list(cache.glob('.appimagetool.*')),[])
+                    if not valid and not mode.startswith('cached-'):
+                        self.assertEqual(list(cache.iterdir()),[])
+                        self.assertEqual(list(target.iterdir()),[])
+
+    def test_trunk_archive_is_verified_before_extract_or_execute(self):
+        root=Path(__file__).resolve().parents[2]
+        source=(root/'.github/workflows/release.yml').read_text()
+        self.assertIn('TRUNK_VERSION: 0.21.14',source)
+        step=source.split('      - name: Install trunk\n',1)[1].split('\n      - ',1)[0]
+        block=textwrap.dedent(step.split('        run: |\n',1)[1])
+        self.assertIn('--max-time 120 --max-filesize 16777216',block)
+        self.assertNotRegex(block,r'curl[^\n]*\|')
+        self.verified_tool_fixture(block,'https://github.com/trunk-rs/trunk/releases/download/v0.21.14/trunk-x86_64-unknown-linux-gnu.tar.gz',
+                                   ['f2b4680cd239693a646a2795e4633c625328d7b2a044fbe749fa3a2fe9e7036b'])
+
+    def test_appimagetool_download_and_cache_are_pinned_before_execute(self):
+        root=Path(__file__).resolve().parents[2]
+        source=(root/'packaging/linux/package.sh').read_text()
+        self.assertNotIn('/download/continuous/',source)
+        block=textwrap.dedent('  TOOL="${APPIMAGETOOL:'+source.split('  TOOL="${APPIMAGETOOL:',1)[1].split('  # Absolute,',1)[0])
+        self.assertIn('--max-time 120 --max-filesize 33554432',block)
+        pins=['ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0',
+              'f0837e7448a0c1e4e650a93bb3e85802546e60654ef287576f46c71c126a9158']
+        for arch in ['x86_64','aarch64']:
+            self.verified_tool_fixture(block,'https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-'+arch+'.AppImage',pins,appimage_arch=arch)
+
     def test_privileged_workflow_actions_are_immutable(self):
         root = Path(__file__).resolve().parents[2]
         for name in ["release.yml", "update-and-release.yml"]:

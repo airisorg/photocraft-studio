@@ -121,6 +121,7 @@ pub struct Cloud {
     sign_in: bool,
     user: Option<Value>,
     projects: Vec<Value>,
+    projects_loading: bool,
     list_generation: u64,
     bindings: HashMap<DocId, Binding>,
     uncertain_commits: HashMap<DocId, Vec<UncertainCommit>>,
@@ -377,6 +378,7 @@ impl Cloud {
             sign_in: false,
             user: None,
             projects: vec![],
+            projects_loading: false,
             list_generation: 0,
             bindings: HashMap::new(),
             uncertain_commits: HashMap::new(),
@@ -461,6 +463,7 @@ impl Cloud {
     }
     fn pause_session(&mut self) {
         self.auth_allowed.set(false);
+        self.projects_loading = false;
         self.session_warning = Some("Your session expired. Sign in again to resume cloud saving and sharing.".into());
         // Keep account scope, native documents and commit evidence. Only remote UI work stops.
         self.cancel_open();
@@ -531,6 +534,7 @@ impl Cloud {
         if self.session_paused() {
             return;
         }
+        self.projects_loading = true;
         self.list_generation = self.list_generation.wrapping_add(1);
         let generation = self.list_generation;
         cloud_task(self.http(ctx), move |http| async move { Ok(Message::List(generation, http.api("GET", "/api/projects", None).await, mutation)) });
@@ -624,6 +628,7 @@ impl Cloud {
         });
     }
     fn receive_projects(&mut self, ctx: &egui::Context, v: Value) {
+        self.projects_loading = false;
         self.projects = arr(v);
         for p in &self.projects {
             let id = field(p, "id").to_string();
@@ -772,6 +777,7 @@ impl Cloud {
                         }
                         Ok((Some(user), _)) => {
                             self.auth_allowed.set(false);
+                            self.projects_loading = false;
                             self.session_warning = Some(format!(
                                 "Signed in as {}. This workspace belongs to {}. Sign in with the original account to resume.",
                                 field(&user, "email"),
@@ -780,10 +786,12 @@ impl Cloud {
                         }
                         Ok((None, _)) => {
                             self.auth_allowed.set(false);
+                            self.projects_loading = false;
                             self.session_warning = Some("Sign-in is not complete. Finish signing in in the new tab, then check again.".into());
                         }
                         Err(error) => {
                             self.auth_allowed.set(false);
+                            self.projects_loading = false;
                             self.session_warning =
                                 Some(format!("Could not verify your account and project access: {error}. Check sign-in again when connected."));
                         }
@@ -842,6 +850,7 @@ impl Cloud {
                     if generation != self.list_generation {
                         continue;
                     }
+                    self.projects_loading = false;
                     match result {
                         Ok(projects) => {
                             self.receive_projects(ctx, projects);
@@ -1006,6 +1015,7 @@ impl Cloud {
                     self.pending_document = None;
                     self.deferred_save = None;
                     self.projects.clear();
+                    self.projects_loading = false;
                     self.textures.retain(|key, _| key.starts_with("starter/"));
                     self.drafts.clear();
                     // Old async writers keep their revoked permit; new guest work gets a fresh one.
@@ -1717,7 +1727,7 @@ impl Cloud {
                             self.share_url.clear();
                             self.project_data(&ctx, &b.id, "members", format!("/api/projects/{}/members", b.id));
                         }
-                        let can_save = !self.session_paused() && !self.busy && app.session.active().is_some();
+                        let can_save = !self.session_paused() && !self.busy && self.pending_document.is_none() && app.session.active().is_some();
                         let retry_save = self.user.is_some()
                             && binding.as_ref().is_none_or(|b| b.can_edit())
                             && (self.error || binding.as_ref().is_some_and(|b| b.revision == 0));
@@ -1759,7 +1769,7 @@ impl Cloud {
                                     ui.close();
                                 }
                             }
-                            if ui.add_enabled(!self.session_paused(), egui::Button::new("Save a copy")).clicked() {
+                            if ui.add_enabled(can_save, egui::Button::new("Save a copy")).clicked() {
                                 self.save(app, &ctx, true);
                                 ui.close();
                             }

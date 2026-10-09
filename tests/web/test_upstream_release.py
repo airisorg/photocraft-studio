@@ -12,6 +12,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
+from unittest import mock
 import zipfile
 
 SPEC = importlib.util.spec_from_file_location('upstream_release', Path(__file__).resolve().parents[2] / 'packaging/web/upstream-release.py')
@@ -33,6 +34,20 @@ class UpstreamRelease(unittest.TestCase):
         os.chdir(self.source)
         self.identity()
         self.commit('engine.rs', 'original engine')
+        for name in ['LICENSE-MIT', 'LICENSE-APACHE', 'NOTICE', 'ATTRIBUTION.md', 'SECURITY.md',
+                     'assets/fonts/OFL-Inter.txt', 'assets/fonts/OFL-JetBrainsMono.txt',
+                     'assets/icons/LICENSE-lucide.txt', 'assets/dict/LICENSE-SCOWL.txt']:
+            path = Path(name)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text('Synthetic publication notice')
+        release.git('add', '--all')
+        release.git('commit', '-m', 'Synthetic required notices')
+        # The real Git history/ref/notice checks run below; only the external
+        # scanner is substituted so these fixtures do not require its binary.
+        scanner = mock.patch.object(release.publication, 'secrets',
+                                    return_value={'status': 'checked', 'findings': 0})
+        self.secret_scan = scanner.start()
+        self.addCleanup(scanner.stop)
         release.git('clone', str(self.source), str(self.upstream))
         release.git('init', '--bare', str(self.origin))
         release.git('remote', 'add', 'origin', str(self.origin))
@@ -57,6 +72,7 @@ class UpstreamRelease(unittest.TestCase):
         release.git('config', 'user.email', 'test@example.invalid')
 
     def commit(self, path, content):
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
         Path(path).write_text(content)
         release.git('add', path)
         release.git('commit', '-m', 'Fixture change')
@@ -143,6 +159,67 @@ class UpstreamRelease(unittest.TestCase):
         self.assertEqual(manifest['sourceCommit'], info['candidate'])
         self.assertEqual(manifest['upstreamCommit'], info['upstream'])
         self.assertEqual(self.prepare()['needed'], 'false', 'An unchanged schedule must not redeploy')
+
+    def test_deleted_restricted_ancestor_is_rejected_before_candidate_push(self):
+        with self.at(self.upstream):
+            self.commit('docs/brand/synthetic-mark.svg', '<svg>restricted fixture</svg>')
+            release.git('rm', 'docs/brand/synthetic-mark.svg')
+            release.git('commit', '-m', 'Remove current mark but retain history')
+        with self.assertRaisesRegex(ValueError, 'publication check failed'):
+            self.prepare()
+        self.assertEqual(self.remote_head(), self.base)
+        self.assertEqual(release.git('ls-remote', 'origin', 'refs/heads/automation/upstream-test').stdout, '')
+
+    def test_candidate_cannot_replace_the_trusted_publication_checker(self):
+        with self.at(self.upstream):
+            self.commit('packaging/web/check-publication.py',
+                        'from pathlib import Path\nPath("untrusted-checker-executed").write_text("bad")\n')
+            self.commit('private-fixture.txt', '/Users/' + 'synthetic-fixture/private-project/')
+        with self.assertRaisesRegex(ValueError, 'publication check failed'):
+            self.prepare()
+        self.assertFalse(Path('untrusted-checker-executed').exists())
+        self.assertEqual(release.git('ls-remote', 'origin', 'refs/heads/automation/upstream-test').stdout, '')
+
+    def test_unavailable_or_positive_secret_scan_refuses_remote_writes(self):
+        for status in [{'status': 'unavailable', 'findings': None},
+                       {'status': 'error', 'findings': None},
+                       {'status': 'checked', 'findings': 1}]:
+            with self.subTest(status=status):
+                self.secret_scan.return_value = status
+                with self.assertRaisesRegex(ValueError, 'publication check failed'):
+                    self.prepare()
+                self.assertEqual(self.remote_head(), self.base)
+                self.assertEqual(release.git('ls-remote', 'origin', 'refs/heads/automation/upstream-test').stdout, '')
+
+    def test_exact_ref_checks_candidate_notices_and_rejects_option_like_refs(self):
+        release.git('rm', 'NOTICE')
+        release.git('commit', '-m', 'Synthetic missing candidate notice')
+        candidate = self.head()
+        release.git('checkout', '--detach', self.base)
+        report = release.publication.check(self.source, ref=candidate)
+        self.assertEqual(report['sourceCommit'], candidate)
+        self.assertEqual(report['missingNoticeCount'], 1)
+        self.assertFalse(report['passed'])
+        self.assertTrue(Path('NOTICE').exists(), 'Current checkout must not substitute candidate notices')
+        Path('NOTICE').unlink()
+        Path('NOTICE').symlink_to('LICENSE-MIT')
+        release.git('add', 'NOTICE')
+        release.git('commit', '-m', 'Synthetic symlink notice')
+        symlink_candidate = self.head()
+        release.git('checkout', '--detach', self.base)
+        self.assertEqual(release.publication.check(self.source, ref=symlink_candidate)['missingNoticeCount'], 1)
+        for ref in ['main', '--all', 'a'*39, 'A'*40, 'a'*40+' --all']:
+            with self.subTest(ref=ref), self.assertRaises(ValueError):
+                release.publication.check(self.source, ref=ref)
+
+    def test_exact_ref_excludes_unpublished_private_branch_but_default_does_not(self):
+        release.git('checkout', '-b', 'unpublished-private')
+        self.commit('private-fixture.txt', '/home/' + 'synthetic-fixture/private/')
+        release.git('checkout', 'main')
+        self.assertTrue(release.publication.check(self.source, ref=self.base)['passed'])
+        self.assertFalse(release.publication.check(self.source)['passed'])
+        info = self.prepare()
+        self.assertEqual(self.remote_head('automation/upstream-test'), info['candidate'])
 
     def test_later_release_is_fast_forward_and_removes_obsolete_files(self):
         first = self.prepare()

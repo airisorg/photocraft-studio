@@ -15,7 +15,9 @@ concurrency:
 jobs:
   acceptance:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # Cold compilation consumes about 32 minutes before the complete browser,
+    # collaboration and packaging suites start. Keep the full suite bounded.
+    timeout-minutes: 120
     services:
       postgres:
         image: postgres:16
@@ -36,6 +38,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ inputs.source_ref || github.sha }}
+          fetch-depth: 0
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@eb0a44f258ec94ab9ee0f14f998f4cf332c25d3a # 1.95.0
         with:
@@ -48,6 +51,15 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.13'
+      - name: Install verified publication scanner
+        run: python packaging/web/install-gitleaks.py --destination "$RUNNER_TEMP/gitleaks-bin"
+      - name: Expose verified publication scanner
+        run: printf '%s\n' "$RUNNER_TEMP/gitleaks-bin" >> "$GITHUB_PATH"
+      - name: Check publication ancestry
+        env:
+          PUBLICATION_SOURCE: ${{ inputs.source_ref || github.sha }}
+        run: |
+          python packaging/web/check-publication.py --ref "$PUBLICATION_SOURCE" --output "$RUNNER_TEMP/publication.json"
       - name: Install browser dependencies and Trunk
         run: |
           python -m pip install -r tests/web/requirements.txt
@@ -57,6 +69,8 @@ jobs:
         run: |
           python -m unittest discover -s tests/web -p test_upstream_release.py
           python -m unittest discover -s tests/web -p test_publication.py
+          python -m unittest discover -s tests/web -p test_gitleaks_install.py
+          python -m unittest discover -s tests/web -p test_publication_policy.py
           python -m unittest discover -s tests/web -p test_discovery.py
           python -m unittest discover -s tests/web -p test_benchmark_scale.py
           python -m unittest discover -s tests/web -p test_rust_notices.py
@@ -104,6 +118,13 @@ jobs:
           python tests/web/test_archive_security.py
           python tests/web/test_renderer_startup.py
           python tests/web/test_discovery_browser.py
+          # Report the first failed journey immediately instead of losing its
+          # traceback to a job timeout. A passing run still executes every case.
+          # Exercise deliberately delayed startup/save frames before the long
+          # base suite so a readiness regression gets its own early traceback.
+          python tests/web/test_workspace_loading.py -f
+          python tests/web/test_browser_readiness.py -f
+          python tests/web/test_browser.py -f
           python tests/web/test_browser.py
           PHOTOCRAFT_PAINT_CALIBRATION=1 python -m unittest discover -s tests/web -p test_paint_latency.py
           python tests/web/test_live_browser.py
