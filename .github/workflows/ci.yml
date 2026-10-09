@@ -150,7 +150,6 @@ jobs:
         run: cargo xtask wasm
 
   fuzz:
-    if: github.event.pull_request.head.repo.full_name == github.repository
     name: fuzz (${{ matrix.target.crate }}/${{ matrix.target.name }})
     # Placeholder: manual trigger only until a nightly schedule is enabled.
     if: github.event_name == 'workflow_dispatch' && inputs.fuzz
