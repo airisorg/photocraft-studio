@@ -104,11 +104,25 @@ if has appimage; then
 
   TOOL="${APPIMAGETOOL:-$(command -v appimagetool || true)}"
   if [ -z "$TOOL" ]; then
-    TOOL="$CARGO_TARGET_DIR/appimagetool-$ARCH.AppImage"
-    if [ ! -x "$TOOL" ]; then
-      curl -fsSL -o "$TOOL" "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-$ARCH.AppImage"
-      chmod +x "$TOOL"
+    # Modified by PhotoCraft Studio: pin official 1.9.1 release bytes, including
+    # cached downloads. An explicitly supplied/preinstalled tool remains caller-owned.
+    case "$ARCH" in
+      x86_64) appimage_sha=ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0 ;;
+      aarch64) appimage_sha=f0837e7448a0c1e4e650a93bb3e85802546e60654ef287576f46c71c126a9158 ;;
+      *) echo 'unsupported AppImageTool architecture' >&2; exit 2 ;;
+    esac
+    TOOL="$CARGO_TARGET_DIR/appimagetool-1.9.1-$ARCH.AppImage"
+    if [ ! -f "$TOOL" ]; then
+      appimage_tmp=$(mktemp "$CARGO_TARGET_DIR/.appimagetool.XXXXXX")
+      trap 'rm -f -- "$appimage_tmp"' EXIT HUP INT TERM
+      curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL --connect-timeout 15 --max-time 120 --max-filesize 33554432 \
+        --output "$appimage_tmp" "https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-$ARCH.AppImage"
+      printf '%s  %s\n' "$appimage_sha" "$appimage_tmp" | sha256sum --check --status
+      mv -- "$appimage_tmp" "$TOOL"
+      trap - EXIT HUP INT TERM
     fi
+    printf '%s  %s\n' "$appimage_sha" "$TOOL" | sha256sum --check --status
+    chmod +x "$TOOL"
   fi
   # Absolute, because appimagetool runs in $DIST below (CARGO_TARGET_DIR or APPIMAGETOOL may be
   # relative, e.g. target/agent-<name>).
