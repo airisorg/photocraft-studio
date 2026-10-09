@@ -12,6 +12,9 @@ replace the editor or remove contributor credits. Keep the original repository p
 for recovery. A sanitized public history must not merge the original upstream ancestry
 back in: an approved sanitized import path is required before activating automatic updates.
 
+Git history and imports changes through Git merges; GitHub's fork metadata is not required.
+Publishing that history requires the review described in [the security policy](../SECURITY.md).
+
 ## Boundaries that keep updates manageable
 
 - `crates/` remains the original editor. Keep browser portability fixes small and useful
@@ -38,6 +41,7 @@ not instantaneous.
    Gitleaks, private paths or restricted historical marks stop the push. The checker is
    loaded before merging, so candidate code cannot replace it in the write-permission job.
    Promotion repeats this check. A candidate is
+2. A conflict stops the run without changing main or the deployed branch. A candidate is
    retained under `automation/upstream-*` when acceptance fails so it can be inspected.
 3. Call the existing CI and browser/cloud workflows at the candidate's full commit SHA:
    native tests on Linux/macOS/Windows, corpora, layering, WASM, lint, generated scorecard,
@@ -134,6 +138,9 @@ and personal home paths. A prepared sanitized copy must pass its own full-histor
 that does not approve importing the original ancestry later. Keep automatic updates
 disabled until the sanitized import boundary is reviewed, and run the publication gate
 before pushing public candidates.
+The current full-history publication gate fails on retained artwork and personal home
+paths. Do not enable this workflow in a public repository until those boundaries are
+resolved, and run the publication gate before pushing public candidates.
 
 After completing that review and the trusted bootstrap, set
 `PHOTOCRAFT_UPSTREAM_UPDATES_ENABLED=true` and run **Upstream and tested web release**

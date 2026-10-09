@@ -17,6 +17,13 @@ PhotoCraft Studio is deployed on [Tofu](https://trytofu.ai/), which helps your c
 The editing video finishes an original roller-night poster with Type, Move and Pencil, then shows Undo/Redo and a layered file save/reopen. In the collaboration video, Maya develops the headline and composition while Leo draws the finishing details. Real collaborator cursors, Pencil/Move previews and matching saved results are visible. Both films run at original speed in this browser editor, recorded locally with a fictional event and controlled accounts. The public editor is deployed on Tofu; these recordings do not measure internet latency.
 
 [![Maya and Leo’s native PhotoCraft views showing the same finished roller-night poster](docs/media/collaboration-preview.png)](https://photocraft-studio-d42c446ec275.trytofu.app/about.html#collaboration-demo)
+![PhotoCraft Studio running in a browser with an editable starter design, native tools and nine layers](docs/media/editor.png)
+
+[Watch the editing walkthrough](https://photocraft-studio-d42c446ec275.trytofu.app/media/editing-walkthrough.mp4) · [Watch two editors collaborate](https://photocraft-studio-d42c446ec275.trytofu.app/media/collaboration-demo.mp4)
+
+The editing video follows a real template through text changes, artwork movement, Undo/Redo and a layered file download/reopen. The collaboration video shows two independent browser sessions, including collaborator cursors and paint previews. Both are recorded locally at original speed using this browser editor. The public editor is deployed on Tofu. The collaboration workspace uses disposable test accounts; it is not a measurement of internet latency.
+
+[![Two native PhotoCraft canvases showing the same drawing from two editors](docs/media/collaboration-preview.png)](https://photocraft-studio-d42c446ec275.trytofu.app/about.html#collaboration-demo)
 
 ## What we added
 

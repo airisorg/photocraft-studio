@@ -21,6 +21,10 @@ use different commit identifiers while preserving the same source and contributo
 The comparison fetch above is local; do not push original upstream refs into a sanitized
 public repository. The [publication policy](../SECURITY.md) still applies to new refs.
 
+git diff 3a3984075a1fd06d1af3e660aa376ee5368c4f73 -- crates/ui-egui/src/canvas.rs
+git log --oneline 3a3984075a1fd06d1af3e660aa376ee5368c4f73..HEAD -- crates/engine
+```
+
 ## Added adapters
 
 | Path | Responsibility |
