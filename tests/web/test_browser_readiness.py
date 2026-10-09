@@ -256,9 +256,191 @@ class BrowserReadiness(browser_tests.BrowserAcceptance):
             super().tearDown()
 
 
+class MembershipReadiness(browser_tests.BrowserAcceptance):
+    """Replay project return while its real current-generation members GET is late."""
+
+    def load(self, page, query='', expected_document=None):
+        page.add_init_script(r'''(() => {
+          if (window.__ciMembershipDelivery) return;
+          const original = window.fetch.bind(window);
+          const state = window.__ciMembershipDelivery = {events: [], path: null, serial: 0};
+          window.fetch = async (...args) => {
+            const input = args[0];
+            const url = new URL(typeof input === 'string' ? input : input.url, location.href);
+            const method = (args[1]?.method || (typeof input === 'string' ? 'GET' : input.method) || 'GET').toUpperCase();
+            const startedAt = performance.now();
+            const response = await original(...args);
+            if (method === 'POST' && /^\/api\/projects\/[^/]+\/invite$/.test(url.pathname) && response.ok) {
+              // The inherited journey synthesizes this ACK after a real PUT
+              // grants membership. It never calls an email provider.
+              state.path = url.pathname.replace(/\/invite$/, '/members');
+            }
+            if (method === 'GET' && url.pathname === state.path && state.serial < 2) {
+              const members = await response.clone().json();
+              const entry = {index: ++state.serial, status: response.status,
+                startedAt, receivedAt: performance.now(), rowCount: members.length,
+                expectedMember: members.some(m => m.email === 'return-to-project@example.invalid' && m.role === 'edit'),
+                minimumMs: state.serial === 2 ? 1500 : 0};
+              state.events.push(entry);
+              // The first result belongs to the old invitation generation;
+              // only the following refresh can paint the returned A dialog.
+              await new Promise(resolve => setTimeout(resolve, entry.minimumMs));
+              entry.deliveredAt = performance.now();
+              entry.elapsedMs = entry.deliveredAt - entry.receivedAt;
+            }
+            return response;
+          };
+        })()''')
+        return super().load(page, query, expected_document)
+
+    def tearDown(self):
+        try:
+            events = self.page.evaluate('window.__ciMembershipDelivery.events')
+            (browser_tests.ARTIFACTS/'project-return-members-delivery.json').write_text(
+                json.dumps(events, indent=2)+'\n')
+            self.assertEqual(len(events), 2, 'Both real post-invite member reads must run')
+            self.assertEqual([entry['status'] for entry in events], [200, 200])
+            self.assertTrue(all(entry['expectedMember'] for entry in events),
+                            'A delayed response did not contain the actual granted role')
+            self.assertTrue(all('deliveredAt' in entry for entry in events),
+                            'The journey finished before both real member results were delivered')
+            self.assertGreaterEqual(events[1]['startedAt'], events[0]['deliveredAt'],
+                                    'The current refresh must follow the older invitation result')
+            self.assertGreaterEqual(events[1]['elapsedMs'], 1500,
+                                    'The current member result must exceed the old 450 ms assumption')
+        finally:
+            super().tearDown()
+
+
+class ProjectResponseReadiness(browser_tests.BrowserAcceptance):
+    """Keep actual project bodies pending past the former fixed-sleep assertions."""
+
+    def load(self, page, query='', expected_document=None):
+        if page.url.startswith(browser_tests.BASE+'/'):
+            self._project_body_delays = getattr(self, '_project_body_delays', []) + page.evaluate(
+                'window.__projectBodyDelays?.events || []')
+        page.add_init_script(r"""(() => {
+          if (window.__projectBodyDelays) return;
+          const original = window.fetch.bind(window);
+          const state = window.__projectBodyDelays = {events: [], patches: 0};
+          window.fetch = async (...args) => {
+            const input = args[0];
+            const url = new URL(typeof input === 'string' ? input : input.url, location.href);
+            const method = (args[1]?.method || input.method || 'GET').toUpperCase();
+            const patches = state.patches;
+            const response = await original(...args);
+            if (method === 'PATCH' && /^\/api\/projects\/[^/]+$/.test(url.pathname) && response.ok)
+              state.patches++;
+            const kind = method !== 'GET' ? null :
+              (/^\/api\/projects\/[^/]+\/content$/.test(url.pathname) ? 'content' :
+              (response.status === 503 && /^\/api\/projects\/[^/]+$/.test(url.pathname) ? 'stale-error' :
+              (url.pathname === '/api/projects' && patches > 0 ? 'list' : null)));
+            if (!kind) return response;
+            // Delay the application's actual body method, preserving the real
+            // bytes/status. Response headers and fetch itself are already ready.
+            for (const name of ['text', 'arrayBuffer']) {
+              const read = response[name].bind(response);
+              response[name] = async () => {
+                const value = await read();
+                const entry = {kind, patches, status: response.status, bodyUsed: response.bodyUsed,
+                  bytes: typeof value === 'string' ? new TextEncoder().encode(value).length : value.byteLength,
+                  minimumMs: 1600, receivedAt: performance.now()};
+                state.events.push(entry);
+                await new Promise(resolve => setTimeout(resolve, entry.minimumMs));
+                entry.deliveredAt = performance.now();
+                entry.elapsedMs = entry.deliveredAt-entry.receivedAt;
+                return value;
+              };
+            }
+            return response;
+          };
+        })()""")
+        return super().load(page, query, expected_document)
+
+    def tearDown(self):
+        try:
+            events = list(getattr(self, '_project_body_delays', []))
+            events.extend(self.page.evaluate('window.__projectBodyDelays.events'))
+            (browser_tests.ARTIFACTS/(self._testMethodName+'-body-delays.json')).write_text(
+                json.dumps(events, indent=2)+'\n')
+            if self._testMethodName.startswith('test_42'):
+                self.assertEqual(sum(row['kind'] == 'content' and row['status'] == 200 for row in events), 3,
+                                 'Both B opens and the superseded successful A download must complete')
+                self.assertEqual(sum(row['kind'] == 'stale-error' and row['status'] == 503 for row in events), 1)
+            else:
+                self.assertEqual(sum(row['kind'] == 'list' and row['status'] == 200 for row in events), 4,
+                                 'Both current and both superseded list bodies must complete')
+                self.assertEqual(sorted(row['patches'] for row in events), [1, 1, 2, 2])
+            for row in events:
+                self.assertTrue(row['bodyUsed'])
+                self.assertGreater(row['bytes'], 0)
+                self.assertIn('deliveredAt', row, 'The journey ended before actual body delivery')
+                self.assertGreaterEqual(row['elapsedMs'], row['minimumMs'])
+        finally:
+            super().tearDown()
+
+
+class TemplateReadiness(browser_tests.BrowserAcceptance):
+    """Keep native template bytes pending while no/another document is active."""
+
+    def load(self, page, query='', expected_document=None):
+        if page.url.startswith(browser_tests.BASE+'/'):
+            self._template_delays = getattr(self, '_template_delays', []) + page.evaluate(
+                'window.__templateBodyDelays || []')
+        page.add_init_script(r"""(() => {
+          if (window.__templateBodyDelays) return;
+          const original = window.fetch.bind(window);
+          window.__templateBodyDelays = [];
+          window.fetch = async (...args) => {
+            const input = args[0];
+            const url = new URL(typeof input === 'string' ? input : input.url, location.href);
+            const response = await original(...args);
+            if (/^\/templates\/[^/]+\.pcraft$/.test(url.pathname)) {
+              const read = response.arrayBuffer.bind(response);
+              response.arrayBuffer = async () => {
+                const value = await read();
+                const entry = {status: response.status, bytes: value.byteLength, minimumMs: 1200,
+                  sha256: Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', value)),
+                    byte => byte.toString(16).padStart(2, '0')).join(''), receivedAt: performance.now()};
+                window.__templateBodyDelays.push(entry);
+                await new Promise(resolve => setTimeout(resolve, entry.minimumMs));
+                entry.deliveredAt = performance.now();
+                entry.elapsedMs = entry.deliveredAt-entry.receivedAt;
+                return value;
+              };
+            }
+            return response;
+          };
+        })()""")
+        return super().load(page, query, expected_document)
+
+    def tearDown(self):
+        try:
+            events = list(getattr(self, '_template_delays', []))
+            events.extend(self.page.evaluate('window.__templateBodyDelays'))
+            (browser_tests.ARTIFACTS/(self._testMethodName+'-template-delays.json')).write_text(
+                json.dumps(events, indent=2)+'\n')
+            self.assertEqual(len(events), 2 if self._testMethodName.startswith('test_41') else 1)
+            for row in events:
+                self.assertEqual(row['status'], 200)
+                self.assertGreater(row['bytes'], 0)
+                self.assertEqual(len(row['sha256']), 64)
+                self.assertIn('deliveredAt', row)
+                self.assertGreaterEqual(row['elapsedMs'], 1200)
+        finally:
+            super().tearDown()
+
+
 def load_tests(loader, standard_tests, pattern):
     # Discovery must not replay all inherited journeys (or imported base tests).
-    return unittest.TestSuite(BrowserReadiness(name) for name in CASES)
+    return unittest.TestSuite([
+        *(BrowserReadiness(name) for name in CASES),
+        MembershipReadiness('test_38_invitation_result_does_not_replace_new_draft_after_project_return'),
+        ProjectResponseReadiness('test_42_project_open_ignores_duplicate_and_superseded_responses'),
+        ProjectResponseReadiness('test_43_stale_project_lists_cannot_undo_visible_trash_or_restore'),
+        TemplateReadiness('test_41_recovered_and_template_copies_drop_closed_document_bindings'),
+        TemplateReadiness('test_47_imported_files_ignore_closed_cloud_bindings_and_late_results'),
+    ])
 
 
 if __name__ == '__main__':
